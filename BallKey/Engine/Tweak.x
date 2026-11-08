@@ -71,14 +71,14 @@ static NSArray *BKProfile(void)
 
 static void BKLogRaw(BKIOHIDEventRef ev)
 {
-    NSString *line = [NSString stringWithFormat:@"t=%d p=%d u=%d d=%d bm=%d px=%.0f py=%.0f\n",
+    NSString *line = [NSString stringWithFormat:@"t=%d p=%d u=%d d=%d bm=%d mx=%.0f my=%.0f\n",
                       IOHIDEventGetType(ev),
                       IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsagePage),
                       IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsage),
                       IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardDown),
                       IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldMouseButtonMask),
-                      IOHIDEventGetFloatValue(ev, kIOHIDEventFieldPointerX),
-                      IOHIDEventGetFloatValue(ev, kIOHIDEventFieldPointerY));
+                      IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseX),
+                      IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseY));
     NSFileManager *fm = [NSFileManager defaultManager];
     if ([[fm attributesOfItemAtPath:@"/var/mobile/bk_events.log" error:nil][NSFileSize] longValue] > 200000) {
         [fm removeItemAtPath:@"/var/mobile/bk_events.log" error:nil];

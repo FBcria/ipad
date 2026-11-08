@@ -6,7 +6,7 @@
 	<dict>
 		<key>Executables</key>
 		<array>
-			<string>backboardd</string>
+			<string>SpringBoard</string>
 		</array>
 	</dict>
 </dict>

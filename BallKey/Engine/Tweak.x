@@ -49,6 +49,7 @@ float IOHIDEventGetFloatValue(BKIOHIDEventRef event, IOHIDEventField field);
 #define kBKSetOpt               0xF0000000u
 #define kBKSenderID             0xDEFACEDBEEFFECE5ull
 #define kBKClientTypeMonitor    1
+#define kBKTypeKeyExtra         15
 #define kBKTypePointer          17
 #define kBKPtrX                 (17u << 16 | 0u)
 #define kBKPtrY                 (17u << 16 | 1u)
@@ -94,6 +95,50 @@ static void BKAppend(NSString *line)
     [fh seekToEndOfFile];
     [fh writeData:[full dataUsingEncoding:NSUTF8StringEncoding]];
     [fh closeFile];
+}
+
+#pragma mark - Orientação
+
+// 1 retrato, 2 retrato invertido, 3 deitado (home à direita), 4 deitado (home à esquerda)
+static int BKForegroundOrientation(void)
+{
+    Class sbCls = objc_getClass("SpringBoard");
+    if (sbCls) {
+        id sb = ((id (*)(id, SEL))objc_msgSend)(sbCls, @selector(sharedApplication));
+        SEL sel = @selector(_accessibilityFrontMostApplication);
+        if ([sb respondsToSelector:sel]) {
+            id app = ((id (*)(id, SEL))objc_msgSend)(sb, sel);
+            if ([app respondsToSelector:@selector(interfaceOrientation)]) {
+                return ((int (*)(id, SEL))objc_msgSend)(app, @selector(interfaceOrientation));
+            }
+        }
+    }
+    return 1;
+}
+
+// fração do canvas -> fração do display nativo (retrato)
+static void BKConv(float *px, float *py)
+{
+    float x = *px;
+    float y = *py;
+    switch (BKForegroundOrientation()) {
+        case 2:
+            *px = 1.0f - x;
+            *py = 1.0f - y;
+            break;
+        case 3:
+            *px = y;
+            *py = x;
+            break;
+        case 4:
+            *px = 1.0f - y;
+            *py = x;
+            break;
+        default:
+            *px = x;
+            *py = y;
+            break;
+    }
 }
 
 #pragma mark - Config
@@ -159,6 +204,12 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
         if (!gSendClient) return;
     }
 
+    float rx = nx;
+    float ry = ny;
+    BKConv(&rx, &ry);
+    rx = BKClamp(rx);
+    ry = BKClamp(ry);
+
     uint64_t ab = mach_absolute_time();
     uint32_t index = (uint32_t)(idx + 1);
     uint32_t ident = (uint32_t)(idx + 101);
@@ -181,7 +232,7 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
     }
 
     BKIOHIDEventRef finger = IOHIDEventCreateDigitizerFingerEventWithQuality(kCFAllocatorDefault, ab,
-        index, ident, (uint32_t)mask, nx, ny, 0, 0, 0, 0, 0, 0, 0, 0,
+        index, ident, (uint32_t)mask, rx, ry, 0, 0, 0, 0, 0, 0, 0, 0,
         (uint8_t)touch, (uint8_t)touch, 0);
     if (finger) {
         IOHIDEventSetIntegerValueWithOptions(finger, kBKFieldDisplayInt, 1, kBKSetOpt);
@@ -197,7 +248,7 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
     CFRelease(hand);
 
     BKNotifyUserActivity();
-    BKAppend([NSString stringWithFormat:@"D ph=%d i=%lu x=%.3f y=%.3f", phase, (unsigned long)idx, nx, ny]);
+    BKAppend([NSString stringWithFormat:@"D ph=%d o=%d x=%.3f y=%.3f", phase, BKForegroundOrientation(), rx, ry]);
 }
 
 static void BKSendLast(NSNumber *idx)
@@ -382,7 +433,7 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
             gHandledUsage = usage;
             if (gEnabled && gPoints.count) BKHandleKey(usage, down != 0);
         }
-    } else if (type == 15) {
+    } else if (type == kBKTypeKeyExtra) {
         int usage = IOHIDEventGetIntegerValue(ev, 0);
         int dir = gPendingDir;
         gPendingDir = 0;
@@ -402,12 +453,6 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
             BKHandleMask((uint16_t)bmask);
         } else {
             gPrevMask = (uint16_t)bmask;
-        }
-        if (bmask != 0) {
-            BKAppend([NSString stringWithFormat:@"E t=17 bm=%d f3=%d f4=%d f5=%d", bmask,
-                      IOHIDEventGetIntegerValue(ev, (17u << 16 | 3u)),
-                      IOHIDEventGetIntegerValue(ev, (17u << 16 | 4u)),
-                      IOHIDEventGetIntegerValue(ev, (17u << 16 | 5u))]);
         }
     }
 }

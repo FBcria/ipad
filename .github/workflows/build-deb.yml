@@ -1,17 +1,9 @@
 name: build-deb
 
-# No Mac needed: build the tweaks on a GitHub-hosted macOS runner.
-# Trigger: push to main, or run it manually from the Actions tab.
-#
-# Fixed download URLs (public repo, no login needed):
-#   https://github.com/Jeffrey-mu/ipad/releases/latest/download/Pin120.deb
-#   https://github.com/Jeffrey-mu/ipad/releases/latest/download/BallKey.deb
-
 on:
   push:
     branches: [main]
     paths:
-      - 'Pin120/**'
       - 'BallKey/**'
       - '.github/workflows/build-deb.yml'
   workflow_dispatch:
@@ -33,94 +25,45 @@ jobs:
         run: |
           set -euo pipefail
           brew install ldid dpkg xz
-
-          # roothide/theos fork ships vendor/mod/roothide (the roothide package scheme).
-          # Upstream theos/theos does NOT have it.
           git clone --recursive --depth 1 https://github.com/roothide/theos.git "$HOME/theos"
-
-          # Only fetch the one SDK we need instead of the whole sdks repo.
           git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git "$RUNNER_TEMP/sdks"
           ( cd "$RUNNER_TEMP/sdks" && git sparse-checkout set iPhoneOS16.5.sdk )
           mkdir -p "$HOME/theos/sdks"
           cp -R "$RUNNER_TEMP/sdks/iPhoneOS16.5.sdk" "$HOME/theos/sdks/"
-
           echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
           test -d "$HOME/theos/vendor/mod/roothide"
 
-      - name: Build Pin120
+      - name: Normalize sources (UTF-8, sem BOM)
         run: |
-          set -o pipefail
-          cd Pin120
-          make package FINALPACKAGE=1 2>&1 | tee ../ci-build.log
+          set -euo pipefail
+          for f in $(git ls-files 'BallKey/*.x' 'BallKey/*.h' 'BallKey/*.m'); do
+            perl -i -pe 's/^\xEF\xBB\xBF//' "$f"
+            if ! iconv -f UTF-8 -t UTF-8 "$f" > /dev/null 2>&1; then
+              tmp="$(mktemp)"
+              iconv -f GB18030 -t UTF-8 "$f" > "$tmp"
+              cp "$tmp" "$f"
+              rm -f "$tmp"
+              echo "converted from GBK: $f"
+            fi
+          done
 
       - name: Build BallKey
         run: |
           set -o pipefail
           cd BallKey
-          make package FINALPACKAGE=1 2>&1 | tee -a ../ci-build.log
+          make package FINALPACKAGE=1 2>&1 | tee build.log
 
-      - name: Commit build log on failure
+      - name: Upload log on failure
         if: failure()
-        run: |
-          git config user.name "ci-bot"
-          git config user.email "ci-bot@users.noreply.github.com"
-          ls -la ci-build.log || true
-          git add -f ci-build.log || true
-          git commit -m "ci: build log [skip ci]" || true
-          git push || true
-
-      - name: Collect debs
-        run: |
-          set -euo pipefail
-          mkdir -p out
-          cp "$(ls -t Pin120/packages/*.deb | head -1)" out/Pin120.deb
-          cp "$(ls -t BallKey/packages/*.deb | head -1)" out/BallKey.deb
-          ls -la out
-
-      - name: Dump package info (install paths / arch / plist)
-        run: |
-          set -euo pipefail
-          {
-            echo "=== deb file list ==="
-            dpkg-deb -c out/Pin120.deb
-            echo
-            echo "=== control ==="
-            dpkg-deb -f out/Pin120.deb
-            echo
-            echo "=== tweak plist (source) ==="
-            cat Pin120/Pin120.plist
-            echo
-            echo "=== staged dylib ==="
-            find Pin120/.theos -name 'Pin120.dylib' -exec file {} \;
-            find Pin120/.theos -name 'Pin120.plist' -exec sh -c 'echo "-- $1"; cat "$1"' _ {} \;
-          } > ci-package-info.txt
-          cat ci-package-info.txt
-          git config user.name "ci-bot"
-          git config user.email "ci-bot@users.noreply.github.com"
-          git add -f ci-package-info.txt
-          git commit -m "ci: package info [skip ci]" || true
-          git push || true
-
-      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: debs
-          path: out/*.deb
-          if-no-files-found: error
+          name: build-log
+          path: BallKey/build.log
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: latest build
-          body: |
-            Automated build of `${{ github.sha }}`
-
-            * Pin120 2.0.0 - unlock 120fps in games on a 60Hz iPad Pro (2018/A12X)
-            * BallKey - keyboard/mouse mapping
-
-            Direct download:
-            * /releases/latest/download/Pin120.deb
-            * /releases/latest/download/BallKey.deb
-          files: out/*.deb
+          name: BallKey build
+          files: BallKey/packages/*.deb
           make_latest: true

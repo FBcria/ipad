@@ -39,6 +39,9 @@ static BKIOHIDEventSystemClientRef gBindClient = NULL;
 static UIView *gBindBanner = nil;
 
 static void BKStartBindCapture(void);
+
+#pragma mark - Scene helpers
+
 static UIWindowScene *BKScene(void)
 {
     for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
@@ -60,10 +63,13 @@ static UIWindow *BKMakeWindow(CGFloat level)
     w.frame = sc.coordinateSpace.bounds;
     w.windowLevel = level;
     w.backgroundColor = UIColor.clearColor;
-    w.rootViewController = [[UIViewController alloc] init];
-    w.rootViewController.view.backgroundColor = UIColor.clearColor;
+    UIViewController *vc = [[UIViewController alloc] init];
+    vc.view.backgroundColor = UIColor.clearColor;
+    w.rootViewController = vc;
+    w.hidden = YES;
     return w;
 }
+
 #pragma mark - Plist IO
 
 static NSDictionary *BKReadCfg(void)
@@ -436,16 +442,14 @@ static void BKReloadMarkersFromCfg(void)
 static void BKOpenEditor(void)
 {
     if (gEditorWindow) return;
+
+    gEditorWindow = BKMakeWindow(UIWindowLevelAlert + 60);
+    if (!gEditorWindow) return;
+
     gMarkers = [NSMutableArray array];
+    CGRect screen = gEditorWindow.frame;
 
-    CGRect screen = [UIScreen mainScreen].bounds;
-    gEditorWindow = [[UIWindow alloc] initWithFrame:screen];
-    gEditorWindow.windowLevel = UIWindowLevelAlert + 60;
-    gEditorWindow.backgroundColor = UIColor.clearColor;
-
-    UIViewController *vc = [[UIViewController alloc] init];
-    gEditorWindow.rootViewController = vc;
-    UIView *canvas = vc.view;
+    UIView *canvas = gEditorWindow.rootViewController.view;
     canvas.backgroundColor = [UIColor colorWithWhite:0 alpha:0.25];
 
     UIStackView *bar = [[UIStackView alloc] init];
@@ -495,7 +499,7 @@ static void BKOpenEditor(void)
     [gBindBanner addSubview:bl];
     [canvas addSubview:gBindBanner];
 
-    [gEditorWindow makeKeyAndVisible];
+    gEditorWindow.hidden = NO;
     BKReloadMarkersFromCfg();
     for (UIView *m in gMarkers) [canvas addSubview:m];
 }
@@ -512,17 +516,13 @@ static void BKToggleEnabled(void)
 static void BKSetupBall(void)
 {
     if (gBallWindow) return;
-    CGRect screen = [UIScreen mainScreen].bounds;
-    CGFloat bx = screen.size.width - 70;
-    CGFloat by = screen.size.height * 0.35;
-    gBallWindow = [[UIWindow alloc] initWithFrame:CGRectMake(bx, by, 56, 56)];
-    gBallWindow.windowLevel = UIWindowLevelAlert + 50;
-    gBallWindow.backgroundColor = UIColor.clearColor;
+    gBallWindow = BKMakeWindow(UIWindowLevelAlert + 50);
+    if (!gBallWindow) return;
 
-    UIViewController *vc = [[UIViewController alloc] init];
-    gBallWindow.rootViewController = vc;
-    vc.view.backgroundColor = UIColor.clearColor;
+    CGRect screen = gBallWindow.frame;
+    gBallWindow.frame = CGRectMake(screen.size.width - 70, screen.size.height * 0.35, 56, 56);
 
+    UIViewController *vc = gBallWindow.rootViewController;
     UIButton *ball = [UIButton buttonWithType:UIButtonTypeCustom];
     ball.frame = vc.view.bounds;
     ball.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -539,7 +539,10 @@ static void BKSetupBall(void)
     [ball addGestureRecognizer:pan];
 
     [vc.view addSubview:ball];
-    [gBallWindow makeKeyAndVisible];
+    gBallWindow.hidden = NO;
+
+    [@"ball" writeToFile:@"/var/mobile/bk_ball_shown.txt"
+              atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
 #pragma mark - Frontmost poll
@@ -573,9 +576,18 @@ static void BKOverlayInit(void)
     gEnabledFlag = cfg[@"Enabled"] ? [cfg[@"Enabled"] boolValue] : YES;
     gFrontBundle = cfg[@"ActiveBundle"];
 
-    BKSetupBall();
+    [@"overlay" writeToFile:@"/var/mobile/bk_overlay_loaded.txt"
+                 atomically:YES encoding:NSUTF8StringEncoding error:nil];
+
+    __block int tries = 0;
+    [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
+        if (gBallWindow || ++tries > 30) { [t invalidate]; return; }
+        BKSetupBall();
+    }];
 
     [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
+        if (gBallWindow && gBallWindow.hidden) gBallWindow.hidden = NO;
+        if (gEditorWindow && gEditorWindow.hidden) gEditorWindow.hidden = NO;
         BKPollFrontmost();
     }];
 }

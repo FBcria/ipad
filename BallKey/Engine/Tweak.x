@@ -78,7 +78,7 @@ static void BKLogRaw(BKIOHIDEventRef ev)
                       IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardDown),
                       IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldMouseButtonMask),
                       IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseX),
-                      IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseY));
+                      IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseY)];
     NSFileManager *fm = [NSFileManager defaultManager];
     if ([[fm attributesOfItemAtPath:@"/var/mobile/bk_events.log" error:nil][NSFileSize] longValue] > 200000) {
         [fm removeItemAtPath:@"/var/mobile/bk_events.log" error:nil];

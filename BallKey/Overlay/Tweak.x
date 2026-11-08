@@ -94,28 +94,6 @@ static void BKWriteCfg(void (^mutate)(NSMutableDictionary *cfg))
     });
 }
 
-static UIInterfaceOrientation BKCurrentOrientation(void)
-{
-    UIWindowScene *sc = BKScene();
-    if (sc) return sc.interfaceOrientation;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    return [UIApplication sharedApplication].statusBarOrientation;
-#pragma clang diagnostic pop
-}
-
-static CGPoint BKUIKitFromNorm(CGPoint n)
-{
-    CGSize s = [UIScreen mainScreen].bounds.size;
-    CGFloat Wp = MIN(s.width, s.height), Hp = MAX(s.width, s.height);
-    switch (BKCurrentOrientation()) {
-        case UIInterfaceOrientationPortraitUpsideDown: return CGPointMake(Wp - n.x * Wp, Hp - n.y * Hp);
-        case UIInterfaceOrientationLandscapeLeft: return CGPointMake(Hp - n.y * Hp, n.x * Wp);
-        case UIInterfaceOrientationLandscapeRight: return CGPointMake(n.y * Hp, Wp - n.x * Wp);
-        default: return CGPointMake(n.x * Wp, n.y * Hp);
-    }
-}
-
 @interface BKMarkerView : UIView
 @property (nonatomic, copy) NSString *type;
 @property (nonatomic, copy) NSString *keyEnc;
@@ -396,9 +374,9 @@ static void BKReloadMarkersFromCfg(void)
     NSDictionary *cfg = BKReadCfg();
     id pts = cfg[@"Profiles"][gFrontBundle ?: @""];
     if (![pts isKindOfClass:[NSArray class]]) return;
+    CGSize cs = gEditorWindow.rootViewController.view.bounds.size;
     for (NSDictionary *pt in (NSArray *)pts) {
         NSString *type = pt[@"Type"] ?: @"Tap";
-        CGSize cs = gEditorWindow.rootViewController.view.bounds.size;
         CGPoint uiPt = CGPointMake([pt[@"X"] floatValue] * cs.width, [pt[@"Y"] floatValue] * cs.height);
         if (pt[@"Land"] && [pt[@"Land"] boolValue]) uiPt = CGPointMake(uiPt.y, uiPt.x);
         BKMarkerView *m = BKMakeMarker(type, uiPt);

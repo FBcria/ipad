@@ -12,6 +12,8 @@ typedef const void *BKIOHIDEventRef;
 typedef struct __IOHIDEventSystemClient *BKIOHIDEventSystemClientRef;
 typedef void (*BKHIDEventCB)(void *target, void *refcon, void *queue, BKIOHIDEventRef event);
 
+#define kBKTypeKeyExtra 15
+
 BKIOHIDEventSystemClientRef IOHIDEventSystemClientCreate(CFAllocatorRef allocator);
 BKIOHIDEventSystemClientRef IOHIDEventSystemClientCreateWithType(CFAllocatorRef allocator, int type, CFDictionaryRef props);
 void IOHIDEventSystemClientRegisterEventCallback(BKIOHIDEventSystemClientRef client, BKHIDEventCB callback, void *target, void *refcon);
@@ -23,6 +25,7 @@ int IOHIDEventGetIntegerValue(BKIOHIDEventRef event, IOHIDEventField field);
 static dispatch_queue_t gIOQ;
 static NSString *gFrontBundle = nil;
 static BOOL gEnabledFlag = YES;
+static BOOL gBindKeyDown = NO;
 static UIWindow *gBallWindow = nil;
 static UIWindow *gEditorWindow = nil;
 static UIView *gMenuView = nil;
@@ -141,7 +144,7 @@ static CGPoint BKUIKitFromNorm(CGPoint n)
 
 static NSString *BKKeyDisplayName(NSString *enc)
 {
-    if (!enc) return @"?";
+    if (!enc || !enc.length) return @"?";
     NSArray *parts = [enc componentsSeparatedByString:@":"];
     if (parts.count != 2) return enc;
     int code = [parts[1] intValue];
@@ -245,7 +248,12 @@ static void BKBindCB(void *target, void *refcon, void *queue, BKIOHIDEventRef ev
         int page = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsagePage);
         int usage = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsage);
         int down = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardDown);
-        if ((page == 0 || page == 7) && down) enc = [NSString stringWithFormat:@"k:%d", usage];
+        gBindKeyDown = down != 0;
+        if (down && (page == 0 || page == 7) && usage > 0) enc = [NSString stringWithFormat:@"k:%d", usage];
+    } else if (type == kBKTypeKeyExtra) {
+        if (!gBindKeyDown) return;
+        int usage = IOHIDEventGetIntegerValue(ev, kBKTypeKeyExtra << 16);
+        if (usage > 0) enc = [NSString stringWithFormat:@"k:%d", usage];
     } else if (type == kIOHIDEventTypeMouse) {
         int bm = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldMouseButtonMask);
         if (bm & 1) enc = @"m:0";
@@ -272,6 +280,7 @@ static void BKBindCB(void *target, void *refcon, void *queue, BKIOHIDEventRef ev
 static void BKStartBindCapture(void)
 {
     BKStopBindClient();
+    gBindKeyDown = NO;
     gBindClient = IOHIDEventSystemClientCreateWithType(kCFAllocatorDefault, 1, NULL);
     if (!gBindClient) gBindClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
     if (!gBindClient) return;

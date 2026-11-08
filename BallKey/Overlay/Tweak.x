@@ -93,6 +93,8 @@ static void BKWriteCfg(void (^mutate)(NSMutableDictionary *cfg))
 
 static UIInterfaceOrientation BKCurrentOrientation(void)
 {
+    UIWindowScene *sc = BKScene();
+    if (sc) return sc.interfaceOrientation;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     return [UIApplication sharedApplication].statusBarOrientation;

@@ -57,6 +57,10 @@ float IOHIDEventGetFloatValue(BKIOHIDEventRef event, IOHIDEventField field);
 #define kBKMoveFactor           0.000977f
 #define kBKToggleUsage          14
 
+// Ausente no header vendorizado. Digitizer = tipo 11; IsDisplayIntegrated = 25,
+// logo o proximo campo livre e 26.
+#define kBKFieldTouchPhase      ((IOHIDEventField)((11u << 16) | 26u))
+
 #pragma mark - Estado
 
 static BKIOHIDEventSystemClientRef gListenClient = NULL;
@@ -322,7 +326,7 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
     if (finger) {
         IOHIDEventSetIntegerValueWithOptions(finger, kBKFieldDisplayInt, 1, kBKSetOpt);
         if (gEndPhase) {
-            IOHIDEventSetIntegerValueWithOptions(finger, kIOHIDEventFieldDigitizerTouchPhase, wire, kBKSetOpt);
+            IOHIDEventSetIntegerValueWithOptions(finger, kBKFieldTouchPhase, wire, kBKSetOpt);
         }
         IOHIDEventAppendEvent(hand, finger);
         CFRelease(finger);
@@ -332,7 +336,7 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
     IOHIDEventSetIntegerValueWithOptions(hand, kIOHIDEventFieldDigitizerRange, touch, kBKSetOpt);
     IOHIDEventSetIntegerValueWithOptions(hand, kIOHIDEventFieldDigitizerTouch, touch, kBKSetOpt);
     if (gEndPhase) {
-        IOHIDEventSetIntegerValueWithOptions(hand, kIOHIDEventFieldDigitizerTouchPhase, wire, kBKSetOpt);
+        IOHIDEventSetIntegerValueWithOptions(hand, kBKFieldTouchPhase, wire, kBKSetOpt);
     }
     IOHIDEventSetSenderID(hand, kBKSenderID);
     IOHIDEventSystemClientDispatchEvent(gSendClient, hand);

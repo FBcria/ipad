@@ -4,6 +4,7 @@
 
 #import <Foundation/Foundation.h>
 #import <CoreFoundation/CoreFoundation.h>
+#import <CoreGraphics/CoreGraphics.h>
 #import <notify.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -73,6 +74,8 @@ static float gDirX = 0, gDirY = 0, gDirAX = 0, gDirAY = 0, gDirR = 0.12f, gDirS 
 static uint16_t gPrevMask = 0;
 static int gPendingDir = 0;
 static int gHandledUsage = -1;
+
+static void BKSendLast(NSNumber *idx);
 
 #pragma mark - Log
 

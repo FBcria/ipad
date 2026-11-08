@@ -53,6 +53,27 @@ typedef struct {
 #define kBKMaxAct 8
 static BKAct gActs[kBKMaxAct];
 
+static void BKAppend(NSString *path, NSString *line)
+{
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([[fm attributesOfItemAtPath:path error:nil][NSFileSize] longValue] > 200000) {
+        [fm removeItemAtPath:path error:nil];
+    }
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
+    if (!fh) {
+        [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        return;
+    }
+    [fh seekToEndOfFile];
+    [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+    [fh closeFile];
+}
+
+static void BKDebug(NSString *msg)
+{
+    BKAppend(@"/var/mobile/bk_debug.log", [msg stringByAppendingString:@"\n"]);
+}
+
 static void BKLoadCfg(void)
 {
     dispatch_sync(gIOQ, ^{
@@ -70,22 +91,11 @@ static NSArray *BKProfile(void)
     return [pts isKindOfClass:[NSArray class]] ? pts : nil;
 }
 
-static NSString *BKProbe(BKIOHIDEventRef ev, int type)
-{
-    NSMutableString *s = [NSMutableString string];
-    uint32_t base = ((uint32_t)type) << 16;
-    for (uint32_t i = 0; i < 8; i++) {
-        [s appendFormat:@" [%u]=%d", i, IOHIDEventGetIntegerValue(ev, base + i)];
-    }
-    return s;
-}
-
 static void BKLogRaw(BKIOHIDEventRef ev)
 {
     int t = IOHIDEventGetType(ev);
-    if (t == 11 || t == 13 || t == 20 || t == 1) return;
-
-    NSString *line = [NSString stringWithFormat:@"t=%d p=%d u=%d d=%d bm=%d mx=%.0f my=%.0f",
+    if (t != 3 && t != 17) return;
+    NSString *line = [NSString stringWithFormat:@"E t=%d p=%d u=%d d=%d bm=%d mx=%.0f my=%.0f\n",
                       t,
                       IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsagePage),
                       IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsage),
@@ -93,21 +103,7 @@ static void BKLogRaw(BKIOHIDEventRef ev)
                       IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldMouseButtonMask),
                       IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseX),
                       IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseY)];
-    if (t != 2 && t != 3) line = [line stringByAppendingString:BKProbe(ev, t)];
-    line = [line stringByAppendingString:@"\n"];
-
-    NSFileManager *fm = [NSFileManager defaultManager];
-    if ([[fm attributesOfItemAtPath:@"/var/mobile/bk_events.log" error:nil][NSFileSize] longValue] > 200000) {
-        [fm removeItemAtPath:@"/var/mobile/bk_events.log" error:nil];
-    }
-    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:@"/var/mobile/bk_events.log"];
-    if (!fh) {
-        [line writeToFile:@"/var/mobile/bk_events.log" atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    } else {
-        [fh seekToEndOfFile];
-        [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-        [fh closeFile];
-    }
+    BKAppend(@"/var/mobile/bk_events.log", line);
 }
 
 static void BKSend(int finger, CGPoint p, BOOL down)
@@ -165,6 +161,7 @@ static void BKDown(NSString *enc, NSDictionary *pt)
     gFinger = (gFinger >= 6) ? 2 : gFinger + 1;
     a->finger = gFinger;
 
+    BKDebug([NSString stringWithFormat:@"D %@ %@ x=%.3f y=%.3f", a->type, enc, a->base.x, a->base.y]);
     BKSend(a->finger, a->cur, YES);
 
     if ([a->type isEqualToString:@"Tap"]) {
@@ -207,12 +204,16 @@ static void BKBind(NSString *enc, BOOL down)
 {
     if (!gEnabled) return;
     if (!down) { BKUpFor(enc); return; }
+
     NSArray *profile = BKProfile();
-    if (!profile) return;
-    for (NSDictionary *pt in profile) {
-        NSString *key = pt[@"Key"] ?: pt[@"Button"];
-        if (key && [key isEqualToString:enc]) { BKDown(enc, pt); return; }
+    BOOL hit = NO;
+    if (profile) {
+        for (NSDictionary *pt in profile) {
+            NSString *key = pt[@"Key"] ?: pt[@"Button"];
+            if (key && [key isEqualToString:enc]) { BKDown(enc, pt); hit = YES; break; }
+        }
     }
+    BKDebug([NSString stringWithFormat:@"B %@ bundle=%@ pts=%d hit=%d", enc, gActiveBundle ?: @"nil", (int)profile.count, hit]);
 }
 
 static void BKButtons(uint32_t mask)

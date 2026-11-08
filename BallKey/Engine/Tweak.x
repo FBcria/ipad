@@ -1,6 +1,5 @@
 // BallKey Engine — injected into backboardd.
-// Converte entrada de teclado/mouse em eventos de toque sintéticos,
-// conforme o perfil do app em primeiro plano.
+// Converte entrada de teclado/mouse em eventos de toque sintéticos.
 
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
@@ -8,8 +7,6 @@
 #import <notify.h>
 #import <mach/mach_time.h>
 #import "BKConfig.h"
-
-#pragma mark - IOKit externs
 
 typedef struct __IOHIDEvent *BKIOHIDEventRef;
 typedef struct __IOHIDEventSystemClient *BKIOHIDEventSystemClientRef;
@@ -21,19 +18,15 @@ extern void IOHIDEventSystemClientRegisterEventCallback(BKIOHIDEventSystemClient
 extern void IOHIDEventSystemClientScheduleWithRunLoop(BKIOHIDEventSystemClientRef client, CFRunLoopRef runloop, CFStringRef mode);
 extern void IOHIDEventSystemClientUnscheduleWithRunLoop(BKIOHIDEventSystemClientRef client, CFRunLoopRef runloop, CFStringRef mode);
 extern Boolean IOHIDEventSystemClientDispatchEvent(BKIOHIDEventSystemClientRef client, BKIOHIDEventRef event);
-
 extern BKIOHIDEventRef IOHIDEventCreateDigitizerEvent(CFAllocatorRef allocator, uint64_t timeStamp, uint32_t type,
                                                       uint32_t index, uint32_t identity, uint32_t eventMask,
                                                       uint32_t buttonMask, double x, double y, double z,
                                                       double tipPressure, double barrelPressure,
                                                       Boolean range, Boolean touch, uint32_t options);
 extern void IOHIDEventSetIntegerValue(BKIOHIDEventRef event, uint32_t field, int value);
-extern void IOHIDEventSetFloatValue(BKIOHIDEventRef event, uint32_t field, double value);
 extern int IOHIDEventGetType(BKIOHIDEventRef event);
 extern int IOHIDEventGetIntegerValue(BKIOHIDEventRef event, uint32_t field);
 extern double IOHIDEventGetFloatValue(BKIOHIDEventRef event, uint32_t field);
-
-#pragma mark - State
 
 static dispatch_queue_t gIOQ;
 static BKIOHIDEventSystemClientRef gClient = NULL;
@@ -58,8 +51,6 @@ typedef struct {
 #define kBKMaxAct 8
 static BKAct gActs[kBKMaxAct];
 
-#pragma mark - Config
-
 static void BKLoadCfg(void)
 {
     dispatch_sync(gIOQ, ^{
@@ -76,8 +67,6 @@ static NSArray *BKProfile(void)
     id pts = gCfg[@"Profiles"][gActiveBundle];
     return [pts isKindOfClass:[NSArray class]] ? pts : nil;
 }
-
-#pragma mark - Touch injection
 
 static void BKSend(int finger, CGPoint p, BOOL down)
 {
@@ -115,7 +104,9 @@ static void BKDown(NSString *enc, NSDictionary *pt)
 {
     if (BKFind(enc)) return;
     int slot = -1;
-    for (int i = 0; i < kBKMaxAct; i++) if (!gActs[i].active) { slot = i; break; }
+    for (int i = 0; i < kBKMaxAct; i++) {
+        if (!gActs[i].active) { slot = i; break; }
+    }
     if (slot < 0) return;
 
     BKAct *a = &gActs[slot];
@@ -137,7 +128,12 @@ static void BKDown(NSString *enc, NSDictionary *pt)
         NSString *e = enc;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
             BKAct *x = BKFind(e);
-            if (x) { BKSend(finger, p, NO); x->active = NO; x->enc = nil; x->type = nil; }
+            if (x) {
+                BKSend(finger, p, NO);
+                x->active = NO;
+                x->enc = nil;
+                x->type = nil;
+            }
         });
     } else if ([a->type isEqualToString:@"Hold"]) {
         int ms = pt[@"HoldMs"] ? [pt[@"HoldMs"] intValue] : 400;
@@ -161,8 +157,6 @@ static void BKMoveDirs(double dx, double dy)
         BKSend(a->finger, p, YES);
     }
 }
-
-#pragma mark - Event parsing
 
 static void BKBind(NSString *enc, BOOL down)
 {
@@ -196,7 +190,9 @@ static void BKEvaluate(BKIOHIDEventRef ev)
         int num = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldButtonNumber);
         int clicks = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldButtonClickCount);
         int idx = (num >= 1) ? num - 1 : num;
-        if (idx >= 0 && idx <= 2) BKBind([NSString stringWithFormat:@"m:%d", idx], clicks > 0);
+        if (idx >= 0 && idx <= 2) {
+            BKBind([NSString stringWithFormat:@"m:%d", idx], clicks > 0);
+        }
         return;
     }
 
@@ -204,4 +200,68 @@ static void BKEvaluate(BKIOHIDEventRef ev)
         uint32_t mask = (uint32_t)IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldMouseButtonMask);
         for (int i = 0; i < 3; i++) {
             uint32_t bit = 1u << i;
-            if ((mask & bit) != (gLastMask & bit)) BKBind([NSString stringWithFormat:@"m:%d", i], (mask & bit)
+            if ((mask & bit) != (gLastMask & bit)) {
+                BKBind([NSString stringWithFormat:@"m:%d", i], (mask & bit) != 0);
+            }
+        }
+        gLastMask = mask;
+
+        if (mask) {
+            static double lx = 0, ly = 0;
+            double x = IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseX);
+            double y = IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseY);
+            if (lx != 0 || ly != 0) BKMoveDirs((x - lx) / 4.0, (y - ly) / 4.0);
+            lx = x;
+            ly = y;
+        }
+    }
+}
+
+static void BKCallback(void *target, void *refcon, void *queue, BKIOHIDEventRef ev)
+{
+    @autoreleasepool { BKEvaluate(ev); }
+}
+
+static void BKStart(void)
+{
+    gIOQ = dispatch_queue_create("com.wjf.ballkey.engine", DISPATCH_QUEUE_SERIAL);
+    memset(gActs, 0, sizeof(gActs));
+    BKLoadCfg();
+
+    notify_register_dispatch(kBKNotifyReload, &gNotifyToken, dispatch_get_main_queue(), ^(int token) {
+        BKLoadCfg();
+    });
+
+    gClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
+    if (!gClient) return;
+
+    NSArray *matching = @[
+        @{ @"DeviceUsagePage": @1, @"DeviceUsage": @6 },
+        @{ @"DeviceUsagePage": @1, @"DeviceUsage": @2 },
+        @{ @"DeviceUsagePage": @9, @"DeviceUsage": @1 },
+    ];
+    IOHIDEventSystemClientSetMatching(gClient, (__bridge CFTypeRef)matching);
+    IOHIDEventSystemClientRegisterEventCallback(gClient, BKCallback, NULL, NULL);
+    IOHIDEventSystemClientScheduleWithRunLoop(gClient, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+
+    [@"engine" writeToFile:@"/var/mobile/bk_engine_loaded.txt"
+                atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
+%ctor {
+    @autoreleasepool {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            BKStart();
+        });
+    }
+}
+
+%dtor {
+    @autoreleasepool {
+        if (gClient) {
+            IOHIDEventSystemClientUnscheduleWithRunLoop(gClient, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+            CFRelease(gClient);
+            gClient = NULL;
+        }
+    }
+}

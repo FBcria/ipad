@@ -104,20 +104,6 @@ static UIInterfaceOrientation BKCurrentOrientation(void)
 #pragma clang diagnostic pop
 }
 
-static CGPoint BKNormFromUIKit(CGPoint p)
-{
-    CGSize s = [UIScreen mainScreen].bounds.size;
-    CGFloat Wp = MIN(s.width, s.height), Hp = MAX(s.width, s.height);
-    CGPoint q = p;
-    switch (BKCurrentOrientation()) {
-        case UIInterfaceOrientationPortraitUpsideDown: q = CGPointMake(s.width - p.x, s.height - p.y); break;
-        case UIInterfaceOrientationLandscapeLeft: q = CGPointMake(p.y, s.height - p.x); break;
-        case UIInterfaceOrientationLandscapeRight: q = CGPointMake(s.width - p.y, p.x); break;
-        default: break;
-    }
-    return CGPointMake(q.x / Wp, q.y / Hp);
-}
-
 static CGPoint BKUIKitFromNorm(CGPoint n)
 {
     CGSize s = [UIScreen mainScreen].bounds.size;
@@ -325,13 +311,16 @@ static void BKStartBindCapture(void)
 - (void)addDir { BKMarkerView *m = BKMakeMarker(@"Dir", CGPointMake(UIScreen.mainScreen.bounds.size.width/3, UIScreen.mainScreen.bounds.size.height/2)); [gEditorWindow.rootViewController.view addSubview:m]; [gMarkers addObject:m]; }
 - (void)editorDone
 {
+    UIView *canvas = gEditorWindow.rootViewController.view;
+    CGSize cs = canvas.bounds.size;
+    BOOL land = cs.width > cs.height;
     NSMutableArray *pts = [NSMutableArray array];
     for (BKMarkerView *m in gMarkers) {
-        CGPoint n = BKNormFromUIKit(m.center);
         NSMutableDictionary *d = [NSMutableDictionary dictionary];
         d[@"Type"] = m.type;
-        d[@"X"] = @(n.x);
-        d[@"Y"] = @(n.y);
+        d[@"X"] = @(MAX(0.0, MIN(1.0, m.center.x / cs.width)));
+        d[@"Y"] = @(MAX(0.0, MIN(1.0, m.center.y / cs.height)));
+        d[@"Land"] = @(land);
         if ([m.type isEqualToString:@"Dir"]) {
             d[@"Button"] = m.keyEnc ?: @"m:0";
             d[@"Radius"] = @(m.radius);
@@ -409,7 +398,9 @@ static void BKReloadMarkersFromCfg(void)
     if (![pts isKindOfClass:[NSArray class]]) return;
     for (NSDictionary *pt in (NSArray *)pts) {
         NSString *type = pt[@"Type"] ?: @"Tap";
-        CGPoint uiPt = BKUIKitFromNorm(CGPointMake([pt[@"X"] floatValue], [pt[@"Y"] floatValue]));
+        CGSize cs = gEditorWindow.rootViewController.view.bounds.size;
+        CGPoint uiPt = CGPointMake([pt[@"X"] floatValue] * cs.width, [pt[@"Y"] floatValue] * cs.height);
+        if (pt[@"Land"] && [pt[@"Land"] boolValue]) uiPt = CGPointMake(uiPt.y, uiPt.x);
         BKMarkerView *m = BKMakeMarker(type, uiPt);
         m.keyEnc = pt[@"Key"] ?: pt[@"Button"];
         m.holdMs = pt[@"HoldMs"] ? [pt[@"HoldMs"] intValue] : 400;

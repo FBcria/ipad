@@ -69,18 +69,32 @@ static NSArray *BKProfile(void)
     return [pts isKindOfClass:[NSArray class]] ? pts : nil;
 }
 
+static NSString *BKProbe(BKIOHIDEventRef ev, int type)
+{
+    NSMutableString *s = [NSMutableString string];
+    uint32_t base = ((uint32_t)type) << 16;
+    for (uint32_t i = 0; i < 12; i++) {
+        [s appendFormat:@" [%u]f=%.0f,i=%d", i,
+            IOHIDEventGetFloatValue(ev, base + i),
+            IOHIDEventGetIntegerValue(ev, base + i)];
+    }
+    return s;
+}
+
 static void BKLogRaw(BKIOHIDEventRef ev)
 {
-    NSString *line = [NSString stringWithFormat:@"t=%d p=%d u=%d d=%d bm=%d mx=%.0f my=%.0f\n",
-                      IOHIDEventGetType(ev),
+    int t = IOHIDEventGetType(ev);
+    NSString *line = [NSString stringWithFormat:@"t=%d p=%d u=%d d=%d bm=%d mx=%.0f my=%.0f%@\n",
+                      t,
                       IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsagePage),
                       IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsage),
                       IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardDown),
                       IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldMouseButtonMask),
                       IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseX),
-                      IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseY)];
+                      IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseY),
+                      (t == 2 || t == 3 || t == 11 || t == 1) ? @"" : BKProbe(ev, t));
     NSFileManager *fm = [NSFileManager defaultManager];
-    if ([[fm attributesOfItemAtPath:@"/var/mobile/bk_events.log" error:nil][NSFileSize] longValue] > 200000) {
+    if ([[fm attributesOfItemAtPath:@"/var/mobile/bk_events.log" error:nil][NSFileSize] longValue] > 300000) {
         [fm removeItemAtPath:@"/var/mobile/bk_events.log" error:nil];
     }
     NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:@"/var/mobile/bk_events.log"];

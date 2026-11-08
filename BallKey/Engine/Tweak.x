@@ -18,6 +18,7 @@ typedef struct __IOHIDEventSystemClient *BKIOHIDEventSystemClientRef;
 typedef void (*BKHIDEventCB)(void *target, void *refcon, void *queue, BKIOHIDEventRef event);
 
 BKIOHIDEventSystemClientRef IOHIDEventSystemClientCreate(CFAllocatorRef allocator);
+BKIOHIDEventSystemClientRef IOHIDEventSystemClientCreateWithType(CFAllocatorRef allocator, int type, CFDictionaryRef properties);
 void IOHIDEventSystemClientDispatchEvent(BKIOHIDEventSystemClientRef client, BKIOHIDEventRef event);
 void IOHIDEventSystemClientSetMatching(BKIOHIDEventSystemClientRef client, CFTypeRef match);
 void IOHIDEventSystemClientRegisterEventCallback(BKIOHIDEventSystemClientRef client, BKHIDEventCB callback, void *target, void *refcon);
@@ -47,6 +48,7 @@ float IOHIDEventGetFloatValue(BKIOHIDEventRef event, IOHIDEventField field);
 #define kBKFieldBuiltIn         4
 #define kBKSetOpt               0xF0000000u
 #define kBKSenderID             0xDEFACEDBEEFFECE5ull
+#define kBKClientTypeMonitor    1
 #define kBKTypeKeyExtra         15
 #define kBKTypePointer          17
 #define kBKPtrX                 (17u << 16 | 1u)
@@ -122,8 +124,8 @@ static void BKLoadConfig(void)
         }
         gDirDown = NO;
     }
-    BKAppend([NSString stringWithFormat:@"C cfg=%d en=%d b=%@ n=%lu perfis=%lu",
-              (int)(cfg != nil), (int)enabled, active ?: @"-", (unsigned long)pts.count,
+    BKAppend([NSString stringWithFormat:@"C en=%d b=%@ n=%lu perfis=%lu",
+              (int)enabled, active ?: @"-", (unsigned long)pts.count,
               (unsigned long)([profiles isKindOfClass:[NSDictionary class]] ? profiles.count : 0)]);
 }
 
@@ -155,7 +157,8 @@ static void BKNotifyUserActivity(void)
 static void BKSend(float nx, float ny, int phase, NSUInteger idx)
 {
     if (!gSendClient) {
-        gSendClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
+        gSendClient = IOHIDEventSystemClientCreateWithType(kCFAllocatorDefault, kBKClientTypeMonitor, NULL);
+        if (!gSendClient) gSendClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
         if (!gSendClient) return;
     }
 
@@ -437,7 +440,8 @@ static void BKEngineInit(void)
 
     BKAppend(@"I init");
 
-    gListenClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
+    gListenClient = IOHIDEventSystemClientCreateWithType(kCFAllocatorDefault, kBKClientTypeMonitor, NULL);
+    if (!gListenClient) gListenClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
     BKAppend([NSString stringWithFormat:@"I client=%d", (int)(gListenClient != NULL)]);
     if (!gListenClient) return;
 

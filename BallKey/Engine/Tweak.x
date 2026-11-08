@@ -84,15 +84,18 @@ static void BKLogRaw(BKIOHIDEventRef ev)
 {
     int t = IOHIDEventGetType(ev);
     if (t == 11 || t == 13 || t == 20 || t == 1) return;
-    NSString *line = [NSString stringWithFormat:@"t=%d p=%d u=%d d=%d bm=%d mx=%.0f my=%.0f%@\n",
+
+    NSString *line = [NSString stringWithFormat:@"t=%d p=%d u=%d d=%d bm=%d mx=%.0f my=%.0f",
                       t,
                       IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsagePage),
                       IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsage),
                       IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardDown),
                       IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldMouseButtonMask),
                       IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseX),
-                      IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseY),
-                      (t == 2 || t == 3) ? @"" : BKProbe(ev, t));
+                      IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseY)];
+    if (t != 2 && t != 3) line = [line stringByAppendingString:BKProbe(ev, t)];
+    line = [line stringByAppendingString:@"\n"];
+
     NSFileManager *fm = [NSFileManager defaultManager];
     if ([[fm attributesOfItemAtPath:@"/var/mobile/bk_events.log" error:nil][NSFileSize] longValue] > 200000) {
         [fm removeItemAtPath:@"/var/mobile/bk_events.log" error:nil];

@@ -39,7 +39,31 @@ static BKIOHIDEventSystemClientRef gBindClient = NULL;
 static UIView *gBindBanner = nil;
 
 static void BKStartBindCapture(void);
+static UIWindowScene *BKScene(void)
+{
+    for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+        if ([s isKindOfClass:[UIWindowScene class]] &&
+            s.activationState == UISceneActivationStateForegroundActive)
+            return (UIWindowScene *)s;
+    }
+    for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+        if ([s isKindOfClass:[UIWindowScene class]]) return (UIWindowScene *)s;
+    }
+    return nil;
+}
 
+static UIWindow *BKMakeWindow(CGFloat level)
+{
+    UIWindowScene *sc = BKScene();
+    if (!sc) return nil;
+    UIWindow *w = [[UIWindow alloc] initWithWindowScene:sc];
+    w.frame = sc.coordinateSpace.bounds;
+    w.windowLevel = level;
+    w.backgroundColor = UIColor.clearColor;
+    w.rootViewController = [[UIViewController alloc] init];
+    w.rootViewController.view.backgroundColor = UIColor.clearColor;
+    return w;
+}
 #pragma mark - Plist IO
 
 static NSDictionary *BKReadCfg(void)

@@ -9,8 +9,6 @@
 #import <IOKit/hid/IOHIDEventTypes.h>
 #import "BKConfig.h"
 
-#pragma mark - IOKit externs (for key binding capture)
-
 typedef const void *BKIOHIDEventRef;
 typedef struct __IOHIDEventSystemClient *BKIOHIDEventSystemClientRef;
 typedef void (*BKHIDEventCB)(void *target, void *refcon, void *queue, BKIOHIDEventRef event);
@@ -22,8 +20,6 @@ void IOHIDEventSystemClientScheduleWithRunLoop(BKIOHIDEventSystemClientRef clien
 void IOHIDEventSystemClientUnscheduleWithRunLoop(BKIOHIDEventSystemClientRef client, CFRunLoopRef runloop, CFStringRef mode);
 int IOHIDEventGetType(BKIOHIDEventRef event);
 int IOHIDEventGetIntegerValue(BKIOHIDEventRef event, IOHIDEventField field);
-
-#pragma mark - Globals
 
 static dispatch_queue_t gIOQ;
 static NSString *gFrontBundle = nil;
@@ -55,11 +51,25 @@ static UIWindowScene *BKScene(void)
     return nil;
 }
 
-static UIWindow *BKMakeWindow(CGFloat level)
+@interface BKPassWindow : UIWindow
+@end
+
+@implementation BKPassWindow
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event
+{
+    UIView *v = [super hitTest:point withEvent:event];
+    if (!v) return nil;
+    if (v == self.rootViewController.view) return nil;
+    return v;
+}
+@end
+
+static UIWindow *BKMakeWindow(CGFloat level, BOOL passthrough)
 {
     UIWindowScene *sc = BKScene();
     if (!sc) return nil;
-    UIWindow *w = [[UIWindow alloc] initWithWindowScene:sc];
+    UIWindow *w = passthrough ? [[BKPassWindow alloc] initWithWindowScene:sc]
+                              : [[UIWindow alloc] initWithWindowScene:sc];
     w.frame = sc.coordinateSpace.bounds;
     w.windowLevel = level;
     w.backgroundColor = UIColor.clearColor;
@@ -99,7 +109,6 @@ static UIInterfaceOrientation BKCurrentOrientation(void)
 #pragma clang diagnostic pop
 }
 
-// UIKit points -> native normalized (SimulateTouch convention)
 static CGPoint BKNormFromUIKit(CGPoint p)
 {
     CGSize s = [UIScreen mainScreen].bounds.size;
@@ -120,7 +129,6 @@ static CGPoint BKNormFromUIKit(CGPoint p)
     return CGPointMake(q.x / Wp, q.y / Hp);
 }
 
-// native normalized -> UIKit points (inverse)
 static CGPoint BKUIKitFromNorm(CGPoint n)
 {
     CGSize s = [UIScreen mainScreen].bounds.size;
@@ -344,6 +352,9 @@ static void BKShowMenu(void);
     CGRect f = gBallWindow.frame;
     f.origin.x += t.x;
     f.origin.y += t.y;
+    CGSize s = [UIScreen mainScreen].bounds.size;
+    f.origin.x = MAX(56 - f.size.width, MIN(s.width - 56, f.origin.x));
+    f.origin.y = MAX(0, MIN(s.height - f.size.height, f.origin.y));
     gBallWindow.frame = f;
     [pan setTranslation:CGPointZero inView:gBallWindow];
 }
@@ -413,7 +424,7 @@ static void BKShowMenu(void)
     [menu addSubview:b2];
     gMenuView = menu;
     [gBallWindow addSubview:menu];
-    menu.frame = CGRectMake(-158, 0, 150, 96);
+    menu.frame = CGRectMake(0, 0, 150, 96);
 }
 
 #pragma mark - Editor
@@ -443,7 +454,7 @@ static void BKOpenEditor(void)
 {
     if (gEditorWindow) return;
 
-    gEditorWindow = BKMakeWindow(UIWindowLevelAlert + 60);
+    gEditorWindow = BKMakeWindow(UIWindowLevelAlert + 60, NO);
     if (!gEditorWindow) return;
 
     gMarkers = [NSMutableArray array];
@@ -516,16 +527,15 @@ static void BKToggleEnabled(void)
 static void BKSetupBall(void)
 {
     if (gBallWindow) return;
-    gBallWindow = BKMakeWindow(UIWindowLevelAlert + 50);
+    gBallWindow = BKMakeWindow(UIWindowLevelAlert + 50, YES);
     if (!gBallWindow) return;
 
     CGRect screen = gBallWindow.frame;
-    gBallWindow.frame = CGRectMake(screen.size.width - 70, screen.size.height * 0.35, 56, 56);
+    gBallWindow.frame = CGRectMake(screen.size.width - 224, screen.size.height * 0.35, 224, 96);
 
     UIViewController *vc = gBallWindow.rootViewController;
     UIButton *ball = [UIButton buttonWithType:UIButtonTypeCustom];
-    ball.frame = vc.view.bounds;
-    ball.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    ball.frame = CGRectMake(168, 0, 56, 56);
     ball.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.85];
     ball.layer.cornerRadius = 28;
     ball.layer.borderColor = UIColor.systemYellowColor.CGColor;

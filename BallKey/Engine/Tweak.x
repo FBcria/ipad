@@ -4,6 +4,7 @@
 
 #import <Foundation/Foundation.h>
 #import <CoreFoundation/CoreFoundation.h>
+#import <dispatch/dispatch.h>
 #import <notify.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -20,10 +21,9 @@ typedef void (*BKHIDEventCB)(void *target, void *refcon, void *queue, BKIOHIDEve
 BKIOHIDEventSystemClientRef IOHIDEventSystemClientCreate(CFAllocatorRef allocator);
 BKIOHIDEventSystemClientRef IOHIDEventSystemClientCreateWithType(CFAllocatorRef allocator, int type, CFDictionaryRef properties);
 void IOHIDEventSystemClientDispatchEvent(BKIOHIDEventSystemClientRef client, BKIOHIDEventRef event);
-void IOHIDEventSystemClientSetMatching(BKIOHIDEventSystemClientRef client, CFTypeRef match);
 void IOHIDEventSystemClientRegisterEventCallback(BKIOHIDEventSystemClientRef client, BKHIDEventCB callback, void *target, void *refcon);
-void IOHIDEventSystemClientScheduleWithRunLoop(BKIOHIDEventSystemClientRef client, CFRunLoopRef runloop, CFStringRef mode);
-void IOHIDEventSystemClientUnscheduleWithRunLoop(BKIOHIDEventSystemClientRef client, CFRunLoopRef runloop, CFStringRef mode);
+void IOHIDEventSystemClientSetDispatchQueue(BKIOHIDEventSystemClientRef client, dispatch_queue_t queue);
+void IOHIDEventSystemClientActivate(BKIOHIDEventSystemClientRef client);
 
 BKIOHIDEventRef IOHIDEventCreateDigitizerEvent(CFAllocatorRef allocator, uint64_t timeStamp, uint32_t type,
     uint32_t index, uint32_t identity, uint32_t eventMask, uint32_t buttonMask,
@@ -377,9 +377,8 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
     if (type == kBKTypePointer) {
         int bm = IOHIDEventGetIntegerValue(ev, kBKPtrMask);
         if (bm != 0) {
-            BKAppend([NSString stringWithFormat:@"E t=17 en=%d n=%lu bm=%d f4=%d",
-                      (int)gEnabled, (unsigned long)gPoints.count, bm,
-                      IOHIDEventGetIntegerValue(ev, (17u << 16 | 4u))]);
+            BKAppend([NSString stringWithFormat:@"E t=17 en=%d n=%lu bm=%d", (int)gEnabled,
+                      (unsigned long)gPoints.count, bm]);
         }
     } else {
         BKAppend([NSString stringWithFormat:@"E t=%d en=%d n=%lu", type, (int)gEnabled,
@@ -445,15 +444,9 @@ static void BKEngineInit(void)
     BKAppend([NSString stringWithFormat:@"I client=%d", (int)(gListenClient != NULL)]);
     if (!gListenClient) return;
 
-    NSArray *matching = @[
-        @{ @"DeviceUsagePage": @1, @"DeviceUsage": @6 },
-        @{ @"DeviceUsagePage": @1, @"DeviceUsage": @2 },
-        @{ @"DeviceUsagePage": @1, @"DeviceUsage": @1 },
-        @{ @"DeviceUsagePage": @9, @"DeviceUsage": @1 },
-    ];
-    IOHIDEventSystemClientSetMatching(gListenClient, (__bridge CFTypeRef)matching);
     IOHIDEventSystemClientRegisterEventCallback(gListenClient, BKListenCB, NULL, NULL);
-    IOHIDEventSystemClientScheduleWithRunLoop(gListenClient, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+    IOHIDEventSystemClientSetDispatchQueue(gListenClient, dispatch_get_main_queue());
+    IOHIDEventSystemClientActivate(gListenClient);
 
     int token = 0;
     notify_register_dispatch(kBKNotifyReload, &token, dispatch_get_main_queue(), ^(int t) {
@@ -462,6 +455,8 @@ static void BKEngineInit(void)
     });
 
     BKLoadConfig();
+
+    BKAppend(@"I ready");
 
     [@"engine" writeToFile:@"/var/mobile/bk_engine_loaded.txt"
                 atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -478,7 +473,7 @@ static void BKEngineInit(void)
 %dtor {
     @autoreleasepool {
         if (gListenClient) {
-            IOHIDEventSystemClientUnscheduleWithRunLoop(gListenClient, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+            IOHIDEventSystemClientSetDispatchQueue(gListenClient, NULL);
             CFRelease(gListenClient);
             gListenClient = NULL;
         }

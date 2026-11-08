@@ -3,6 +3,7 @@
 // conforme o perfil do app em primeiro plano.
 
 #import <Foundation/Foundation.h>
+#import <CoreGraphics/CoreGraphics.h>
 #import <IOKit/hid/IOHIDEventTypes.h>
 #import <notify.h>
 #import <mach/mach_time.h>
@@ -41,6 +42,7 @@ static BOOL gEnabled = YES;
 static NSString *gActiveBundle = nil;
 static uint32_t gLastMask = 0;
 static int gFinger = 2;
+static int gNotifyToken = 0;
 
 typedef struct {
     BOOL active;
@@ -87,7 +89,6 @@ static void BKSend(int finger, CGPoint p, BOOL down)
                                                         (uint32_t)finger, (uint32_t)finger, mask, 0,
                                                         p.x, p.y, 0, 0, 0, TRUE, down, 0);
     if (!ev) return;
-    IOHIDEventSetIntegerValue(ev, kIOHIDEventFieldDigitizerIsDisplayIntegrated, 1);
     IOHIDEventSystemClientDispatchEvent(gClient, ev);
     CFRelease(ev);
 }
@@ -193,9 +194,9 @@ static void BKEvaluate(BKIOHIDEventRef ev)
 
     if (type == kIOHIDEventTypeButton) {
         int num = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldButtonNumber);
-        int state = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldButtonState);
+        int clicks = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldButtonClickCount);
         int idx = (num >= 1) ? num - 1 : num;
-        if (idx >= 0 && idx <= 2) BKBind([NSString stringWithFormat:@"m:%d", idx], state != 0);
+        if (idx >= 0 && idx <= 2) BKBind([NSString stringWithFormat:@"m:%d", idx], clicks > 0);
         return;
     }
 
@@ -203,68 +204,4 @@ static void BKEvaluate(BKIOHIDEventRef ev)
         uint32_t mask = (uint32_t)IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldMouseButtonMask);
         for (int i = 0; i < 3; i++) {
             uint32_t bit = 1u << i;
-            if ((mask & bit) != (gLastMask & bit)) BKBind([NSString stringWithFormat:@"m:%d", i], (mask & bit) != 0);
-        }
-        gLastMask = mask;
-
-        if (mask) {
-            double x = IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseX);
-            double y = IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseY);
-            static double lx, ly;
-            if (lx != 0 || ly != 0) BKMoveDirs((x - lx) / 4.0, (y - ly) / 4.0);
-            lx = x;
-            ly = y;
-        }
-    }
-}
-
-static void BKCallback(void *target, void *refcon, void *queue, BKIOHIDEventRef ev)
-{
-    @autoreleasepool { BKEvaluate(ev); }
-}
-
-#pragma mark - Setup
-
-static void BKStart(void)
-{
-    gIOQ = dispatch_queue_create("com.wjf.ballkey.engine", DISPATCH_QUEUE_SERIAL);
-    memset(gActs, 0, sizeof(gActs));
-    BKLoadCfg();
-
-    notify_register_dispatch(kBKNotifyReload, (int *)&(int){0}, dispatch_get_main_queue(), ^(int token) {
-        BKLoadCfg();
-    });
-
-    gClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
-    if (!gClient) return;
-
-    NSArray *matching = @[
-        @{ @"DeviceUsagePage": @1, @"DeviceUsage": @6 },
-        @{ @"DeviceUsagePage": @1, @"DeviceUsage": @2 },
-        @{ @"DeviceUsagePage": @9, @"DeviceUsage": @1 },
-    ];
-    IOHIDEventSystemClientSetMatching(gClient, (__bridge CFTypeRef)matching);
-    IOHIDEventSystemClientRegisterEventCallback(gClient, BKCallback, NULL, NULL);
-    IOHIDEventSystemClientScheduleWithRunLoop(gClient, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-
-    [@"engine" writeToFile:@"/var/mobile/bk_engine_loaded.txt"
-                atomically:YES encoding:NSUTF8StringEncoding error:nil];
-}
-
-%ctor {
-    @autoreleasepool {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            BKStart();
-        });
-    }
-}
-
-%dtor {
-    @autoreleasepool {
-        if (gClient) {
-            IOHIDEventSystemClientUnscheduleWithRunLoop(gClient, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-            CFRelease(gClient);
-            gClient = NULL;
-        }
-    }
-}
+            if ((mask & bit) != (gLastMask & bit)) BKBind([NSString stringWithFormat:@"m:%d", i], (mask & bit)

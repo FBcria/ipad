@@ -13,6 +13,7 @@ typedef void (*BKHIDEventCB)(void *target, void *refcon, void *queue, BKIOHIDEve
 
 #define kBKFieldIsDisplayIntegrated (11u << 16 | 25u)
 #define kBKTypePointer 17
+#define kBKTypeKeyExtra 15
 
 extern BKIOHIDEventSystemClientRef IOHIDEventSystemClientCreate(CFAllocatorRef allocator);
 extern BKIOHIDEventSystemClientRef IOHIDEventSystemClientCreateWithType(CFAllocatorRef allocator, int type, CFDictionaryRef props);
@@ -34,6 +35,7 @@ static dispatch_queue_t gIOQ;
 static BKIOHIDEventSystemClientRef gClient = NULL;
 static NSDictionary *gCfg = @{};
 static BOOL gEnabled = YES;
+static BOOL gKeyDown = NO;
 static NSString *gActiveBundle = nil;
 static uint32_t gLastMask = 0;
 static int gFinger = 2;
@@ -94,15 +96,19 @@ static NSArray *BKProfile(void)
 static void BKLogRaw(BKIOHIDEventRef ev)
 {
     int t = IOHIDEventGetType(ev);
-    if (t != 3 && t != 17) return;
-    NSString *line = [NSString stringWithFormat:@"E t=%d p=%d u=%d d=%d bm=%d mx=%.0f my=%.0f\n",
-                      t,
-                      IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsagePage),
-                      IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsage),
-                      IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardDown),
-                      IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldMouseButtonMask),
-                      IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseX),
-                      IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseY)];
+    if (t != 3 && t != 15 && t != 17) return;
+    NSMutableString *line = [NSMutableString stringWithFormat:@"E t=%d p=%d u=%d d=%d bm=%d mx=%.0f my=%.0f",
+                             t,
+                             IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsagePage),
+                             IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsage),
+                             IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardDown),
+                             IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldMouseButtonMask),
+                             IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseX),
+                             IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseY)];
+    if (t == 15) {
+        [line appendFormat:@" f0=%d", IOHIDEventGetIntegerValue(ev, kBKTypeKeyExtra << 16)];
+    }
+    [line appendString:@"\n"];
     BKAppend(@"/var/mobile/bk_events.log", line);
 }
 
@@ -139,6 +145,13 @@ static void BKUpFor(NSString *enc)
     a->active = NO;
     a->enc = nil;
     a->type = nil;
+}
+
+static void BKReleaseKeys(void)
+{
+    for (int i = 0; i < kBKMaxAct; i++) {
+        if (gActs[i].active && [gActs[i].enc hasPrefix:@"k:"]) BKUpFor(gActs[i].enc);
+    }
 }
 
 static void BKDown(NSString *enc, NSDictionary *pt)
@@ -237,8 +250,23 @@ static void BKEvaluate(BKIOHIDEventRef ev)
         int page = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsagePage);
         int usage = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsage);
         int down = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardDown);
-        if (page != 0 && page != 7) return;
-        BKBind([NSString stringWithFormat:@"k:%d", usage], down != 0);
+        if (!down) {
+            BKReleaseKeys();
+            gKeyDown = NO;
+            return;
+        }
+        gKeyDown = YES;
+        if ((page == 7 || page == 0) && usage > 0) {
+            BKBind([NSString stringWithFormat:@"k:%d", usage], YES);
+        }
+        return;
+    }
+
+    if (type == kBKTypeKeyExtra) {
+        if (!gKeyDown) return;
+        int usage = IOHIDEventGetIntegerValue(ev, kBKTypeKeyExtra << 16);
+        if (usage <= 0) return;
+        BKBind([NSString stringWithFormat:@"k:%d", usage], YES);
         return;
     }
 

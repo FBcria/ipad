@@ -74,6 +74,8 @@ static NSArray *BKProfile(void)
 static void BKSend(int finger, CGPoint p, BOOL down)
 {
     if (!gClient) return;
+p.x = MAX(0, MIN(1, p.x));
+    p.y = MAX(0, MIN(1, p.y));
     uint32_t mask = kIOHIDDigitizerEventRange | kIOHIDDigitizerEventPosition;
     if (down) mask |= kIOHIDDigitizerEventTouch;
     BKIOHIDEventRef ev = IOHIDEventCreateDigitizerEvent(kCFAllocatorDefault, mach_absolute_time(),

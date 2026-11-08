@@ -105,9 +105,7 @@ static void BKLogRaw(BKIOHIDEventRef ev)
                              IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldMouseButtonMask),
                              IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseX),
                              IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseY)];
-    if (t == 15) {
-        [line appendFormat:@" f0=%d", IOHIDEventGetIntegerValue(ev, kBKTypeKeyExtra << 16)];
-    }
+    if (t == 15) [line appendFormat:@" f0=%d", IOHIDEventGetIntegerValue(ev, kBKTypeKeyExtra << 16)];
     [line appendString:@"\n"];
     BKAppend(@"/var/mobile/bk_events.log", line);
 }
@@ -154,6 +152,13 @@ static void BKReleaseKeys(void)
     }
 }
 
+static CGPoint BKPoint(NSDictionary *pt)
+{
+    CGPoint p = CGPointMake([pt[@"X"] doubleValue], [pt[@"Y"] doubleValue]);
+    if (pt[@"Land"] && [pt[@"Land"] boolValue]) p = CGPointMake(p.y, p.x);
+    return p;
+}
+
 static void BKDown(NSString *enc, NSDictionary *pt)
 {
     if (BKFind(enc)) return;
@@ -167,7 +172,7 @@ static void BKDown(NSString *enc, NSDictionary *pt)
     a->active = YES;
     a->enc = enc;
     a->type = pt[@"Type"] ?: @"Tap";
-    a->base = CGPointMake([pt[@"X"] doubleValue], [pt[@"Y"] doubleValue]);
+    a->base = BKPoint(pt);
     a->cur = a->base;
     a->radius = pt[@"Radius"] ? [pt[@"Radius"] doubleValue] : 0.12;
     a->sens = pt[@"Sens"] ? [pt[@"Sens"] doubleValue] : 1.0;

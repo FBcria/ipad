@@ -1,5 +1,4 @@
-// BallKey Engine — injected into backboardd.
-// Converte entrada de teclado/mouse em eventos de toque sintéticos.
+// BallKey Engine — injetado no backboardd.
 
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
@@ -12,11 +11,10 @@ typedef struct __IOHIDEvent *BKIOHIDEventRef;
 typedef struct __IOHIDEventSystemClient *BKIOHIDEventSystemClientRef;
 typedef void (*BKHIDEventCB)(void *target, void *refcon, void *queue, BKIOHIDEventRef event);
 
-// campo ausente no header vendorizado: IOHIDEventFieldBase(kIOHIDEventTypeDigitizer) + 25
 #define kBKFieldIsDisplayIntegrated (11u << 16 | 25u)
 
 extern BKIOHIDEventSystemClientRef IOHIDEventSystemClientCreate(CFAllocatorRef allocator);
-extern void IOHIDEventSystemClientSetMatching(BKIOHIDEventSystemClientRef client, CFTypeRef match);
+extern BKIOHIDEventSystemClientRef IOHIDEventSystemClientCreateWithType(CFAllocatorRef allocator, int type, CFDictionaryRef props);
 extern void IOHIDEventSystemClientRegisterEventCallback(BKIOHIDEventSystemClientRef client, BKHIDEventCB cb, void *target, void *refcon);
 extern void IOHIDEventSystemClientScheduleWithRunLoop(BKIOHIDEventSystemClientRef client, CFRunLoopRef runloop, CFStringRef mode);
 extern void IOHIDEventSystemClientUnscheduleWithRunLoop(BKIOHIDEventSystemClientRef client, CFRunLoopRef runloop, CFStringRef mode);
@@ -71,10 +69,34 @@ static NSArray *BKProfile(void)
     return [pts isKindOfClass:[NSArray class]] ? pts : nil;
 }
 
+static void BKLogRaw(BKIOHIDEventRef ev)
+{
+    NSString *line = [NSString stringWithFormat:@"t=%d p=%d u=%d d=%d bm=%d px=%.0f py=%.0f\n",
+                      IOHIDEventGetType(ev),
+                      IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsagePage),
+                      IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsage),
+                      IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardDown),
+                      IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldMouseButtonMask),
+                      IOHIDEventGetFloatValue(ev, kIOHIDEventFieldPointerX),
+                      IOHIDEventGetFloatValue(ev, kIOHIDEventFieldPointerY));
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([[fm attributesOfItemAtPath:@"/var/mobile/bk_events.log" error:nil][NSFileSize] longValue] > 200000) {
+        [fm removeItemAtPath:@"/var/mobile/bk_events.log" error:nil];
+    }
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:@"/var/mobile/bk_events.log"];
+    if (!fh) {
+        [line writeToFile:@"/var/mobile/bk_events.log" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    } else {
+        [fh seekToEndOfFile];
+        [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+        [fh closeFile];
+    }
+}
+
 static void BKSend(int finger, CGPoint p, BOOL down)
 {
     if (!gClient) return;
-p.x = MAX(0, MIN(1, p.x));
+    p.x = MAX(0, MIN(1, p.x));
     p.y = MAX(0, MIN(1, p.y));
     uint32_t mask = kIOHIDDigitizerEventRange | kIOHIDDigitizerEventPosition;
     if (down) mask |= kIOHIDDigitizerEventTouch;
@@ -166,12 +188,8 @@ static void BKMoveDirs(double dx, double dy)
 
 static void BKBind(NSString *enc, BOOL down)
 {
-    [[NSString stringWithFormat:@"%@ %d", enc, down]
-        writeToFile:@"/var/mobile/bk_last_event.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
-
     if (!gEnabled) return;
     if (!down) { BKUpFor(enc); return; }
-
     NSArray *profile = BKProfile();
     if (!profile) return;
     for (NSDictionary *pt in profile) {
@@ -199,9 +217,7 @@ static void BKEvaluate(BKIOHIDEventRef ev)
         int num = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldButtonNumber);
         int clicks = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldButtonClickCount);
         int idx = (num >= 1) ? num - 1 : num;
-        if (idx >= 0 && idx <= 2) {
-            BKBind([NSString stringWithFormat:@"m:%d", idx], clicks > 0);
-        }
+        if (idx >= 0 && idx <= 2) BKBind([NSString stringWithFormat:@"m:%d", idx], clicks > 0);
         return;
     }
 
@@ -209,9 +225,7 @@ static void BKEvaluate(BKIOHIDEventRef ev)
         uint32_t mask = (uint32_t)IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldMouseButtonMask);
         for (int i = 0; i < 3; i++) {
             uint32_t bit = 1u << i;
-            if ((mask & bit) != (gLastMask & bit)) {
-                BKBind([NSString stringWithFormat:@"m:%d", i], (mask & bit) != 0);
-            }
+            if ((mask & bit) != (gLastMask & bit)) BKBind([NSString stringWithFormat:@"m:%d", i], (mask & bit) != 0);
         }
         gLastMask = mask;
 
@@ -226,7 +240,10 @@ static void BKEvaluate(BKIOHIDEventRef ev)
 
 static void BKCallback(void *target, void *refcon, void *queue, BKIOHIDEventRef ev)
 {
-    @autoreleasepool { BKEvaluate(ev); }
+    @autoreleasepool {
+        BKLogRaw(ev);
+        BKEvaluate(ev);
+    }
 }
 
 static void BKStart(void)
@@ -234,25 +251,15 @@ static void BKStart(void)
     gIOQ = dispatch_queue_create("com.wjf.ballkey.engine", DISPATCH_QUEUE_SERIAL);
     memset(gActs, 0, sizeof(gActs));
     BKLoadCfg();
-
     notify_register_dispatch(kBKNotifyReload, &gNotifyToken, dispatch_get_main_queue(), ^(int token) {
         BKLoadCfg();
     });
-
-    gClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
+    gClient = IOHIDEventSystemClientCreateWithType(kCFAllocatorDefault, 1, NULL);
+    if (!gClient) gClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
     if (!gClient) return;
-
-    NSArray *matching = @[
-        @{ @"DeviceUsagePage": @1, @"DeviceUsage": @6 },
-        @{ @"DeviceUsagePage": @1, @"DeviceUsage": @2 },
-        @{ @"DeviceUsagePage": @9, @"DeviceUsage": @1 },
-    ];
-    IOHIDEventSystemClientSetMatching(gClient, (__bridge CFTypeRef)matching);
     IOHIDEventSystemClientRegisterEventCallback(gClient, BKCallback, NULL, NULL);
     IOHIDEventSystemClientScheduleWithRunLoop(gClient, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-
-    [@"engine" writeToFile:@"/var/mobile/bk_engine_loaded.txt"
-                atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [@"engine" writeToFile:@"/var/mobile/bk_engine_loaded.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
 %ctor {

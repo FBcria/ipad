@@ -4,7 +4,6 @@
 
 #import <Foundation/Foundation.h>
 #import <CoreFoundation/CoreFoundation.h>
-#import <CoreGraphics/CoreGraphics.h>
 #import <notify.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -200,10 +199,9 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
 
 static void BKSendLast(NSNumber *idx)
 {
-    NSValue *v = gCur[idx];
-    if (!v) return;
-    CGPoint p = [v CGPointValue];
-    BKSend(p.x, p.y, 2, [idx unsignedIntegerValue]);
+    NSArray *a = gCur[idx];
+    if (![a isKindOfClass:[NSArray class]] || a.count < 2) return;
+    BKSend([a[0] floatValue], [a[1] floatValue], 2, [idx unsignedIntegerValue]);
 }
 
 static void BKDown(NSUInteger idx, float nx, float ny)
@@ -212,7 +210,7 @@ static void BKDown(NSUInteger idx, float nx, float ny)
     nx = BKClamp(nx);
     ny = BKClamp(ny);
     gDown[@(idx)] = @YES;
-    gCur[@(idx)] = [NSValue valueWithCGPoint:CGPointMake(nx, ny)];
+    gCur[@(idx)] = @[ @(nx), @(ny) ];
     BKSend(nx, ny, 1, idx);
 }
 
@@ -221,7 +219,7 @@ static void BKMove(NSUInteger idx, float nx, float ny)
     if (![gDown[@(idx)] boolValue]) return;
     nx = BKClamp(nx);
     ny = BKClamp(ny);
-    gCur[@(idx)] = [NSValue valueWithCGPoint:CGPointMake(nx, ny)];
+    gCur[@(idx)] = @[ @(nx), @(ny) ];
     BKSend(nx, ny, 0, idx);
 }
 

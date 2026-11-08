@@ -73,7 +73,7 @@ static NSString *BKProbe(BKIOHIDEventRef ev, int type)
 {
     NSMutableString *s = [NSMutableString string];
     uint32_t base = ((uint32_t)type) << 16;
-    for (uint32_t i = 0; i < 12; i++) {
+    for (uint32_t i = 0; i < 16; i++) {
         [s appendFormat:@" [%u]f=%.0f,i=%d", i,
             IOHIDEventGetFloatValue(ev, base + i),
             IOHIDEventGetIntegerValue(ev, base + i)];
@@ -92,7 +92,7 @@ static void BKLogRaw(BKIOHIDEventRef ev)
                       IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldMouseButtonMask),
                       IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseX),
                       IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseY),
-                      (t == 2 || t == 3 || t == 11 || t == 1) ? @"" : BKProbe(ev, t)];
+                      (t == 1 || t == 15 || t == 17) ? BKProbe(ev, t) : @""];
     NSFileManager *fm = [NSFileManager defaultManager];
     if ([[fm attributesOfItemAtPath:@"/var/mobile/bk_events.log" error:nil][NSFileSize] longValue] > 300000) {
         [fm removeItemAtPath:@"/var/mobile/bk_events.log" error:nil];

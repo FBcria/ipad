@@ -12,6 +12,9 @@ typedef struct __IOHIDEvent *BKIOHIDEventRef;
 typedef struct __IOHIDEventSystemClient *BKIOHIDEventSystemClientRef;
 typedef void (*BKHIDEventCB)(void *target, void *refcon, void *queue, BKIOHIDEventRef event);
 
+// campo ausente no header vendorizado: IOHIDEventFieldBase(kIOHIDEventTypeDigitizer) + 25
+#define kBKFieldIsDisplayIntegrated (11u << 16 | 25u)
+
 extern BKIOHIDEventSystemClientRef IOHIDEventSystemClientCreate(CFAllocatorRef allocator);
 extern void IOHIDEventSystemClientSetMatching(BKIOHIDEventSystemClientRef client, CFTypeRef match);
 extern void IOHIDEventSystemClientRegisterEventCallback(BKIOHIDEventSystemClientRef client, BKHIDEventCB cb, void *target, void *refcon);
@@ -78,6 +81,7 @@ static void BKSend(int finger, CGPoint p, BOOL down)
                                                         (uint32_t)finger, (uint32_t)finger, mask, 0,
                                                         p.x, p.y, 0, 0, 0, TRUE, down, 0);
     if (!ev) return;
+    IOHIDEventSetIntegerValue(ev, kBKFieldIsDisplayIntegrated, 1);
     IOHIDEventSystemClientDispatchEvent(gClient, ev);
     CFRelease(ev);
 }
@@ -160,6 +164,9 @@ static void BKMoveDirs(double dx, double dy)
 
 static void BKBind(NSString *enc, BOOL down)
 {
+    [[NSString stringWithFormat:@"%@ %d", enc, down]
+        writeToFile:@"/var/mobile/bk_last_event.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+
     if (!gEnabled) return;
     if (!down) { BKUpFor(enc); return; }
 
@@ -206,14 +213,12 @@ static void BKEvaluate(BKIOHIDEventRef ev)
         }
         gLastMask = mask;
 
-        if (mask) {
-            static double lx = 0, ly = 0;
-            double x = IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseX);
-            double y = IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseY);
-            if (lx != 0 || ly != 0) BKMoveDirs((x - lx) / 4.0, (y - ly) / 4.0);
-            lx = x;
-            ly = y;
-        }
+        static double lx = 0, ly = 0;
+        double x = IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseX);
+        double y = IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseY);
+        if (lx != 0 || ly != 0) BKMoveDirs((x - lx) / 4.0, (y - ly) / 4.0);
+        lx = x;
+        ly = y;
     }
 }
 

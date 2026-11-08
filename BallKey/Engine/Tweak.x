@@ -99,7 +99,6 @@ static void BKAppend(NSString *line)
 
 #pragma mark - Orientação
 
-// 1 retrato, 2 retrato invertido, 3 deitado (home à direita), 4 deitado (home à esquerda)
 static int BKForegroundOrientation(void)
 {
     Class sbCls = objc_getClass("SpringBoard");
@@ -116,29 +115,13 @@ static int BKForegroundOrientation(void)
     return 1;
 }
 
-// fração do canvas -> fração do display nativo (retrato)
-static void BKConv(float *px, float *py)
+static int BKDeviceOrientation(void)
 {
-    float x = *px;
-    float y = *py;
-    switch (BKForegroundOrientation()) {
-        case 2:
-            *px = 1.0f - x;
-            *py = 1.0f - y;
-            break;
-        case 3:
-            *px = y;
-            *py = x;
-            break;
-        case 4:
-            *px = 1.0f - y;
-            *py = x;
-            break;
-        default:
-            *px = x;
-            *py = y;
-            break;
-    }
+    Class c = objc_getClass("UIDevice");
+    if (!c) return 0;
+    id d = ((id (*)(id, SEL))objc_msgSend)(c, @selector(currentDevice));
+    if (!d) return 0;
+    return ((int (*)(id, SEL))objc_msgSend)(d, @selector(orientation));
 }
 
 #pragma mark - Config
@@ -204,11 +187,8 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
         if (!gSendClient) return;
     }
 
-    float rx = nx;
-    float ry = ny;
-    BKConv(&rx, &ry);
-    rx = BKClamp(rx);
-    ry = BKClamp(ry);
+    float rx = BKClamp(nx);
+    float ry = BKClamp(ny);
 
     uint64_t ab = mach_absolute_time();
     uint32_t index = (uint32_t)(idx + 1);
@@ -248,7 +228,8 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
     CFRelease(hand);
 
     BKNotifyUserActivity();
-    BKAppend([NSString stringWithFormat:@"D ph=%d o=%d x=%.3f y=%.3f", phase, BKForegroundOrientation(), rx, ry]);
+    BKAppend([NSString stringWithFormat:@"D ph=%d o=%d u=%d x=%.3f y=%.3f", phase,
+              BKForegroundOrientation(), BKDeviceOrientation(), rx, ry]);
 }
 
 static void BKSendLast(NSNumber *idx)
@@ -335,7 +316,14 @@ static void BKHandlePoint(NSDictionary *pt, NSUInteger idx, BOOL down)
     float nx = [pt[@"X"] floatValue];
     float ny = [pt[@"Y"] floatValue];
     if ([type isEqualToString:@"Tap"]) {
-        if (down) BKTap(idx, nx, ny);
+        if (down) {
+            BKTap(idx, nx, ny);
+            NSUInteger k = idx;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+                BKAppend(@"T centro");
+                BKTap(k, 0.5f, 0.5f);
+            });
+        }
     } else if ([type isEqualToString:@"Press"]) {
         if (down) BKDown(idx, nx, ny); else BKUp(idx);
     } else if ([type isEqualToString:@"Hold"]) {

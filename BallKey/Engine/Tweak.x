@@ -55,6 +55,7 @@ float IOHIDEventGetFloatValue(BKIOHIDEventRef event, IOHIDEventField field);
 #define kBKPtrY                 (17u << 16 | 1u)
 #define kBKPtrMask              (17u << 16 | 3u)
 #define kBKMoveFactor           0.000977f
+#define kBKToggleUsage          14
 
 #pragma mark - Estado
 
@@ -76,7 +77,23 @@ static uint16_t gPrevMask = 0;
 static int gPendingDir = 0;
 static int gHandledUsage = -1;
 
+// diagnostico / calibracao
+static BOOL gRotate = YES;
+static BOOL gRaw = NO;
+static BOOL gFollowCursor = YES;
+static float gFollowSens = 1.0f;
+static int gOrientOverride = 0;
+static int gEndPhase = 0;
+static BOOL gDump = YES;
+static int gDumpLeft = 60;
+static int gLastOrient = 0;
+static float gCx = 0.5f, gCy = 0.5f;
+static uint32_t gSeq = 0;
+static BOOL gProbing = NO;
+
 static void BKSendLast(NSNumber *idx);
+static void BKProbeRun(void);
+static void BKReleaseAll(void);
 
 #pragma mark - Log
 
@@ -97,22 +114,36 @@ static void BKAppend(NSString *line)
     [fh closeFile];
 }
 
-#pragma mark - Orientação
+#pragma mark - Orientacao
 
-static int BKForegroundOrientation(void)
+static int BKFrontMostOrientation(void)
 {
     Class sbCls = objc_getClass("SpringBoard");
-    if (sbCls) {
-        id sb = ((id (*)(id, SEL))objc_msgSend)(sbCls, @selector(sharedApplication));
-        SEL sel = @selector(_accessibilityFrontMostApplication);
-        if ([sb respondsToSelector:sel]) {
-            id app = ((id (*)(id, SEL))objc_msgSend)(sb, sel);
-            if ([app respondsToSelector:@selector(interfaceOrientation)]) {
-                return ((int (*)(id, SEL))objc_msgSend)(app, @selector(interfaceOrientation));
-            }
-        }
-    }
-    return 1;
+    if (!sbCls) return 0;
+    id sb = ((id (*)(id, SEL))objc_msgSend)(sbCls, @selector(sharedApplication));
+    if (!sb) return 0;
+    SEL sel = @selector(_frontMostAppOrientation);
+    if (![sb respondsToSelector:sel]) return 0;
+    int o = ((int (*)(id, SEL))objc_msgSend)(sb, sel);
+    if (o < 1 || o > 4) return 0;
+    return o;
+}
+
+static int BKAccessibilityOrientation(void)
+{
+    Class sbCls = objc_getClass("SpringBoard");
+    if (!sbCls) return 0;
+    id sb = ((id (*)(id, SEL))objc_msgSend)(sbCls, @selector(sharedApplication));
+    if (!sb) return 0;
+    SEL sel = @selector(_accessibilityFrontMostApplication);
+    if (![sb respondsToSelector:sel]) return 0;
+    id app = ((id (*)(id, SEL))objc_msgSend)(sb, sel);
+    if (!app) return 0;
+    SEL osel = @selector(interfaceOrientation);
+    if (![app respondsToSelector:osel]) return 0;
+    int o = ((int (*)(id, SEL))objc_msgSend)(app, osel);
+    if (o < 1 || o > 4) return 0;
+    return o;
 }
 
 static int BKDeviceOrientation(void)
@@ -124,7 +155,52 @@ static int BKDeviceOrientation(void)
     return ((int (*)(id, SEL))objc_msgSend)(d, @selector(orientation));
 }
 
+// Resolve a orientacao da interface do app em foco. Nunca cai em retrato
+// cego: usa o ultimo valor bom antes de desistir.
+static int BKCurrentOrient(void)
+{
+    if (gOrientOverride >= 1 && gOrientOverride <= 4) return gOrientOverride;
+
+    int o = BKFrontMostOrientation();
+    if (o) { gLastOrient = o; return o; }
+
+    o = BKAccessibilityOrientation();
+    if (o) { gLastOrient = o; return o; }
+
+    int d = BKDeviceOrientation();
+    if (d >= 1 && d <= 4) { gLastOrient = d; return d; }
+
+    return gLastOrient ? gLastOrient : 1;
+}
+
 #pragma mark - Config
+
+static void BKReleaseAll(void)
+{
+    for (NSNumber *k in [gDown allKeys]) {
+        if ([gDown[k] boolValue]) {
+            gDown[k] = @NO;
+            BKSendLast(k);
+        }
+    }
+    gDirDown = NO;
+}
+
+static void BKToggleEnabled(void)
+{
+    NSMutableDictionary *cfg = [NSMutableDictionary dictionaryWithContentsOfFile:kBKConfigPath];
+    if (!cfg) cfg = [NSMutableDictionary dictionary];
+    BOOL now = ![cfg[@"Enabled"] boolValue];
+    if (now && (!gPoints || gPoints.count == 0)) {
+        BKAppend(@"K sem marcadores");
+        return;
+    }
+    cfg[@"Enabled"] = @(now);
+    [cfg writeToFile:kBKConfigPath atomically:YES];
+    gEnabled = now;
+    if (!now) BKReleaseAll();
+    BKAppend([NSString stringWithFormat:@"K en=%d", (int)now]);
+}
 
 static void BKLoadConfig(void)
 {
@@ -137,21 +213,26 @@ static void BKLoadConfig(void)
         id p = profiles[active];
         if ([p isKindOfClass:[NSArray class]]) pts = p;
     }
+
+    if ([cfg[@"Rotate"] isKindOfClass:[NSNumber class]]) gRotate = [cfg[@"Rotate"] boolValue];
+    if ([cfg[@"FollowCursor"] isKindOfClass:[NSNumber class]]) gFollowCursor = [cfg[@"FollowCursor"] boolValue];
+    if ([cfg[@"FollowSens"] isKindOfClass:[NSNumber class]]) gFollowSens = [cfg[@"FollowSens"] floatValue];
+    if ([cfg[@"OrientOverride"] isKindOfClass:[NSNumber class]]) gOrientOverride = [cfg[@"OrientOverride"] intValue];
+    if ([cfg[@"EndPhase"] isKindOfClass:[NSNumber class]]) gEndPhase = [cfg[@"EndPhase"] intValue];
+    if ([cfg[@"Dump"] isKindOfClass:[NSNumber class]]) gDump = [cfg[@"Dump"] boolValue];
+    if (gFollowSens <= 0.05f) gFollowSens = 0.05f;
+    if (gFollowSens > 20.0f) gFollowSens = 20.0f;
+    if (gEndPhase != 2 && gEndPhase != 3) gEndPhase = 0;
+
     gEnabled = enabled && pts.count > 0;
     gActiveBundle = active;
     gPoints = pts;
     gPendingDir = 0;
     gHandledUsage = -1;
-    if (!gEnabled) {
-        for (NSNumber *k in gDown.allKeys) {
-            if ([gDown[k] boolValue]) {
-                gDown[k] = @NO;
-                BKSendLast(k);
-            }
-        }
-        gDirDown = NO;
-    }
-    BKAppend([NSString stringWithFormat:@"C en=%d b=%@ n=%lu", (int)enabled, active ?: @"-", (unsigned long)pts.count]);
+    if (!gEnabled) BKReleaseAll();
+    BKAppend([NSString stringWithFormat:@"C en=%d b=%@ n=%lu rot=%d cur=%d sens=%.2f ov=%d ep=%d",
+              (int)enabled, active ?: @"-", (unsigned long)pts.count,
+              (int)gRotate, (int)gFollowCursor, gFollowSens, gOrientOverride, gEndPhase]);
 }
 
 #pragma mark - Toque
@@ -161,6 +242,21 @@ static float BKClamp(float v)
     if (v < 0) return 0;
     if (v > 1) return 1;
     return v;
+}
+
+// Converte ponto do espaco retrato nativo para o espaco do app.
+static void BKConv(float x, float y, int orient, float *ox, float *oy)
+{
+    float rx = x;
+    float ry = y;
+    switch (orient) {
+        case 2: rx = 1.0f - x; ry = 1.0f - y; break;
+        case 3: rx = y;        ry = 1.0f - x; break;
+        case 4: rx = 1.0f - y; ry = x;        break;
+        default: break;
+    }
+    *ox = BKClamp(rx);
+    *oy = BKClamp(ry);
 }
 
 static void BKNotifyUserActivity(void)
@@ -189,6 +285,15 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
 
     float rx = BKClamp(nx);
     float ry = BKClamp(ny);
+    int o = BKCurrentOrient();
+
+    if (gRotate && !gRaw) BKConv(rx, ry, o, &rx, &ry);
+
+    int wire = phase;
+    if (gEndPhase) {
+        if (phase == 0) wire = 2;
+        else if (phase == 2) wire = gEndPhase;
+    }
 
     uint64_t ab = mach_absolute_time();
     uint32_t index = (uint32_t)(idx + 1);
@@ -216,6 +321,9 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
         (uint8_t)touch, (uint8_t)touch, 0);
     if (finger) {
         IOHIDEventSetIntegerValueWithOptions(finger, kBKFieldDisplayInt, 1, kBKSetOpt);
+        if (gEndPhase) {
+            IOHIDEventSetIntegerValueWithOptions(finger, kIOHIDEventFieldDigitizerTouchPhase, wire, kBKSetOpt);
+        }
         IOHIDEventAppendEvent(hand, finger);
         CFRelease(finger);
     }
@@ -223,13 +331,16 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
     IOHIDEventSetIntegerValueWithOptions(hand, kIOHIDEventFieldDigitizerEventMask, mask, kBKSetOpt);
     IOHIDEventSetIntegerValueWithOptions(hand, kIOHIDEventFieldDigitizerRange, touch, kBKSetOpt);
     IOHIDEventSetIntegerValueWithOptions(hand, kIOHIDEventFieldDigitizerTouch, touch, kBKSetOpt);
+    if (gEndPhase) {
+        IOHIDEventSetIntegerValueWithOptions(hand, kIOHIDEventFieldDigitizerTouchPhase, wire, kBKSetOpt);
+    }
     IOHIDEventSetSenderID(hand, kBKSenderID);
     IOHIDEventSystemClientDispatchEvent(gSendClient, hand);
     CFRelease(hand);
 
     BKNotifyUserActivity();
-    BKAppend([NSString stringWithFormat:@"D ph=%d o=%d u=%d x=%.3f y=%.3f", phase,
-              BKForegroundOrientation(), BKDeviceOrientation(), rx, ry]);
+    BKAppend([NSString stringWithFormat:@"D ph=%d o=%d u=%d f=%d r=%d x=%.3f y=%.3f X=%.3f Y=%.3f",
+              phase, o, BKDeviceOrientation(), BKFrontMostOrientation(), (int)gRaw, rx, ry, nx, ny]);
 }
 
 static void BKSendLast(NSNumber *idx)
@@ -266,7 +377,7 @@ static void BKUp(NSUInteger idx)
     [gCur removeObjectForKey:@(idx)];
 }
 
-#pragma mark - Ações
+#pragma mark - Acoes
 
 static void BKTap(NSUInteger idx, float nx, float ny)
 {
@@ -276,6 +387,21 @@ static void BKTap(NSUInteger idx, float nx, float ny)
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 70 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
         BKUp(idx);
+    });
+}
+
+// Clique no cursor virtual: identidade rotativa para nao colidir em cliques rapidos.
+static void BKCursorTap(void)
+{
+    NSUInteger idx = 40 + (NSUInteger)(gSeq++ % 16);
+    float x = gCx;
+    float y = gCy;
+    BKSend(x, y, 1, idx);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        BKSend(x, y, 0, idx);
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 70 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        BKSend(x, y, 2, idx);
     });
 }
 
@@ -328,12 +454,20 @@ static void BKHandlePoint(NSDictionary *pt, NSUInteger idx, BOOL down)
         if (down) BKDown(idx, nx, ny); else BKUp(idx);
     } else if ([type isEqualToString:@"Hold"]) {
         if (down) BKHold(idx, nx, ny, pt[@"HoldMs"] ? [pt[@"HoldMs"] intValue] : 400);
+    } else if ([type isEqualToString:@"Probe"]) {
+        if (down) BKProbeRun();
     }
 }
 
 static void BKHandleMove(float dx, float dy)
 {
-    if (!gDirDown || (dx == 0 && dy == 0)) return;
+    if (dx == 0 && dy == 0) return;
+
+    gCx = BKClamp(gCx + dx * gFollowSens * kBKMoveFactor);
+    gCy = BKClamp(gCy + dy * gFollowSens * kBKMoveFactor);
+
+    if (!gDirDown) return;
+
     gDirX += dx * gDirS * kBKMoveFactor;
     gDirY += dy * gDirS * kBKMoveFactor;
     float ddx = gDirX - gDirAX;
@@ -344,6 +478,59 @@ static void BKHandleMove(float dx, float dy)
         gDirY = gDirAY + ddy / len * gDirR;
     }
     BKMove(gDirIdx, gDirX, gDirY);
+}
+
+#pragma mark - Probe
+
+static const float kBKProbe[5][2] = {
+    { 0.50f, 0.50f },
+    { 0.20f, 0.50f },
+    { 0.80f, 0.50f },
+    { 0.50f, 0.20f },
+    { 0.50f, 0.80f }
+};
+
+static void BKProbeStep(int pass, int i)
+{
+    if (i >= 5) {
+        if (pass == 0) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+                gRaw = NO;
+                BKAppend(@"P --- conv ---");
+                BKProbeStep(1, 0);
+            });
+        } else {
+            gRaw = NO;
+            gProbing = NO;
+            BKAppend(@"P fim");
+        }
+        return;
+    }
+
+    NSUInteger idx = 80 + (NSUInteger)i + (pass ? 5 : 0);
+    float x = kBKProbe[i][0];
+    float y = kBKProbe[i][1];
+
+    BKAppend([NSString stringWithFormat:@"P %@ i=%d x=%.3f y=%.3f", pass ? @"tr" : @"raw", i, x, y]);
+    BKSend(x, y, 1, idx);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        BKSend(x, y, 0, idx);
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 70 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        BKSend(x, y, 2, idx);
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 900 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        BKProbeStep(pass, i + 1);
+    });
+}
+
+static void BKProbeRun(void)
+{
+    if (gProbing) return;
+    gProbing = YES;
+    gRaw = YES;
+    BKAppend([NSString stringWithFormat:@"P inicio o=%d", BKCurrentOrient()]);
+    BKProbeStep(0, 0);
 }
 
 #pragma mark - Mapeamento
@@ -366,6 +553,14 @@ static void BKHandleKey(int usage, BOOL down)
 
 static void BKHandleButton(int b, BOOL down)
 {
+    if (gFollowCursor && b == 0) {
+        if (down) {
+            BKAppend([NSString stringWithFormat:@"B m:0 cur=1 x=%.3f y=%.3f", gCx, gCy]);
+            BKCursorTap();
+        }
+        return;
+    }
+
     NSString *key = [NSString stringWithFormat:@"m:%d", b];
     BOOL hit = NO;
     for (NSUInteger i = 0; i < gPoints.count; i++) {
@@ -405,6 +600,19 @@ static void BKHandleMask(uint16_t cur)
 
 #pragma mark - Callback
 
+static void BKDumpPointer(BKIOHIDEventRef ev)
+{
+    if (!gDump || gDumpLeft <= 0) return;
+    gDumpLeft--;
+    NSMutableString *s = [NSMutableString stringWithString:@"M"];
+    for (int f = 0; f < 8; f++) {
+        IOHIDEventField fld = (IOHIDEventField)((17u << 16) | (unsigned)f);
+        [s appendFormat:@" %d:%.4f/%d", f,
+            IOHIDEventGetFloatValue(ev, fld), IOHIDEventGetIntegerValue(ev, fld)];
+    }
+    BKAppend(s);
+}
+
 static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef ev)
 {
     if (!ev) return;
@@ -416,6 +624,14 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         int down = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardDown);
         int repeat = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardRepeat);
         if (repeat) return;
+
+        if (usage == kBKToggleUsage && (page == 0 || page == 7)) {
+            gHandledUsage = usage;
+            gPendingDir = 0;
+            if (down) BKToggleEnabled();
+            return;
+        }
+
         gPendingDir = down ? 1 : -1;
         if ((page == 0 || page == 7) && usage >= 4 && usage <= 231) {
             gHandledUsage = usage;
@@ -426,6 +642,7 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         int dir = gPendingDir;
         gPendingDir = 0;
         if (usage <= 0) return;
+        if (usage == kBKToggleUsage) return;
         if (usage == gHandledUsage) {
             gHandledUsage = -1;
             return;
@@ -436,12 +653,10 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         float dx = IOHIDEventGetFloatValue(ev, kBKPtrX);
         float dy = IOHIDEventGetFloatValue(ev, kBKPtrY);
         int bmask = IOHIDEventGetIntegerValue(ev, kBKPtrMask);
-        if (gEnabled && gPoints.count) {
-            if (dx != 0 || dy != 0) BKHandleMove(dx, dy);
-            BKHandleMask((uint16_t)bmask);
-        } else {
-            gPrevMask = (uint16_t)bmask;
-        }
+        BKDumpPointer(ev);
+        BKHandleMove(dx, dy);
+        if (gEnabled && gPoints.count) BKHandleMask((uint16_t)bmask);
+        else gPrevMask = (uint16_t)bmask;
     }
 }
 

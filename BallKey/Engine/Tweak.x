@@ -49,11 +49,10 @@ float IOHIDEventGetFloatValue(BKIOHIDEventRef event, IOHIDEventField field);
 #define kBKSetOpt               0xF0000000u
 #define kBKSenderID             0xDEFACEDBEEFFECE5ull
 #define kBKClientTypeMonitor    1
-#define kBKTypeKeyExtra         15
 #define kBKTypePointer          17
-#define kBKPtrX                 (17u << 16 | 1u)
-#define kBKPtrY                 (17u << 16 | 2u)
-#define kBKPtrMask              (17u << 16 | 4u)
+#define kBKPtrX                 (17u << 16 | 0u)
+#define kBKPtrY                 (17u << 16 | 1u)
+#define kBKPtrMask              (17u << 16 | 3u)
 #define kBKMoveFactor           0.000977f
 
 #pragma mark - Estado
@@ -124,9 +123,7 @@ static void BKLoadConfig(void)
         }
         gDirDown = NO;
     }
-    BKAppend([NSString stringWithFormat:@"C en=%d b=%@ n=%lu perfis=%lu",
-              (int)enabled, active ?: @"-", (unsigned long)pts.count,
-              (unsigned long)([profiles isKindOfClass:[NSDictionary class]] ? profiles.count : 0)]);
+    BKAppend([NSString stringWithFormat:@"C en=%d b=%@ n=%lu", (int)enabled, active ?: @"-", (unsigned long)pts.count]);
 }
 
 #pragma mark - Toque
@@ -325,7 +322,7 @@ static void BKHandleKey(int usage, BOOL down)
         hit = YES;
         break;
     }
-    BKAppend([NSString stringWithFormat:@"B %@ pts=%lu hit=%d", key, (unsigned long)gPoints.count, hit]);
+    BKAppend([NSString stringWithFormat:@"B %@ hit=%d", key, hit]);
 }
 
 static void BKHandleButton(int b, BOOL down)
@@ -352,7 +349,7 @@ static void BKHandleButton(int b, BOOL down)
             break;
         }
     }
-    BKAppend([NSString stringWithFormat:@"B %@ pts=%lu hit=%d", key, (unsigned long)gPoints.count, hit]);
+    BKAppend([NSString stringWithFormat:@"B %@ hit=%d", key, hit]);
 }
 
 static void BKHandleMask(uint16_t cur)
@@ -374,19 +371,6 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
     if (!ev) return;
     int type = IOHIDEventGetType(ev);
 
-    if (type == kBKTypePointer) {
-        int bm = IOHIDEventGetIntegerValue(ev, kBKPtrMask);
-        if (bm != 0) {
-            BKAppend([NSString stringWithFormat:@"E t=17 en=%d n=%lu bm=%d", (int)gEnabled,
-                      (unsigned long)gPoints.count, bm]);
-        }
-    } else {
-        BKAppend([NSString stringWithFormat:@"E t=%d en=%d n=%lu", type, (int)gEnabled,
-                  (unsigned long)gPoints.count]);
-    }
-
-    if (!gEnabled || gPoints.count == 0) return;
-
     if (type == kIOHIDEventTypeKeyboard) {
         int page = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsagePage);
         int usage = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsage);
@@ -396,9 +380,9 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         gPendingDir = down ? 1 : -1;
         if ((page == 0 || page == 7) && usage >= 4 && usage <= 231) {
             gHandledUsage = usage;
-            BKHandleKey(usage, down != 0);
+            if (gEnabled && gPoints.count) BKHandleKey(usage, down != 0);
         }
-    } else if (type == kBKTypeKeyExtra) {
+    } else if (type == 15) {
         int usage = IOHIDEventGetIntegerValue(ev, 0);
         int dir = gPendingDir;
         gPendingDir = 0;
@@ -408,24 +392,23 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
             return;
         }
         gHandledUsage = -1;
-        BKHandleKey(usage, dir > 0);
-    } else if (type == kIOHIDEventTypeMouse) {
-        float dx = IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseX);
-        float dy = IOHIDEventGetFloatValue(ev, kIOHIDEventFieldMouseY);
-        int bmask = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldMouseButtonMask);
-        if (dx != 0 || dy != 0) BKHandleMove(dx, dy);
-        BKHandleMask((uint16_t)bmask);
-    } else if (type == kIOHIDEventTypeButton) {
-        int num = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldButtonNumber);
-        int click = IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldButtonClickCount);
-        int idx = (num >= 1) ? (num - 1) : num;
-        if (idx >= 0 && idx <= 2) BKHandleButton(idx, click > 0);
+        if (gEnabled && gPoints.count) BKHandleKey(usage, dir > 0);
     } else if (type == kBKTypePointer) {
-        int mx = IOHIDEventGetIntegerValue(ev, kBKPtrX);
-        int my = IOHIDEventGetIntegerValue(ev, kBKPtrY);
+        float dx = IOHIDEventGetFloatValue(ev, kBKPtrX);
+        float dy = IOHIDEventGetFloatValue(ev, kBKPtrY);
         int bmask = IOHIDEventGetIntegerValue(ev, kBKPtrMask);
-        if (mx != 0 || my != 0) BKHandleMove((float)mx, (float)my);
-        if (bmask >= 0 && bmask <= 7) BKHandleMask((uint16_t)bmask);
+        if (gEnabled && gPoints.count) {
+            if (dx != 0 || dy != 0) BKHandleMove(dx, dy);
+            BKHandleMask((uint16_t)bmask);
+        } else {
+            gPrevMask = (uint16_t)bmask;
+        }
+        if (bmask != 0) {
+            BKAppend([NSString stringWithFormat:@"E t=17 bm=%d f3=%d f4=%d f5=%d", bmask,
+                      IOHIDEventGetIntegerValue(ev, (17u << 16 | 3u)),
+                      IOHIDEventGetIntegerValue(ev, (17u << 16 | 4u)),
+                      IOHIDEventGetIntegerValue(ev, (17u << 16 | 5u))]);
+        }
     }
 }
 
@@ -441,8 +424,10 @@ static void BKEngineInit(void)
 
     gListenClient = IOHIDEventSystemClientCreateWithType(kCFAllocatorDefault, kBKClientTypeMonitor, NULL);
     if (!gListenClient) gListenClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
-    BKAppend([NSString stringWithFormat:@"I client=%d", (int)(gListenClient != NULL)]);
-    if (!gListenClient) return;
+    if (!gListenClient) {
+        BKAppend(@"I client=0");
+        return;
+    }
 
     IOHIDEventSystemClientRegisterEventCallback(gListenClient, BKListenCB, NULL, NULL);
     IOHIDEventSystemClientSetDispatchQueue(gListenClient, dispatch_get_main_queue());

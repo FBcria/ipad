@@ -123,6 +123,7 @@ static int gLastExtra = -1;
 static uint64_t gLastExtraNs = 0;
 
 static void BKSendLast(NSNumber *idx);
+static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef ev);
 
 #pragma mark - Tempo
 

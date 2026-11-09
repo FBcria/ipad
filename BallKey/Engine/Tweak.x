@@ -458,7 +458,7 @@ static void BKCursorTap(void)
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
         BKSend(x, y, 0, idx);
     });
-    dispatch<｜begin▁of▁sentence｜> se(dispatch_time(DISPATCH_TIME_NOW, 70 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 70 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
         BKSend(x, y, 2, idx);
     });
 }

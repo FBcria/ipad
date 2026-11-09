@@ -3,17 +3,37 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <notify.h>
+#import <dlfcn.h>
 #import <stdarg.h>
 
 #define kBKConfigPath @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
+#define kBKStatusPath @"/var/mobile/bk_status.txt"
 
 static UIWindow *gBallWindow = nil;
 static UIWindow *gMenuWindow = nil;
+static UIWindow *gEditWindow = nil;
 static UIView *gBall = nil;
+static UIView *gCanvas = nil;
+static UIView *gBanner = nil;
+static NSMutableArray *gMarkers = nil;
 static NSString *gFrontBundle = nil;
 static BOOL gEnabled = NO;
 static int gOrientOverride = 0;
 static CGPoint gBallPos = {0.06, 0.85};
+
+static BKMarkerView *gPending = nil;
+static void *gIOKit = NULL;
+static struct {
+    void *(*Create)(CFAllocatorRef);
+    void *(*CreateWithType)(CFAllocatorRef, int, void *);
+    void (*SetMatching)(void *, CFTypeRef);
+    void (*RegisterCB)(void *, void *, void *, void *);
+    void (*SetQueue)(void *, dispatch_queue_t);
+    void (*Activate)(void *);
+    int (*GetType)(void *);
+    int64_t (*GetInt)(void *, int32_t);
+} gCap;
+static void *gCapClient = NULL;
 
 static CGRect BKSpace(void);
 static UIWindowScene *BKMainScene(void);
@@ -28,6 +48,14 @@ static UIWindowScene *BKMainScene(void);
     if (!v || v == self.rootViewController.view) return nil;
     return v;
 }
+@end
+
+@interface BKMarkerView : UIView
+@property (nonatomic, copy) NSString *type;
+@property (nonatomic, copy) NSString *keyEnc;
+@property (nonatomic, assign) CGFloat radius;
+@property (nonatomic, assign) CGFloat sens;
+@property (nonatomic, strong) UILabel *label;
 @end
 
 static void BKMark(NSString *name)
@@ -75,12 +103,13 @@ static UIWindowScene *BKMainScene(void)
     return fallback;
 }
 
-static UIWindow *BKMakeWindow(CGFloat level)
+static UIWindow *BKMakeWindow(CGFloat level, BOOL pass)
 {
     UIWindowScene *scene = BKMainScene();
     if (!scene) return nil;
 
-    UIWindow *w = [[BKPassWindow alloc] initWithWindowScene:scene];
+    UIWindow *w = pass ? (UIWindow *)[[BKPassWindow alloc] initWithWindowScene:scene]
+                       : [[UIWindow alloc] initWithWindowScene:scene];
     w.frame = BKSpace();
     w.windowLevel = level;
     w.backgroundColor = [UIColor clearColor];
@@ -137,15 +166,407 @@ static void BKPost(const char *name)
     notify_post(name);
 }
 
+static NSMutableDictionary *BKReadCfg(void)
+{
+    return [NSMutableDictionary dictionaryWithContentsOfFile:kBKConfigPath]
+        ?: [NSMutableDictionary dictionary];
+}
+
+static void BKWriteCfg(NSMutableDictionary *cfg)
+{
+    [cfg writeToFile:kBKConfigPath atomically:YES];
+    BKPost("com.wjf.ballkey.reload");
+}
+
+static NSString *BKStatusText(void)
+{
+    NSString *s = [NSString stringWithContentsOfFile:kBKStatusPath
+                                            encoding:NSUTF8StringEncoding error:nil];
+    return s.length ? s : @"en=? n=?";
+}
+
+#pragma mark - Captura de tecla
+
+static void BKStopCapture(void)
+{
+    if (gCapClient) {
+        if (gCap.SetQueue) gCap.SetQueue(gCapClient, NULL);
+        CFRelease(gCapClient);
+        gCapClient = NULL;
+    }
+}
+
+static void BKCapCB(void *target, void *refcon, void *queue, void *ev)
+{
+    if (!ev || !gPending) return;
+    int type = gCap.GetType(ev);
+    NSString *enc = nil;
+    if (type == 3) {
+        int page = (int)gCap.GetInt(ev, (3 << 16 | 0));
+        int usage = (int)gCap.GetInt(ev, (3 << 16 | 1));
+        int down = (int)gCap.GetInt(ev, (3 << 16 | 2));
+        if ((page == 0 || page == 7) && down && usage >= 4 && usage <= 231) {
+            enc = [NSString stringWithFormat:@"k:%d", usage];
+        }
+    } else if (type == 17) {
+        int mask = (int)gCap.GetInt(ev, (17 << 16 | 3));
+        if (mask & 1) enc = @"m:0";
+        else if (mask & 2) enc = @"m:1";
+        else if (mask & 4) enc = @"m:2";
+    }
+    if (!enc) return;
+
+    BKMarkerView *m = gPending;
+    gPending = nil;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        m.keyEnc = enc;
+        m.label.text = [NSString stringWithFormat:@"%@\n%@", m.type, enc];
+        gBanner.hidden = YES;
+        BKStopCapture();
+    });
+}
+
+static void BKStartCapture(BKMarkerView *m)
+{
+    if (!gIOKit) {
+        gIOKit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
+        if (gIOKit) {
+            gCap.Create = dlsym(gIOKit, "IOHIDEventSystemClientCreate");
+            gCap.CreateWithType = dlsym(gIOKit, "IOHIDEventSystemClientCreateWithType");
+            gCap.SetMatching = dlsym(gIOKit, "IOHIDEventSystemClientSetMatching");
+            gCap.RegisterCB = dlsym(gIOKit, "IOHIDEventSystemClientRegisterEventCallback");
+            gCap.SetQueue = dlsym(gIOKit, "IOHIDEventSystemClientSetDispatchQueue");
+            gCap.Activate = dlsym(gIOKit, "IOHIDEventSystemClientActivate");
+            gCap.GetType = dlsym(gIOKit, "IOHIDEventGetType");
+            gCap.GetInt = dlsym(gIOKit, "IOHIDEventGetIntegerValue");
+        }
+    }
+    if (!gIOKit || !gCap.Create || !gCap.RegisterCB) return;
+
+    BKStopCapture();
+    gPending = m;
+    gBanner.hidden = NO;
+    gCapClient = gCap.CreateWithType ? gCap.CreateWithType(kCFAllocatorDefault, 1, NULL)
+                                     : gCap.Create(kCFAllocatorDefault);
+    if (!gCapClient) return;
+    if (gCap.SetMatching) {
+        NSArray *matching = @[
+            @{ @"DeviceUsagePage": @1, @"DeviceUsage": @6 },
+            @{ @"DeviceUsagePage": @1, @"DeviceUsage": @2 },
+            @{ @"DeviceUsagePage": @9, @"DeviceUsage": @1 },
+        ];
+        gCap.SetMatching(gCapClient, (__bridge CFTypeRef)matching);
+    }
+    gCap.RegisterCB(gCapClient, BKCapCB, NULL, NULL);
+    dispatch_queue_t q = dispatch_get_main_queue();
+    if (gCap.SetQueue) gCap.SetQueue(gCapClient, q);
+    if (gCap.Activate) gCap.Activate(gCapClient);
+}
+
+#pragma mark - Marcador
+
+@implementation BKMarkerView
+
+- (void)bkPan:(UIPanGestureRecognizer *)g
+{
+    CGPoint t = [g translationInView:self.superview];
+    CGPoint c = CGPointMake(self.center.x + t.x, self.center.y + t.y);
+    c.x = MAX(20, MIN(self.superview.bounds.size.width - 20, c.x));
+    c.y = MAX(20, MIN(self.superview.bounds.size.height - 20, c.y));
+    self.center = c;
+    [g setTranslation:CGPointZero inView:self.superview];
+}
+
+- (void)bkTap:(UITapGestureRecognizer *)g
+{
+    (void)g;
+    BKStartCapture(self);
+}
+
+- (void)bkLong:(UILongPressGestureRecognizer *)g
+{
+    if (g.state != UIGestureRecognizerStateBegan) return;
+    if (gPending == self) {
+        gPending = nil;
+        gBanner.hidden = YES;
+        BKStopCapture();
+    }
+    [gMarkers removeObject:self];
+    [self removeFromSuperview];
+}
+@end
+
+static UIColor *BKTypeColor(NSString *t)
+{
+    if ([t isEqualToString:@"Tap"]) return [UIColor systemBlueColor];
+    if ([t isEqualToString:@"Press"]) return [UIColor systemGreenColor];
+    if ([t isEqualToString:@"Hold"]) return [UIColor systemOrangeColor];
+    if ([t isEqualToString:@"Dir"]) return [UIColor systemPurpleColor];
+    return [UIColor systemRedColor];
+}
+
+static BKMarkerView *BKMakeMarker(NSString *type, CGPoint c, NSString *enc)
+{
+    CGFloat side = 52;
+    BKMarkerView *m = [[BKMarkerView alloc] initWithFrame:
+        CGRectMake(c.x - side / 2, c.y - side / 2, side, side)];
+    UIColor *col = BKTypeColor(type);
+    m.backgroundColor = [col colorWithAlphaComponent:0.45];
+    m.layer.cornerRadius = side / 2;
+    m.layer.borderColor = col.CGColor;
+    m.layer.borderWidth = 2;
+    m.type = type;
+    m.keyEnc = enc;
+    m.radius = 0.09;
+    m.sens = 1.0;
+
+    UILabel *l = [[UILabel alloc] initWithFrame:m.bounds];
+    l.textAlignment = NSTextAlignmentCenter;
+    l.font = [UIFont boldSystemFontOfSize:10];
+    l.textColor = UIColor.whiteColor;
+    l.numberOfLines = 2;
+    l.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    l.text = [NSString stringWithFormat:@"%@\n%@", type, enc ?: @"?"];
+    [m addSubview:l];
+    m.label = l;
+
+    [m addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:m action:@selector(bkPan:)]];
+    [m addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:m action:@selector(bkTap:)]];
+    [m addGestureRecognizer:[[UILongPressGestureRecognizer alloc] initWithTarget:m action:@selector(bkLong:)]];
+    return m;
+}
+
+#pragma mark - Editor
+
+static void BKAddMarker(NSString *type, BOOL capture)
+{
+    if (!gCanvas) return;
+    CGPoint c = CGPointMake(gCanvas.bounds.size.width / 2, gCanvas.bounds.size.height / 2);
+    BKMarkerView *m = BKMakeMarker(type, c, nil);
+    [gCanvas addSubview:m];
+    [gMarkers addObject:m];
+    if (capture) BKStartCapture(m);
+}
+
+static void BKSaveEditor(void)
+{
+    NSMutableArray *pts = [NSMutableArray array];
+    CGSize sz = gCanvas.bounds.size;
+
+    for (BKMarkerView *m in gMarkers) {
+        double x = m.center.x / sz.width;
+        double y = m.center.y / sz.height;
+        NSMutableDictionary *d = [NSMutableDictionary dictionary];
+        d[@"X"] = @(x);
+        d[@"Y"] = @(y);
+        if ([m.type isEqualToString:@"Fps"]) {
+            d[@"Type"] = @"Fps";
+            d[@"Key"] = m.keyEnc ?: @"k:224";
+            continue;
+        }
+        d[@"Type"] = m.type;
+        if ([m.type isEqualToString:@"Dir"]) {
+            double r = m.radius;
+            d[@"Key"] = m.keyEnc ?: @"m:0";
+            d[@"Radius"] = @(r);
+            d[@"Sens"] = @(m.sens);
+            d[@"Center"] = [NSString stringWithFormat:@"%.5f,%.5f", x, y];
+            d[@"Up"] = [NSString stringWithFormat:@"%.5f,%.5f", x, y - r];
+            d[@"Down"] = [NSString stringWithFormat:@"%.5f,%.5f", x, y + r];
+            d[@"Left"] = [NSString stringWithFormat:@"%.5f,%.5f", x - r, y];
+            d[@"Right"] = [NSString stringWithFormat:@"%.5f,%.5f", x + r, y];
+        } else {
+            d[@"Key"] = m.keyEnc ?: @"";
+            if ([m.type isEqualToString:@"Hold"]) d[@"HoldMs"] = @(400);
+        }
+        [pts addObject:d];
+    }
+
+    NSMutableDictionary *cfg = BKReadCfg();
+    NSString *bundle = gFrontBundle ?: cfg[@"ActiveBundle"];
+    if (![bundle isKindOfClass:[NSString class]] || !bundle.length) {
+        BKLog(@"save: bundle ausente");
+        return;
+    }
+
+    NSMutableDictionary *profiles = [cfg[@"Profiles"] isKindOfClass:[NSDictionary class]]
+        ? [cfg[@"Profiles"] mutableCopy] : [NSMutableDictionary dictionary];
+
+    NSMutableArray *keep = [NSMutableArray array];
+    for (NSDictionary *d in pts) {
+        if ([d[@"Type"] isEqualToString:@"Fps"]) {
+            cfg[@"FpsX"] = d[@"X"];
+            cfg[@"FpsY"] = d[@"Y"];
+            cfg[@"FpsKey"] = d[@"Key"];
+        } else {
+            [keep addObject:d];
+        }
+    }
+    profiles[bundle] = keep;
+    cfg[@"Profiles"] = profiles;
+    cfg[@"ActiveBundle"] = bundle;
+    BKWriteCfg(cfg);
+    BKLog(@"save: %lu marcadores em %@", (unsigned long)keep.count, bundle);
+}
+
+static void BKCloseEditor(void)
+{
+    BKStopCapture();
+    gPending = nil;
+    [gEditWindow setHidden:YES];
+    gEditWindow = nil;
+    gCanvas = nil;
+    gMarkers = nil;
+    gBanner = nil;
+}
+
+static void BKOpenEditor(void)
+{
+    if (gEditWindow) return;
+    gEditWindow = BKMakeWindow(UIWindowLevelAlert + 1005, NO);
+    if (!gEditWindow) {
+        BKLog(@"editor: sem scene");
+        return;
+    }
+    gMarkers = [NSMutableArray array];
+
+    UIView *root = gEditWindow.rootViewController.view;
+    root.backgroundColor = [UIColor colorWithWhite:0 alpha:0.30];
+
+    gCanvas = [[UIView alloc] initWithFrame:root.bounds];
+    gCanvas.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [root addSubview:gCanvas];
+
+    NSArray *row1 = @[@[@"+Toque", @"Tap"], @[@"+Press", @"Press"],
+                      @[@"+Hold", @"Hold"], @[@"+Dir", @"Dir"], @[@"+Trava", @"Fps"]];
+    CGFloat bx = 8;
+    for (NSArray *pair in row1) {
+        UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+        b.frame = CGRectMake(bx, 8, 68, 34);
+        [b setTitle:pair[0] forState:UIControlStateNormal];
+        [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+        b.backgroundColor = [BKTypeColor(pair[1]) colorWithAlphaComponent:0.85];
+        b.layer.cornerRadius = 8;
+        b.titleLabel.font = [UIFont boldSystemFontOfSize:12];
+        [b addTarget:gEditWindow.rootViewController
+              action:@selector(bkAdd:)
+    forControlEvents:UIControlEventTouchUpInside];
+        b.tag = 200 + [row1 indexOfObject:pair];
+        [root addSubview:b];
+        bx += 74;
+    }
+
+    UIButton *save = [UIButton buttonWithType:UIButtonTypeSystem];
+    save.frame = CGRectMake(root.bounds.size.width - 150, 8, 68, 34);
+    [save setTitle:@"Salvar" forState:UIControlStateNormal];
+    [save setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    save.backgroundColor = [UIColor systemGreenColor];
+    save.layer.cornerRadius = 8;
+    [save addTarget:gEditWindow.rootViewController
+             action:@selector(bkSave:)
+   forControlEvents:UIControlEventTouchUpInside];
+    [root addSubview:save];
+
+    UIButton *sair = [UIButton buttonWithType:UIButtonTypeSystem];
+    sair.frame = CGRectMake(root.bounds.size.width - 76, 8, 68, 34);
+    [sair setTitle:@"Sair" forState:UIControlStateNormal];
+    [sair setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    sair.backgroundColor = [UIColor systemGrayColor];
+    sair.layer.cornerRadius = 8;
+    [sair addTarget:gEditWindow.rootViewController
+             action:@selector(bkClose:)
+   forControlEvents:UIControlEventTouchUpInside];
+    [root addSubview:sair];
+
+    gBanner = [[UIView alloc] initWithFrame:CGRectMake(root.bounds.size.width / 2 - 150,
+                                                      root.bounds.size.height - 54, 300, 34)];
+    gBanner.backgroundColor = [UIColor colorWithWhite:0 alpha:0.85];
+    gBanner.layer.cornerRadius = 8;
+    gBanner.hidden = YES;
+    UILabel *bl = [[UILabel alloc] initWithFrame:gBanner.bounds];
+    bl.textAlignment = NSTextAlignmentCenter;
+    bl.textColor = UIColor.whiteColor;
+    bl.font = [UIFont systemFontOfSize:12];
+    bl.text = @"Aperte a tecla ou o botão do mouse…";
+    [gBanner addSubview:bl];
+    [root addSubview:gBanner];
+
+    NSString *bundle = gFrontBundle ?: BKReadCfg()[@"ActiveBundle"];
+    NSArray *pts = BKReadCfg()[@"Profiles"][bundle ?: @""];
+    CGSize sz = gCanvas.bounds.size;
+    if ([pts isKindOfClass:[NSArray class]]) {
+        for (NSDictionary *d in pts) {
+            CGPoint c = CGPointMake([d[@"X"] doubleValue] * sz.width,
+                                    [d[@"Y"] doubleValue] * sz.height);
+            BKMarkerView *m = BKMakeMarker(d[@"Type"] ?: @"Tap", c, d[@"Key"]);
+            if (d[@"Radius"]) m.radius = [d[@"Radius"] doubleValue];
+            [gCanvas addSubview:m];
+            [gMarkers addObject:m];
+        }
+    }
+
+    [gEditWindow setHidden:NO];
+}
+
+@interface UIViewController (BKUI)
+- (void)bkAdd:(UIButton *)b;
+- (void)bkSave:(UIButton *)b;
+- (void)bkClose:(UIButton *)b;
+- (void)bkMenuTap:(UIButton *)b;
+- (void)bkPan:(UIPanGestureRecognizer *)g;
+- (void)bkTap:(UITapGestureRecognizer *)g;
+@end
+
+@implementation UIViewController (BKUI)
+
+- (void)bkAdd:(UIButton *)b
+{
+    NSArray *types = @[@"Tap", @"Press", @"Hold", @"Dir", @"Fps"];
+    NSInteger i = b.tag - 200;
+    if (i < 0 || i >= (NSInteger)types.count) return;
+    BKAddMarker(types[i], YES);
+}
+
+- (void)bkSave:(UIButton *)b
+{
+    (void)b;
+    BKSaveEditor();
+    BKCloseEditor();
+}
+
+- (void)bkClose:(UIButton *)b
+{
+    (void)b;
+    BKCloseEditor();
+}
+
+@end
+
+#pragma mark - Menu
+
 static void BKSetEnabled(BOOL on)
 {
-    NSMutableDictionary *cfg = [NSMutableDictionary dictionaryWithContentsOfFile:kBKConfigPath]
-        ?: [NSMutableDictionary dictionary];
+    NSMutableDictionary *cfg = BKReadCfg();
     cfg[@"Enabled"] = @(on);
-    [cfg writeToFile:kBKConfigPath atomically:YES];
+    BKWriteCfg(cfg);
     gEnabled = on;
-    BKPost("com.wjf.ballkey.reload");
     BKLog(@"toggle en=%d", (int)on);
+}
+
+static void BKSetSens(double v)
+{
+    if (v < 0.1) v = 0.1;
+    if (v > 5.0) v = 5.0;
+    NSMutableDictionary *cfg = BKReadCfg();
+    cfg[@"FpsSens"] = @(v);
+    BKWriteCfg(cfg);
+    BKLog(@"sens=%.2f", v);
+}
+
+static double BKGetSens(void)
+{
+    NSNumber *n = BKReadCfg()[@"FpsSens"];
+    return n ? [n doubleValue] : 1.0;
 }
 
 static void BKToggleMenu(void)
@@ -155,7 +576,7 @@ static void BKToggleMenu(void)
         return;
     }
     if (!gMenuWindow) {
-        gMenuWindow = BKMakeWindow(UIWindowLevelAlert + 1001);
+        gMenuWindow = BKMakeWindow(UIWindowLevelAlert + 1001, YES);
         if (!gMenuWindow) {
             BKLog(@"menu: sem scene");
             return;
@@ -165,20 +586,32 @@ static void BKToggleMenu(void)
     UIView *root = gMenuWindow.rootViewController.view;
     [[root viewWithTag:77] removeFromSuperview];
 
-    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 240, 260)];
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 250, 486)];
     box.tag = 77;
     box.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.95];
     box.layer.cornerRadius = 14;
     box.center = CGPointMake(gMenuWindow.bounds.size.width / 2,
                              gMenuWindow.bounds.size.height / 2);
 
-    NSArray *titles = @[gEnabled ? @"Desativar" : @"Ativar", @"Testar centro", @"Dump de toque",
-                        @"Recarregar", @"Fechar"];
+    UILabel *st = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 226, 26)];
+    st.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
+    st.textColor = [UIColor systemYellowColor];
+    st.text = BKStatusText();
+    [box addSubview:st];
+
+    NSArray *titles = @[@"Editar teclas",
+                        [NSString stringWithFormat:@"Trava FPS (sensi %.2f) -", BKGetSens()],
+                        @"Sensibilidade +",
+                        gEnabled ? @"Desativar" : @"Ativar",
+                        @"Testar centro",
+                        @"Dump de toque",
+                        @"Recarregar",
+                        @"Fechar"];
     for (NSUInteger i = 0; i < titles.count; i++) {
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-        b.frame = CGRectMake(12, 14 + (CGFloat)i * 46, 216, 40);
+        b.frame = CGRectMake(12, 40 + (CGFloat)i * 46, 226, 40);
         [b setTitle:titles[i] forState:UIControlStateNormal];
-        [b setTitleColor:(i == 0 && gEnabled ? [UIColor systemGreenColor] : [UIColor whiteColor])
+        [b setTitleColor:(i == 3 && gEnabled ? [UIColor systemGreenColor] : [UIColor whiteColor])
                 forState:UIControlStateNormal];
         b.backgroundColor = [UIColor colorWithWhite:0.22 alpha:1];
         b.layer.cornerRadius = 8;
@@ -192,92 +625,33 @@ static void BKToggleMenu(void)
     gMenuWindow.hidden = NO;
 }
 
-static void BKSetupBall(void)
-{
-    if (gBallWindow) return;
-
-    gBallWindow = BKMakeWindow(UIWindowLevelAlert + 1000);
-    if (!gBallWindow) {
-        BKLog(@"ball: sem scene, retry");
-        return;
-    }
-    BKLog(@"ball: scene ok bounds=%.0fx%.0f",
-          BKSpace().size.width, BKSpace().size.height);
-
-    gBall = [[UIView alloc] initWithFrame:CGRectZero];
-    gBall.backgroundColor = [UIColor colorWithRed:0.1 green:0.7 blue:0.5 alpha:0.85];
-    gBall.layer.borderWidth = 2;
-    gBall.layer.borderColor = [UIColor whiteColor].CGColor;
-    gBall.userInteractionEnabled = YES;
-
-    UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 44, 44)];
-    l.text = @"BK";
-    l.textColor = [UIColor whiteColor];
-    l.font = [UIFont boldSystemFontOfSize:14];
-    l.textAlignment = NSTextAlignmentCenter;
-    [gBall addSubview:l];
-
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc]
-        initWithTarget:gBallWindow.rootViewController action:@selector(bkPan:)];
-    [gBall addGestureRecognizer:pan];
-    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
-        initWithTarget:gBallWindow.rootViewController action:@selector(bkTap:)];
-    [gBall addGestureRecognizer:tap];
-
-    [gBallWindow.rootViewController.view addSubview:gBall];
-    BKRelayout();
-    gBallWindow.hidden = NO;
-    BKMark(@"ball_shown.txt");
-    BKLog(@"ball: hidden=%d level=%.0f", (int)gBallWindow.hidden, gBallWindow.windowLevel);
-}
-
-static void BKPollFrontmost(void)
-{
-    Class sbCls = objc_getClass("SpringBoard");
-    if (!sbCls) return;
-    id sb = ((id (*)(id, SEL))objc_msgSend)(sbCls, @selector(sharedApplication));
-    if (!sb) return;
-    SEL sel = @selector(_accessibilityFrontMostApplication);
-    if (![sb respondsToSelector:sel]) return;
-    id app = ((id (*)(id, SEL))objc_msgSend)(sb, sel);
-    NSString *bid = app ? ((id (*)(id, SEL))objc_msgSend)(app, @selector(bundleIdentifier)) : nil;
-    if (![bid isKindOfClass:[NSString class]]) return;
-    if ([bid isEqualToString:gFrontBundle]) return;
-    if ([bid isEqualToString:@"com.apple.springboard"]) return;
-    gFrontBundle = bid;
-
-    NSMutableDictionary *cfg = [NSMutableDictionary dictionaryWithContentsOfFile:kBKConfigPath]
-        ?: [NSMutableDictionary dictionary];
-    cfg[@"ActiveBundle"] = bid;
-    [cfg writeToFile:kBKConfigPath atomically:YES];
-    BKLog(@"front=%@", bid);
-    BKPost("com.wjf.ballkey.reload");
-}
-
-@interface UIViewController (BKMenu)
-- (void)bkMenuTap:(UIButton *)b;
-- (void)bkPan:(UIPanGestureRecognizer *)g;
-- (void)bkTap:(UITapGestureRecognizer *)g;
-@end
-
 @implementation UIViewController (BKMenu)
 
 - (void)bkMenuTap:(UIButton *)b
 {
     NSInteger i = b.tag - 100;
     if (i == 0) {
+        gMenuWindow.hidden = YES;
+        BKOpenEditor();
+    } else if (i == 1) {
+        BKSetSens(BKGetSens() - 0.05);
+        BKToggleMenu();
+        BKToggleMenu();
+    } else if (i == 2) {
+        BKSetSens(BKGetSens() + 0.05);
+        BKToggleMenu();
+        BKToggleMenu();
+    } else if (i == 3) {
         BKSetEnabled(!gEnabled);
         BKToggleMenu();
         BKToggleMenu();
-    } else if (i == 1) {
+    } else if (i == 4) {
         BKPost("com.wjf.ballkey.test");
-    } else if (i == 2) {
-        NSMutableDictionary *cfg = [NSMutableDictionary dictionaryWithContentsOfFile:kBKConfigPath]
-            ?: [NSMutableDictionary dictionary];
+    } else if (i == 5) {
+        NSMutableDictionary *cfg = BKReadCfg();
         cfg[@"Dump"] = @(![cfg[@"Dump"] boolValue]);
-        [cfg writeToFile:kBKConfigPath atomically:YES];
-        BKPost("com.wjf.ballkey.reload");
-    } else if (i == 3) {
+        BKWriteCfg(cfg);
+    } else if (i == 6) {
         BKPost("com.wjf.ballkey.reload");
     } else {
         gMenuWindow.hidden = YES;
@@ -302,6 +676,62 @@ static void BKPollFrontmost(void)
 }
 
 @end
+
+#pragma mark - Bolinha
+
+static void BKSetupBall(void)
+{
+    if (gBallWindow) return;
+
+    gBallWindow = BKMakeWindow(UIWindowLevelAlert + 1000, YES);
+    if (!gBallWindow) {
+        BKLog(@"ball: sem scene, retry");
+        return;
+    }
+
+    gBall = [[UIView alloc] initWithFrame:CGRectZero];
+    gBall.backgroundColor = [UIColor colorWithRed:0.1 green:0.7 blue:0.5 alpha:0.85];
+    gBall.layer.borderWidth = 2;
+    gBall.layer.borderColor = [UIColor whiteColor].CGColor;
+    gBall.userInteractionEnabled = YES;
+
+    UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 44, 44)];
+    l.text = @"BK";
+    l.textColor = [UIColor whiteColor];
+    l.font = [UIFont boldSystemFontOfSize:14];
+    l.textAlignment = NSTextAlignmentCenter;
+    [gBall addSubview:l];
+
+    [gBall addGestureRecognizer:[[UIPanGestureRecognizer alloc]
+        initWithTarget:gBallWindow.rootViewController action:@selector(bkPan:)]];
+    [gBall addGestureRecognizer:[[UITapGestureRecognizer alloc]
+        initWithTarget:gBallWindow.rootViewController action:@selector(bkTap:)]];
+
+    [gBallWindow.rootViewController.view addSubview:gBall];
+    BKRelayout();
+    gBallWindow.hidden = NO;
+    BKMark(@"ball_shown.txt");
+}
+
+static void BKPollFrontmost(void)
+{
+    Class sbCls = objc_getClass("SpringBoard");
+    if (!sbCls) return;
+    id sb = ((id (*)(id, SEL))objc_msgSend)(sbCls, @selector(sharedApplication));
+    if (!sb) return;
+    SEL sel = @selector(_accessibilityFrontMostApplication);
+    if (![sb respondsToSelector:sel]) return;
+    id app = ((id (*)(id, SEL))objc_msgSend)(sb, sel);
+    NSString *bid = app ? ((id (*)(id, SEL))objc_msgSend)(app, @selector(bundleIdentifier)) : nil;
+    if (![bid isKindOfClass:[NSString class]]) return;
+    if ([bid isEqualToString:gFrontBundle]) return;
+    if ([bid isEqualToString:@"com.apple.springboard"]) return;
+    gFrontBundle = bid;
+
+    NSMutableDictionary *cfg = BKReadCfg();
+    cfg[@"ActiveBundle"] = bid;
+    BKWriteCfg(cfg);
+}
 
 static void BKOverlayInit(void)
 {

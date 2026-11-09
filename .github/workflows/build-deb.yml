@@ -29,6 +29,21 @@ jobs:
           echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
           echo "$HOME/theos/bin" >> "$GITHUB_PATH"
 
+      - name: Aplicar fork RootHide
+        run: |
+          set -e
+          cd "$THEOS"
+          git remote set-url origin https://github.com/roothide/theos.git
+          git fetch --depth 1 origin master
+          git reset --hard FETCH_HEAD
+          git submodule update --init --recursive || true
+          if ! grep -rq "roothide" makefiles/; then
+            echo "fork do RootHide não foi aplicado"
+            exit 1
+          fi
+          echo "esquemas disponíveis:"
+          ls makefiles/package/ 2>/dev/null || true
+
       - name: Conferir toolchain
         run: |
           set -e

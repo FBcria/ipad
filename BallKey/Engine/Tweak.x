@@ -3,6 +3,8 @@
 #import <dlfcn.h>
 #import <notify.h>
 
+static int gSeen = 0;
+
 static void BKAppend(NSString *line)
 {
     NSData *d = [[line stringByAppendingString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding];
@@ -25,9 +27,20 @@ static void BKMark(NSString *name)
            atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
+static int (*pGetType)(void *);
+
 static void BKCB(void *t, void *r, void *q, void *ev)
 {
-    (void)t; (void)r; (void)q; (void)ev;
+    (void)t; (void)r; (void)q;
+    if (!ev) return;
+    @try {
+        if (gSeen < 60) {
+            gSeen++;
+            int ty = pGetType ? pGetType(ev) : -1;
+            BKAppend([NSString stringWithFormat:@"E t=%d", ty]);
+        }
+    } @catch (NSException *e) {
+    }
 }
 
 static void BKStep2(void)
@@ -44,19 +57,26 @@ static void BKStep2(void)
     void *pCreate = dlsym(h, "IOHIDEventSystemClientCreate");
     void *pSetQueue = dlsym(h, "IOHIDEventSystemClientSetDispatchQueue");
     void *pRegister = dlsym(h, "IOHIDEventSystemClientRegisterEventCallback");
-    BKAppend([NSString stringWithFormat:@"S2 sym ct=%d c=%d q=%d r=%d",
-              pCreateType ? 1 : 0, pCreate ? 1 : 0, pSetQueue ? 1 : 0, pRegister ? 1 : 0]);
+    void *pActivate = dlsym(h, "IOHIDEventSystemClientActivate");
+    void *pGetTypeRaw = dlsym(h, "IOHIDEventGetType");
+    pGetType = pGetTypeRaw;
+
+    BKAppend([NSString stringWithFormat:@"S2 sym ct=%d c=%d q=%d r=%d a=%d g=%d",
+              pCreateType ? 1 : 0, pCreate ? 1 : 0, pSetQueue ? 1 : 0,
+              pRegister ? 1 : 0, pActivate ? 1 : 0, pGetType ? 1 : 0]);
 
     typedef struct __IOHIDEventSystemClient *Cl;
     Cl (*createType)(CFAllocatorRef, int, void *);
     Cl (*create)(CFAllocatorRef);
     void (*setQueue)(Cl, dispatch_queue_t);
     void (*registerCB)(Cl, void *, void *, void *);
+    void (*activate)(Cl);
 
     createType = pCreateType;
     create = pCreate;
     setQueue = pSetQueue;
     registerCB = pRegister;
+    activate = pActivate;
 
     Cl c = createType ? createType(kCFAllocatorDefault, 1, NULL) : NULL;
     BKAppend([NSString stringWithFormat:@"S2 createType=%d", c ? 1 : 0]);
@@ -70,10 +90,13 @@ static void BKStep2(void)
         setQueue(c, dispatch_get_main_queue());
         BKAppend(@"S2 queue=1");
     }
-
     if (registerCB) {
         registerCB(c, BKCB, NULL, NULL);
         BKAppend(@"S2 reg=1");
+    }
+    if (activate) {
+        activate(c);
+        BKAppend(@"S2 act=1");
     }
     BKAppend(@"S2 ok");
 }

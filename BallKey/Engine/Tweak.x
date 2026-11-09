@@ -143,7 +143,7 @@ static void BKMark(NSString *name)
 
 static void BKStatus(void)
 {
-    NSString *s = [NSString stringWithFormat:@"en=%d n=%lu b=%@ fps=%d key=%d sens=%.2f",
+    NSString *s = [NSString stringWithFormat:@"ativo=%d marcadores=%lu app=%@ trava=%d tecla=%d sensi=%.2f",
                    (int)gEnabled, (unsigned long)gPoints.count, gActiveBundle ?: @"-",
                    (int)gFps, gFpsKey, gFpsSens];
     [s writeToFile:kBKStatusPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -321,7 +321,7 @@ static void BKNotifyUserActivity(void)
     if ([timer respondsToSelector:s1]) {
         ((void (*)(id, SEL))objc_msgSend)(timer, s1);
     } else if ([timer respondsToSelector:s2]) {
-        ((void (*)(id, SEL))objc_msgSend)(timer, s2, nil);
+        ((void (*)(id, SEL, id))objc_msgSend)(timer, s2, nil);
     }
 }
 
@@ -747,6 +747,7 @@ static void BKTestCenter(void)
 
 static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef ev)
 {
+    (void)target; (void)refcon; (void)queue;
     if (!ev) return;
     int type = gIO.GetType(ev);
 

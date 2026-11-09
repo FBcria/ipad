@@ -1,11 +1,4 @@
-export THEOS_PACKAGE_SCHEME = rootless
-
-TARGET := iphone:clang:latest:15.0
-ARCHS := arm64 arm64e
-
-include $(THEOS)/makefiles/common.mk
-
-SUBPROJECTS += Engine
-SUBPROJECTS += Overlay
-
-include $(THEOS)/makefiles/aggregate.mk
+ARCHS = arm64 arm64e
+TARGET = iphone:clang:16.5:16.0
+INSTALL_TARGET_PROCESSES = SpringBoard
+THEOS_PACKAGE_SCHEME = rootless

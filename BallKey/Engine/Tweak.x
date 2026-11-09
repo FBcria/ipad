@@ -207,7 +207,8 @@ static BOOL BKLoadIOKit(void)
     return YES;
 }
 
-static BKIOHIDEventSystemClientRef BKNewClient(void)
+// cb NULL para cliente de envio; ordem: criar, registrar, agendar, ativar
+static BKIOHIDEventSystemClientRef BKNewClient(void *cb)
 {
     BKIOHIDEventSystemClientRef c = NULL;
     if (gIO.ClientCreateWithType) {
@@ -215,6 +216,8 @@ static BKIOHIDEventSystemClientRef BKNewClient(void)
     }
     if (!c && gIO.ClientCreate) c = gIO.ClientCreate(kCFAllocatorDefault);
     if (!c) return NULL;
+
+    if (cb && gIO.RegisterCB) gIO.RegisterCB(c, cb, NULL, NULL);
     if (gIO.SetQueue) gIO.SetQueue(c, dispatch_get_main_queue());
     if (gIO.Activate) gIO.Activate(c);
     return c;
@@ -361,7 +364,7 @@ static void BKSend(double nx, double ny, int phase, NSUInteger idx)
     @try {
 
     if (!gSendClient) {
-        gSendClient = BKNewClient();
+        gSendClient = BKNewClient(NULL);
         if (!gSendClient) {
             BKAppend(@"! send sem cliente");
             return;
@@ -852,12 +855,11 @@ static void BKEngineInit(void)
     if (!BKLoadIOKit()) return;
 
     @try {
-        gListenClient = BKNewClient();
+        gListenClient = BKNewClient(BKListenCB);
         if (!gListenClient) {
             BKAppend(@"I client=0");
             return;
         }
-        if (gIO.RegisterCB) gIO.RegisterCB(gListenClient, BKListenCB, NULL, NULL);
         BKAppend(@"I listen=1");
     } @catch (NSException *e) {
         BKAppend([NSString stringWithFormat:@"! init %@", e.reason]);

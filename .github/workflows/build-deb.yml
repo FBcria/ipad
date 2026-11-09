@@ -2,95 +2,78 @@ name: build-deb
 
 on:
   push:
-    paths:
-      - 'BallKey/**'
-      - '.github/workflows/build-deb.yml'
   workflow_dispatch:
 
 permissions:
   contents: write
 
-concurrency:
-  group: build-deb
-  cancel-in-progress: false
-
 jobs:
   build:
-    runs-on: macos-lasted
-    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Install Theos + iOS SDK
+      - name: Dependências
         run: |
-          set -euo pipefail
-          brew install ldid dpkg xz
-          git clone --recursive --depth 1 https://github.com/roothide/theos.git "$HOME/theos"
-          git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git "$RUNNER_TEMP/sdks"
-          ( cd "$RUNNER_TEMP/sdks" && git sparse-checkout set iPhoneOS16.5.sdk )
-          mkdir -p "$HOME/theos/sdks"
-          cp -R "$RUNNER_TEMP/sdks/iPhoneOS16.5.sdk" "$HOME/theos/sdks/"
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y build-essential fakeroot rsync curl perl zip git libxml2 libtinfo6 dpkg-dev
+
+      - name: Instalar Theos
+        run: |
+          set -e
+          bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
           echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
-          test -d "$HOME/theos/vendor/mod/roothide"
+          echo "$HOME/theos/bin" >> "$GITHUB_PATH"
 
-      - name: Normalize sources (UTF-8, sem BOM)
+      - name: Conferir toolchain
         run: |
-          set -euo pipefail
-          for f in $(git ls-files 'BallKey/*.x' 'BallKey/*.h' 'BallKey/*.m'); do
-            perl -i -pe 's/^\xEF\xBB\xBF//' "$f"
-            if ! iconv -f UTF-8 -t UTF-8 "$f" > /dev/null 2>&1; then
-              tmp="$(mktemp)"
-              iconv -f GB18030 -t UTF-8 "$f" > "$tmp"
-              cp "$tmp" "$f"
-              rm -f "$tmp"
-              echo "converted from GBK: $f"
-            fi
-          done
+          set -e
+          test -x "$THEOS/toolchain/linux/iphone/bin/clang" || { echo "toolchain ausente"; exit 1; }
+          "$THEOS/toolchain/linux/iphone/bin/clang" --version
+          ls "$THEOS/sdks" | head
 
-      - name: Read version
+      - name: Versão
         id: ver
+        working-directory: BallKey
         run: |
-          set -euo pipefail
-          v="$(grep -m1 '^Version:' BallKey/control | awk '{print $2}')"
-          test -n "$v"
-          echo "v=$v" >> "$GITHUB_OUTPUT"
+          V=$(grep -m1 '^Version:' control | awk '{print $2}')
+          echo "v=$V" >> "$GITHUB_OUTPUT"
+          echo "Versão: $V"
 
-      - name: Build BallKey
+      - name: Build
+        working-directory: BallKey
         run: |
-          set -o pipefail
-          cd BallKey
+          set -e
           make clean || true
-          make package FINALPACKAGE=1 2>&1 | tee build.log
+          make package FINALPACKAGE=1 ARCHS=arm64
+          ls -la packages/
 
-      - name: Upload log on failure
-        if: failure()
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
-          path: BallKey/build.log
-
-      - name: Artifact do deb
-        uses: actions/upload-artifact@v4
-        with:
-          name: ballkey-deb-${{ steps.ver.outputs.v }}
+          name: ballkey-${{ github.run_number }}
           path: BallKey/packages/*.deb
+          retention-days: 14
           if-no-files-found: error
 
-      - name: Podar releases antigos
-        if: always()
+      - name: Publicar release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
-          gh release list --limit 200 --json tagName,createdAt \
-            --jq 'sort_by(.createdAt) | reverse | .[8:] | .[].tagName' \
-          | while read -r t; do [ -n "$t" ] && gh release delete "$t" --yes --cleanup-tag; done
+          set -e
+          TAG="v${{ steps.ver.outputs.v }}-${{ github.run_number }}"
+          gh release create "$TAG" BallKey/packages/*.deb \
+            --title "BallKey ${{ steps.ver.outputs.v }} (${{ github.run_number }})" \
+            --notes "Build ${{ github.run_number }} em Ubuntu"
+          gh release list --limit 50 --json tagName -q '.[].tagName' \
+            | tail -n +16 \
+            | xargs -r -n1 gh release delete -y --cleanup-tag
 
-      - name: Publish release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.ver.outputs.v }}
-          name: BallKey ${{ steps.ver.outputs.v }}
-          files: BallKey/packages/*.deb
-          fail_on_unmatched_files: true
-          make_latest: true
+      - name: Resumo
+        if: always()
+        run: |
+          echo "### BallKey ${{ steps.ver.outputs.v }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Run ${{ github.run_number }} — runner Ubuntu" >> "$GITHUB_STEP_SUMMARY"

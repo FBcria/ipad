@@ -49,9 +49,7 @@ typedef struct {
 #define kBKSetOpt               0xF0000000u
 #define kBKSenderID             0xDEFACEDBEEFFECE5ull
 #define kBKClientTypeMonitor    1
-#define kBKClientTypeSimple     3
 
-#define kBKEventStop            0x08u
 #define kBKEventIdentity        0x20u
 #define kBKEventAttribute       0x40u
 #define kBKEventHandMask        0x863u
@@ -88,7 +86,6 @@ static void *gIOKit = NULL;
 static BKIO gIO;
 
 static BKIOHIDEventSystemClientRef gListenClient = NULL;
-static BKIOHIDEventSystemClientRef gListenAlt = NULL;
 static BKIOHIDEventSystemClientRef gSendClient = NULL;
 static NSArray *gPoints = nil;
 static BOOL gEnabled = NO;
@@ -203,10 +200,12 @@ static BOOL BKLoadIOKit(void)
     return YES;
 }
 
-static BKIOHIDEventSystemClientRef BKNewClient(int type)
+static BKIOHIDEventSystemClientRef BKNewClient(void)
 {
     BKIOHIDEventSystemClientRef c = NULL;
-    if (gIO.ClientCreateWithType) c = gIO.ClientCreateWithType(kCFAllocatorDefault, type, NULL);
+    if (gIO.ClientCreateWithType) {
+        c = gIO.ClientCreateWithType(kCFAllocatorDefault, kBKClientTypeMonitor, NULL);
+    }
     if (!c && gIO.ClientCreate) c = gIO.ClientCreate(kCFAllocatorDefault);
     return c;
 }
@@ -352,7 +351,7 @@ static void BKSend(double nx, double ny, int phase, NSUInteger idx)
     @try {
 
     if (!gSendClient) {
-        gSendClient = BKNewClient(kBKClientTypeMonitor);
+        gSendClient = BKNewClient();
         if (!gSendClient) return;
     }
 
@@ -764,12 +763,15 @@ static void BKTestCenter(void)
 
 #pragma mark - Callback
 
-static void BKHandleEvent(BKIOHIDEventRef ev, char src)
+static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef ev)
 {
+    (void)target; (void)refcon; (void)queue;
+    if (!ev) return;
+    @try {
     int type = gIO.GetType(ev);
     if (gEvSeen < 40) {
         gEvSeen++;
-        BKAppend([NSString stringWithFormat:@"E%c t=%d", src, type]);
+        BKAppend([NSString stringWithFormat:@"E t=%d", type]);
     }
 
     if (type == kIOHIDEventTypeKeyboard) {
@@ -811,44 +813,12 @@ static void BKHandleEvent(BKIOHIDEventRef ev, char src)
         if (gEnabled && gPoints.count) BKHandleMask((uint16_t)bmask);
         else gPrevMask = (uint16_t)bmask;
     }
-}
-
-static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef ev)
-{
-    (void)target; (void)refcon; (void)queue;
-    if (!ev) return;
-    @try {
-        BKHandleEvent(ev, 'M');
     } @catch (NSException *e) {
         BKAppend([NSString stringWithFormat:@"! cb %@", e.reason]);
     }
 }
 
-static void BKListenAltCB(void *target, void *refcon, void *queue, BKIOHIDEventRef ev)
-{
-    (void)target; (void)refcon; (void)queue;
-    if (!ev) return;
-    @try {
-        BKHandleEvent(ev, 'S');
-    } @catch (NSException *e) {
-    }
-}
-
 #pragma mark - Init
-
-static BKIOHIDEventSystemClientRef BKStartListen(int type, void *cb)
-{
-    BKIOHIDEventSystemClientRef c = BKNewClient(type);
-    if (!c) return NULL;
-    if (gIO.RegisterCB) gIO.RegisterCB(c, cb, NULL, NULL);
-    if (gIO.Schedule) {
-        gIO.Schedule(c, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-    } else if (gIO.SetQueue) {
-        gIO.SetQueue(c, dispatch_get_main_queue());
-    }
-    if (gIO.Activate) gIO.Activate(c);
-    return c;
-}
 
 static void BKEngineInit(void)
 {
@@ -862,17 +832,23 @@ static void BKEngineInit(void)
     if (!BKLoadIOKit()) return;
 
     @try {
-        gListenClient = BKStartListen(kBKClientTypeMonitor, BKListenCB);
-        gListenAlt = BKStartListen(kBKClientTypeSimple, BKListenAltCB);
-        BKAppend([NSString stringWithFormat:@"I listen m=%d s=%d",
-                  gListenClient ? 1 : 0, gListenAlt ? 1 : 0]);
+        gListenClient = BKNewClient();
+        if (!gListenClient) {
+            BKAppend(@"I client=0");
+            return;
+        }
+        if (gIO.RegisterCB) gIO.RegisterCB(gListenClient, BKListenCB, NULL, NULL);
+        if (gIO.Schedule) {
+            gIO.Schedule(gListenClient, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+            BKAppend(@"I sched=runloop");
+        } else if (gIO.SetQueue) {
+            gIO.SetQueue(gListenClient, dispatch_get_main_queue());
+            BKAppend(@"I sched=queue");
+        }
+        if (gIO.Activate) gIO.Activate(gListenClient);
+        BKAppend(@"I listen=1");
     } @catch (NSException *e) {
         BKAppend([NSString stringWithFormat:@"! init %@", e.reason]);
-        return;
-    }
-
-    if (!gListenClient && !gListenAlt) {
-        BKAppend(@"I sem cliente");
         return;
     }
 
@@ -907,9 +883,8 @@ static void BKEngineInit(void)
 
 %dtor {
     @autoreleasepool {
-        if (gIO.Unschedule) {
-            if (gListenClient) gIO.Unschedule(gListenClient, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-            if (gListenAlt) gIO.Unschedule(gListenAlt, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+        if (gListenClient && gIO.Unschedule) {
+            gIO.Unschedule(gListenClient, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
         }
     }
 }

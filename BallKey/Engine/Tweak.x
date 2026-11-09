@@ -47,7 +47,7 @@ typedef struct {
 #define kBKFieldDisplayInt      25
 #define kBKSetOpt               0xF0000000u
 #define kBKSenderID             0xDEFACEDBEEFFECE5ull
-#define kBKClientTypeMonitor    1
+#define kBKClientTypeAdmin      2
 #define kBKTypeKeyExtra         15
 #define kBKTypePointer          17
 #define kBKPtrX                 (17u << 16 | 0u)
@@ -190,6 +190,16 @@ static BOOL BKLoadIOKit(void)
     return YES;
 }
 
+static BKIOHIDEventSystemClientRef BKNewClient(void)
+{
+    BKIOHIDEventSystemClientRef c = NULL;
+    if (gIO.ClientCreateWithType) {
+        c = gIO.ClientCreateWithType(kCFAllocatorDefault, kBKClientTypeAdmin, NULL);
+    }
+    if (!c && gIO.ClientCreate) c = gIO.ClientCreate(kCFAllocatorDefault);
+    return c;
+}
+
 #pragma mark - Orientação
 
 static int BKFrontMostOrientation(void)
@@ -328,14 +338,10 @@ static void BKNotifyUserActivity(void)
 static void BKSend(double nx, double ny, int phase, NSUInteger idx)
 {
     if (!gIO.Dispatch) return;
+    @try {
 
     if (!gSendClient) {
-        if (gIO.ClientCreateWithType) {
-            gSendClient = gIO.ClientCreateWithType(kCFAllocatorDefault, kBKClientTypeMonitor, NULL);
-        }
-        if (!gSendClient && gIO.ClientCreate) {
-            gSendClient = gIO.ClientCreate(kCFAllocatorDefault);
-        }
+        gSendClient = BKNewClient();
         if (!gSendClient) return;
     }
 
@@ -388,6 +394,10 @@ static void BKSend(double nx, double ny, int phase, NSUInteger idx)
     if (gDump) {
         BKAppend([NSString stringWithFormat:@"D ph=%d o=%d x=%.3f y=%.3f", phase,
                   BKCurrentOrient(), rx, ry]);
+    }
+
+    } @catch (NSException *e) {
+        BKAppend([NSString stringWithFormat:@"! send %@", e.reason]);
     }
 }
 
@@ -749,6 +759,7 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
 {
     (void)target; (void)refcon; (void)queue;
     if (!ev) return;
+    @try {
     int type = gIO.GetType(ev);
 
     if (type == kIOHIDEventTypeKeyboard) {
@@ -790,6 +801,9 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         if (gEnabled && gPoints.count) BKHandleMask((uint16_t)bmask);
         else gPrevMask = (uint16_t)bmask;
     }
+    } @catch (NSException *e) {
+        BKAppend([NSString stringWithFormat:@"! cb %@", e.reason]);
+    }
 }
 
 #pragma mark - Init
@@ -805,33 +819,34 @@ static void BKEngineInit(void)
 
     if (!BKLoadIOKit()) return;
 
-    gListenClient = gIO.ClientCreateWithType
-        ? gIO.ClientCreateWithType(kCFAllocatorDefault, kBKClientTypeMonitor, NULL)
-        : NULL;
-    if (!gListenClient && gIO.ClientCreate) {
-        gListenClient = gIO.ClientCreate(kCFAllocatorDefault);
-    }
+    gListenClient = BKNewClient();
     if (!gListenClient) {
         BKAppend(@"I client=0");
         return;
     }
 
-    if (gIO.SetMatching) {
-        NSArray *matching = @[
-            @{ @"DeviceUsagePage": @1, @"DeviceUsage": @6 },
-            @{ @"DeviceUsagePage": @1, @"DeviceUsage": @2 },
-            @{ @"DeviceUsagePage": @9, @"DeviceUsage": @1 },
-            @{ @"DeviceUsagePage": @1, @"DeviceUsage": @1 },
-        ];
-        gIO.SetMatching(gListenClient, (__bridge CFTypeRef)matching);
-        BKAppend(@"I match=1");
+    @try {
+        if (gIO.SetMatching) {
+            NSArray *matching = @[
+                @{ @"DeviceUsagePage": @1, @"DeviceUsage": @6 },
+                @{ @"DeviceUsagePage": @1, @"DeviceUsage": @2 },
+                @{ @"DeviceUsagePage": @9, @"DeviceUsage": @1 },
+                @{ @"DeviceUsagePage": @1, @"DeviceUsage": @1 },
+            ];
+            gIO.SetMatching(gListenClient, (__bridge CFTypeRef)matching);
+            BKAppend(@"I match=1");
+        }
+        if (gIO.RegisterCB) gIO.RegisterCB(gListenClient, BKListenCB, NULL, NULL);
+        dispatch_queue_t q = dispatch_get_main_queue();
+        if (gIO.SetQueue) gIO.SetQueue(gListenClient, q);
+        if (gIO.Activate) gIO.Activate(gListenClient);
+        BKAppend(@"I tipo=2");
+    } @catch (NSException *e) {
+        BKAppend([NSString stringWithFormat:@"! init %@", e.reason]);
+        return;
     }
 
-    if (gIO.RegisterCB) gIO.RegisterCB(gListenClient, BKListenCB, NULL, NULL);
     dispatch_queue_t q = dispatch_get_main_queue();
-    if (gIO.SetQueue) gIO.SetQueue(gListenClient, q);
-    if (gIO.Activate) gIO.Activate(gListenClient);
-
     int t1 = 0, t2 = 0, t3 = 0;
     notify_register_dispatch(kBKNotifyReload, &t1, q, ^(int t) {
         (void)t;

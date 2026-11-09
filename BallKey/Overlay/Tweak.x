@@ -221,7 +221,8 @@ static void BKCapCB(void *target, void *refcon, void *queue, void *ev)
     gPending = nil;
     dispatch_async(dispatch_get_main_queue(), ^{
         m.keyEnc = enc;
-        m.label.text = [NSString stringWithFormat:@"%@\n%@", m.label.text.length ? [[m.label.text componentsSeparatedByString:@"\n"] firstObject] : @"?", enc];
+        m.label.text = [NSString stringWithFormat:@"%@\n%@",
+                        [m.label.text componentsSeparatedByString:@"\n"].firstObject, enc];
         gBanner.hidden = YES;
         BKStopCapture();
     });
@@ -517,40 +518,6 @@ static void BKOpenEditor(void)
     [gEditWindow setHidden:NO];
 }
 
-@interface UIViewController (BKUI)
-- (void)bkAdd:(UIButton *)b;
-- (void)bkSave:(UIButton *)b;
-- (void)bkClose:(UIButton *)b;
-- (void)bkMenuTap:(UIButton *)b;
-- (void)bkPan:(UIPanGestureRecognizer *)g;
-- (void)bkTap:(UITapGestureRecognizer *)g;
-@end
-
-@implementation UIViewController (BKUI)
-
-- (void)bkAdd:(UIButton *)b
-{
-    NSArray *types = @[@"Tap", @"Press", @"Hold", @"Dir", @"Fps"];
-    NSInteger i = b.tag - 200;
-    if (i < 0 || i >= (NSInteger)types.count) return;
-    BKAddMarker(types[i], YES);
-}
-
-- (void)bkSave:(UIButton *)b
-{
-    (void)b;
-    BKSaveEditor();
-    BKCloseEditor();
-}
-
-- (void)bkClose:(UIButton *)b
-{
-    (void)b;
-    BKCloseEditor();
-}
-
-@end
-
 #pragma mark - Menu
 
 static void BKSetEnabled(BOOL on)
@@ -632,7 +599,37 @@ static void BKToggleMenu(void)
     gMenuWindow.hidden = NO;
 }
 
-@implementation UIViewController (BKMenu)
+@interface UIViewController (BKUI)
+- (void)bkAdd:(UIButton *)b;
+- (void)bkSave:(UIButton *)b;
+- (void)bkClose:(UIButton *)b;
+- (void)bkMenuTap:(UIButton *)b;
+- (void)bkPan:(UIPanGestureRecognizer *)g;
+- (void)bkTap:(UITapGestureRecognizer *)g;
+@end
+
+@implementation UIViewController (BKUI)
+
+- (void)bkAdd:(UIButton *)b
+{
+    NSArray *types = @[@"Tap", @"Press", @"Hold", @"Dir", @"Fps"];
+    NSInteger i = b.tag - 200;
+    if (i < 0 || i >= (NSInteger)types.count) return;
+    BKAddMarker(types[i], YES);
+}
+
+- (void)bkSave:(UIButton *)b
+{
+    (void)b;
+    BKSaveEditor();
+    BKCloseEditor();
+}
+
+- (void)bkClose:(UIButton *)b
+{
+    (void)b;
+    BKCloseEditor();
+}
 
 - (void)bkMenuTap:(UIButton *)b
 {

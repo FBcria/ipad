@@ -263,9 +263,15 @@ static void BKLoadConfig(void)
     if ([cfg[@"AdsX"] isKindOfClass:[NSNumber class]]) gAdsX = [cfg[@"AdsX"] doubleValue];
     if ([cfg[@"AdsY"] isKindOfClass:[NSNumber class]]) gAdsY = [cfg[@"AdsY"] doubleValue];
 
-    gEnabled = enabled && pts.count > 0;
-    gActiveBundle = active;
-    gPoints = pts;
+    if (pts.count > 0) {
+        gPoints = pts;
+        gActiveBundle = active;
+    } else if (gPoints.count == 0) {
+        gActiveBundle = active;
+        gPoints = pts;
+    }
+
+    gEnabled = enabled && gPoints.count > 0;
     gPendingDir = 0;
     gHandledUsage = -1;
     gPrevMask = 0;
@@ -274,8 +280,8 @@ static void BKLoadConfig(void)
 
     if (!gEnabled) BKReleaseAll();
 
-    BKAppend([NSString stringWithFormat:@"C en=%d b=%@ n=%lu", (int)enabled, active ?: @"-",
-              (unsigned long)pts.count]);
+    BKAppend([NSString stringWithFormat:@"C en=%d b=%@ n=%lu", (int)gEnabled,
+              gActiveBundle ?: @"-", (unsigned long)gPoints.count]);
 }
 
 #pragma mark - Toque

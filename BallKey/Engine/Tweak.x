@@ -4,31 +4,32 @@
 #import <objc/runtime.h>
 #import <mach/mach_time.h>
 #import <notify.h>
+#import <dlfcn.h>
 #import <math.h>
 
 typedef struct __IOHIDEvent *BKIOHIDEventRef;
 typedef struct __IOHIDEventSystemClient *BKIOHIDEventSystemClientRef;
 
-extern BKIOHIDEventSystemClientRef IOHIDEventSystemClientCreate(CFAllocatorRef);
-extern BKIOHIDEventSystemClientRef IOHIDEventSystemClientCreateWithType(CFAllocatorRef, int, void *);
-extern void IOHIDEventSystemClientRegisterEventCallback(BKIOHIDEventSystemClientRef, void *, void *, void *);
-extern void IOHIDEventSystemClientSetDispatchQueue(BKIOHIDEventSystemClientRef, dispatch_queue_t);
-extern void IOHIDEventSystemClientActivate(BKIOHIDEventSystemClientRef);
-extern void IOHIDEventSystemClientDispatchEvent(BKIOHIDEventSystemClientRef, BKIOHIDEventRef);
-extern int IOHIDEventGetType(BKIOHIDEventRef);
-extern int64_t IOHIDEventGetIntegerValue(BKIOHIDEventRef, int32_t);
-extern double IOHIDEventGetFloatValue(BKIOHIDEventRef, int32_t);
-extern void IOHIDEventSetIntegerValueWithOptions(BKIOHIDEventRef, int32_t, int64_t, uint32_t);
-extern void IOHIDEventSetFloatValue(BKIOHIDEventRef, int32_t, double);
-extern void IOHIDEventSetSenderID(BKIOHIDEventRef, uint64_t);
-extern void IOHIDEventAppendEvent(BKIOHIDEventRef, BKIOHIDEventRef);
-
-extern BKIOHIDEventRef IOHIDEventCreateDigitizerEvent(CFAllocatorRef, uint64_t, uint32_t,
-    uint32_t, uint32_t, uint32_t, uint32_t, double, double, double, double, double,
-    uint8_t, uint8_t, uint32_t);
-extern BKIOHIDEventRef IOHIDEventCreateDigitizerFingerEventWithQuality(CFAllocatorRef, uint64_t,
-    uint32_t, uint32_t, uint32_t, double, double, double, double, double, double, double,
-    double, double, double, uint8_t, uint8_t, uint32_t);
+typedef struct {
+    BKIOHIDEventSystemClientRef (*ClientCreate)(CFAllocatorRef);
+    BKIOHIDEventSystemClientRef (*ClientCreateWithType)(CFAllocatorRef, int, void *);
+    void (*RegisterCB)(BKIOHIDEventSystemClientRef, void *, void *, void *);
+    void (*SetQueue)(BKIOHIDEventSystemClientRef, dispatch_queue_t);
+    void (*Activate)(BKIOHIDEventSystemClientRef);
+    void (*Dispatch)(BKIOHIDEventSystemClientRef, BKIOHIDEventRef);
+    int (*GetType)(BKIOHIDEventRef);
+    int64_t (*GetInt)(BKIOHIDEventRef, int32_t);
+    double (*GetFloat)(BKIOHIDEventRef, int32_t);
+    void (*SetIntOpt)(BKIOHIDEventRef, int32_t, int64_t, uint32_t);
+    void (*SetFloat)(BKIOHIDEventRef, int32_t, double);
+    void (*SetSender)(BKIOHIDEventRef, uint64_t);
+    void (*Append)(BKIOHIDEventRef, BKIOHIDEventRef);
+    BKIOHIDEventRef (*CreateDigitizer)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t,
+        uint32_t, uint32_t, double, double, double, double, double, uint8_t, uint8_t, uint32_t);
+    BKIOHIDEventRef (*CreateFinger)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t,
+        double, double, double, double, double, double, double, double, double, double,
+        uint8_t, uint8_t, uint32_t);
+} BKIO;
 
 #define kBKConfigPath           @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 #define kBKLogPath              @"/var/mobile/bk_debug.log"
@@ -70,6 +71,9 @@ extern BKIOHIDEventRef IOHIDEventCreateDigitizerFingerEventWithQuality(CFAllocat
 #define kBKIdxCursor            40
 
 #pragma mark - Estado
+
+static void *gIOKit = NULL;
+static BKIO gIO;
 
 static BKIOHIDEventSystemClientRef gListenClient = NULL;
 static BKIOHIDEventSystemClientRef gSendClient = NULL;
@@ -123,6 +127,52 @@ static void BKAppend(NSString *line)
     [fh seekToEndOfFile];
     [fh writeData:[full dataUsingEncoding:NSUTF8StringEncoding]];
     [fh closeFile];
+}
+
+static void BKMark(NSString *name)
+{
+    [name writeToFile:[@"/var/mobile/bk_" stringByAppendingString:name]
+           atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
+#pragma mark - IOKit dinâmico
+
+static BOOL BKLoadIOKit(void)
+{
+    if (gIOKit) return YES;
+
+    gIOKit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
+    if (!gIOKit) gIOKit = dlopen("/usr/lib/libIOKit.dylib", RTLD_LAZY);
+    if (!gIOKit) gIOKit = dlopen("IOKit", RTLD_LAZY);
+    if (!gIOKit) {
+        BKAppend(@"I dlopen=0");
+        return NO;
+    }
+
+    gIO.ClientCreate = dlsym(gIOKit, "IOHIDEventSystemClientCreate");
+    gIO.ClientCreateWithType = dlsym(gIOKit, "IOHIDEventSystemClientCreateWithType");
+    gIO.RegisterCB = dlsym(gIOKit, "IOHIDEventSystemClientRegisterEventCallback");
+    gIO.SetQueue = dlsym(gIOKit, "IOHIDEventSystemClientSetDispatchQueue");
+    gIO.Activate = dlsym(gIOKit, "IOHIDEventSystemClientActivate");
+    gIO.Dispatch = dlsym(gIOKit, "IOHIDEventSystemClientDispatchEvent");
+    gIO.GetType = dlsym(gIOKit, "IOHIDEventGetType");
+    gIO.GetInt = dlsym(gIOKit, "IOHIDEventGetIntegerValue");
+    gIO.GetFloat = dlsym(gIOKit, "IOHIDEventGetFloatValue");
+    gIO.SetIntOpt = dlsym(gIOKit, "IOHIDEventSetIntegerValueWithOptions");
+    gIO.SetFloat = dlsym(gIOKit, "IOHIDEventSetFloatValue");
+    gIO.SetSender = dlsym(gIOKit, "IOHIDEventSetSenderID");
+    gIO.Append = dlsym(gIOKit, "IOHIDEventAppendEvent");
+    gIO.CreateDigitizer = dlsym(gIOKit, "IOHIDEventCreateDigitizerEvent");
+    gIO.CreateFinger = dlsym(gIOKit, "IOHIDEventCreateDigitizerFingerEventWithQuality");
+
+    if (!gIO.ClientCreate || !gIO.Dispatch || !gIO.CreateDigitizer || !gIO.CreateFinger
+        || !gIO.GetType || !gIO.GetInt || !gIO.GetFloat || !gIO.SetIntOpt) {
+        BKAppend(@"I sym=0");
+        return NO;
+    }
+
+    BKAppend(@"I io=1");
+    return YES;
 }
 
 #pragma mark - Orientação
@@ -242,9 +292,15 @@ static void BKNotifyUserActivity(void)
 // fase: 0 move, 1 desce, 2 sobe
 static void BKSend(double nx, double ny, int phase, NSUInteger idx)
 {
+    if (!gIO.Dispatch) return;
+
     if (!gSendClient) {
-        gSendClient = IOHIDEventSystemClientCreateWithType(kCFAllocatorDefault, kBKClientTypeMonitor, NULL);
-        if (!gSendClient) gSendClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
+        if (gIO.ClientCreateWithType) {
+            gSendClient = gIO.ClientCreateWithType(kCFAllocatorDefault, kBKClientTypeMonitor, NULL);
+        }
+        if (!gSendClient && gIO.ClientCreate) {
+            gSendClient = gIO.ClientCreate(kCFAllocatorDefault);
+        }
         if (!gSendClient) return;
     }
 
@@ -255,12 +311,12 @@ static void BKSend(double nx, double ny, int phase, NSUInteger idx)
     uint32_t index = (uint32_t)(idx + 1);
     uint32_t ident = (uint32_t)(idx + 101);
 
-    BKIOHIDEventRef hand = IOHIDEventCreateDigitizerEvent(kCFAllocatorDefault, ab,
+    BKIOHIDEventRef hand = gIO.CreateDigitizer(kCFAllocatorDefault, ab,
         kBKTransducerHand, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     if (!hand) return;
 
-    IOHIDEventSetIntegerValueWithOptions(hand, kBKFieldDisplayInt, 1, kBKSetOpt);
-    IOHIDEventSetIntegerValueWithOptions(hand, kBKFieldBuiltIn, 1, kBKSetOpt);
+    gIO.SetIntOpt(hand, kBKFieldDisplayInt, 1, kBKSetOpt);
+    gIO.SetIntOpt(hand, kBKFieldBuiltIn, 1, kBKSetOpt);
 
     int mask;
     int touch;
@@ -272,23 +328,25 @@ static void BKSend(double nx, double ny, int phase, NSUInteger idx)
         touch = (phase == 1) ? 1 : 0;
     }
 
-    BKIOHIDEventRef finger = IOHIDEventCreateDigitizerFingerEventWithQuality(kCFAllocatorDefault, ab,
+    BKIOHIDEventRef finger = gIO.CreateFinger(kCFAllocatorDefault, ab,
         index, ident, (uint32_t)mask, rx, ry, 0, 0, 0, 0, 0, 0, 0, 0,
         (uint8_t)touch, (uint8_t)touch, 0);
     if (finger) {
-        IOHIDEventSetIntegerValueWithOptions(finger, kBKFieldDisplayInt, 1, kBKSetOpt);
-        IOHIDEventSetFloatValue(finger, kBKFieldX, rx);
-        IOHIDEventSetFloatValue(finger, kBKFieldY, ry);
-        IOHIDEventSetIntegerValueWithOptions(finger, kBKFieldTouchPhase, phase, kBKSetOpt);
-        IOHIDEventAppendEvent(hand, finger);
+        gIO.SetIntOpt(finger, kBKFieldDisplayInt, 1, kBKSetOpt);
+        if (gIO.SetFloat) {
+            gIO.SetFloat(finger, kBKFieldX, rx);
+            gIO.SetFloat(finger, kBKFieldY, ry);
+        }
+        gIO.SetIntOpt(finger, kBKFieldTouchPhase, phase, kBKSetOpt);
+        if (gIO.Append) gIO.Append(hand, finger);
         CFRelease(finger);
     }
 
-    IOHIDEventSetIntegerValueWithOptions(hand, kIOHIDEventFieldDigitizerEventMask, mask, kBKSetOpt);
-    IOHIDEventSetIntegerValueWithOptions(hand, kIOHIDEventFieldDigitizerRange, touch, kBKSetOpt);
-    IOHIDEventSetIntegerValueWithOptions(hand, kIOHIDEventFieldDigitizerTouch, touch, kBKSetOpt);
-    IOHIDEventSetSenderID(hand, kBKSenderID);
-    IOHIDEventSystemClientDispatchEvent(gSendClient, hand);
+    gIO.SetIntOpt(hand, kIOHIDEventFieldDigitizerEventMask, mask, kBKSetOpt);
+    gIO.SetIntOpt(hand, kIOHIDEventFieldDigitizerRange, touch, kBKSetOpt);
+    gIO.SetIntOpt(hand, kIOHIDEventFieldDigitizerTouch, touch, kBKSetOpt);
+    if (gIO.SetSender) gIO.SetSender(hand, kBKSenderID);
+    gIO.Dispatch(gSendClient, hand);
     CFRelease(hand);
 
     BKNotifyUserActivity();
@@ -654,13 +712,13 @@ static void BKTestCenter(void)
 static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef ev)
 {
     if (!ev) return;
-    int type = IOHIDEventGetType(ev);
+    int type = gIO.GetType(ev);
 
     if (type == kIOHIDEventTypeKeyboard) {
-        int page = (int)IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsagePage);
-        int usage = (int)IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardUsage);
-        int down = (int)IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardDown);
-        int repeat = (int)IOHIDEventGetIntegerValue(ev, kIOHIDEventFieldKeyboardRepeat);
+        int page = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardUsagePage);
+        int usage = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardUsage);
+        int down = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardDown);
+        int repeat = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardRepeat);
         if (repeat) return;
         gPendingDir = down ? 1 : -1;
         if ((page == 0 || page == 7) && usage >= 4 && usage <= 231) {
@@ -672,7 +730,7 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
             if (gEnabled && gPoints.count) BKHandleKey(usage, down != 0);
         }
     } else if (type == kBKTypeKeyExtra) {
-        int usage = (int)IOHIDEventGetIntegerValue(ev, 0);
+        int usage = (int)gIO.GetInt(ev, 0);
         int dir = gPendingDir;
         gPendingDir = 0;
         if (usage <= 0) return;
@@ -684,9 +742,9 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
             BKHandleKey(usage, dir > 0);
         }
     } else if (type == kBKTypePointer) {
-        double dx = IOHIDEventGetFloatValue(ev, kBKPtrX);
-        double dy = IOHIDEventGetFloatValue(ev, kBKPtrY);
-        int bmask = (int)IOHIDEventGetIntegerValue(ev, kBKPtrMask);
+        double dx = gIO.GetFloat(ev, kBKPtrX);
+        double dy = gIO.GetFloat(ev, kBKPtrY);
+        int bmask = (int)gIO.GetInt(ev, kBKPtrMask);
         if (dx != 0 || dy != 0) {
             BKCursorMove(dx, dy);
             BKFpsMove(dx, dy);
@@ -705,18 +763,25 @@ static void BKEngineInit(void)
     gCur = [NSMutableDictionary dictionary];
 
     BKAppend(@"I init");
+    BKMark(@"engine_ctor.txt");
 
-    gListenClient = IOHIDEventSystemClientCreateWithType(kCFAllocatorDefault, kBKClientTypeMonitor, NULL);
-    if (!gListenClient) gListenClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
+    if (!BKLoadIOKit()) return;
+
+    gListenClient = gIO.ClientCreateWithType
+        ? gIO.ClientCreateWithType(kCFAllocatorDefault, kBKClientTypeMonitor, NULL)
+        : NULL;
+    if (!gListenClient && gIO.ClientCreate) {
+        gListenClient = gIO.ClientCreate(kCFAllocatorDefault);
+    }
     if (!gListenClient) {
         BKAppend(@"I client=0");
         return;
     }
 
-    IOHIDEventSystemClientRegisterEventCallback(gListenClient, BKListenCB, NULL, NULL);
+    if (gIO.RegisterCB) gIO.RegisterCB(gListenClient, BKListenCB, NULL, NULL);
     dispatch_queue_t q = dispatch_get_main_queue();
-    IOHIDEventSystemClientSetDispatchQueue(gListenClient, q);
-    IOHIDEventSystemClientActivate(gListenClient);
+    if (gIO.SetQueue) gIO.SetQueue(gListenClient, q);
+    if (gIO.Activate) gIO.Activate(gListenClient);
 
     int t1 = 0, t2 = 0, t3 = 0;
     notify_register_dispatch(kBKNotifyReload, &t1, q, ^(int t) {
@@ -735,8 +800,7 @@ static void BKEngineInit(void)
     BKLoadConfig();
 
     BKAppend(@"I ready");
-    [@"engine" writeToFile:@"/var/mobile/bk_engine_loaded.txt"
-                atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    BKMark(@"engine_loaded.txt");
 }
 
 %ctor {
@@ -749,8 +813,8 @@ static void BKEngineInit(void)
 
 %dtor {
     @autoreleasepool {
-        if (gListenClient) {
-            IOHIDEventSystemClientSetDispatchQueue(gListenClient, NULL);
+        if (gListenClient && gIO.SetQueue) {
+            gIO.SetQueue(gListenClient, NULL);
             CFRelease(gListenClient);
             gListenClient = NULL;
         }

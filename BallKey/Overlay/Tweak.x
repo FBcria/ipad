@@ -61,22 +61,6 @@ static UIWindowScene *BKScene(void)
     return nil;
 }
 
-// Tamanho do painel em coordenadas nativas: sempre retrato, independente de como
-// [UIScreen bounds] esteja devolvendo agora.
-static CGSize BKPanelSize(void)
-{
-    CGSize s = [UIScreen mainScreen].bounds.size;
-    if (s.width > s.height) return CGSizeMake(s.height, s.width);
-    return s;
-}
-
-static CGSize BKSquareSize(void)
-{
-    CGSize s = [UIScreen mainScreen].bounds.size;
-    CGFloat side = MAX(s.width, s.height);
-    return CGSizeMake(side, side);
-}
-
 #pragma mark - Orientacao
 
 static int BKFrontMostOrientation(void)
@@ -123,14 +107,14 @@ static int BKCurrentOrient(void)
 }
 @end
 
+// A janela usa exatamente o espaco da cena. E esse espaco que nao gira:
+// por isso o container e que recebe a rotacao.
 static UIWindow *BKMakeWindow(CGFloat level, BOOL passthrough, UIView *__strong *outContainer)
 {
     UIWindowScene *sc = BKScene();
     if (!sc) return nil;
     UIWindow *w = passthrough ? [[BKPassWindow alloc] initWithWindowScene:sc] : [[UIWindow alloc] initWithWindowScene:sc];
-    CGSize sq = BKSquareSize();
-    CGSize p = BKPanelSize();
-    w.frame = CGRectMake(-(sq.width - p.width) / 2.0, -(sq.height - p.height) / 2.0, sq.width, sq.height);
+    w.frame = sc.coordinateSpace.bounds;
     w.windowLevel = level;
     w.backgroundColor = UIColor.clearColor;
     UIViewController *vc = [[UIViewController alloc] init];
@@ -147,15 +131,15 @@ static UIWindow *BKMakeWindow(CGFloat level, BOOL passthrough, UIView *__strong 
     return w;
 }
 
-// Gira o container para a orientacao atual. O container mantem bounds de painel;
-// a matriz faz o resto, inclusive a conversao dos toques.
+// Container com bounds de painel, centrado e girado conforme a orientacao.
+// A matriz converte os toques, entao o gesto chega em coordenada de painel.
 static void BKApplyTo(UIWindow *w, UIView *c, int o)
 {
     if (!w || !c) return;
-    CGSize p = BKPanelSize();
+    CGSize p = w.bounds.size;
     c.transform = CGAffineTransformIdentity;
     c.bounds = CGRectMake(0, 0, p.width, p.height);
-    c.center = CGPointMake(w.bounds.size.width / 2.0, w.bounds.size.height / 2.0);
+    c.center = CGPointMake(p.width / 2.0, p.height / 2.0);
     CGAffineTransform t = CGAffineTransformIdentity;
     if (o == 2) t = CGAffineTransformMakeRotation(M_PI);
     else if (o == 3) t = CGAffineTransformMakeRotation(-M_PI_2);
@@ -165,7 +149,8 @@ static void BKApplyTo(UIWindow *w, UIView *c, int o)
 
 static void BKClampBall(void)
 {
-    CGSize p = BKPanelSize();
+    if (!gBallContainer) return;
+    CGSize p = gBallContainer.bounds.size;
     double mx = 30.0 / p.width;
     double my = 30.0 / p.height;
     if (gBallNX < mx) gBallNX = mx;

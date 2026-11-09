@@ -779,7 +779,7 @@ static void BKPollFrontmost(void)
     id sb = ((id (*)(id, SEL))objc_msgSend)(sbCls, @selector(sharedApplication));
     if (!sb) return;
     SEL sel = @selector(_accessibilityFrontMostApplication);
-    if (![sb respondsToSelector:sel]) return 0;
+    if (![sb respondsToSelector:sel]) return;
     id app = ((id (*)(id, SEL))objc_msgSend)(sb, sel);
     NSString *bid = app ? ((id (*)(id, SEL))objc_msgSend)(app, @selector(bundleIdentifier)) : nil;
     if (![bid isKindOfClass:[NSString class]]) return;

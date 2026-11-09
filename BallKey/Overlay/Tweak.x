@@ -2,6 +2,7 @@
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <math.h>
 #import <notify.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -13,6 +14,7 @@ typedef struct __IOHIDEventSystemClient *BKIOHIDEventSystemClientRef;
 typedef void (*BKHIDEventCB)(void *target, void *refcon, void *queue, BKIOHIDEventRef event);
 
 #define kBKTypeKeyExtra 15
+#define kBKTagContainer 9901
 
 BKIOHIDEventSystemClientRef IOHIDEventSystemClientCreate(CFAllocatorRef allocator);
 BKIOHIDEventSystemClientRef IOHIDEventSystemClientCreateWithType(CFAllocatorRef allocator, int type, CFDictionaryRef props);
@@ -27,17 +29,26 @@ static NSString *gFrontBundle = nil;
 static BOOL gEnabledFlag = YES;
 static BOOL gBindKeyDown = NO;
 static UIWindow *gBallWindow = nil;
+static UIView *gBallContainer = nil;
+static UIButton *gBall = nil;
 static UIWindow *gEditorWindow = nil;
+static UIView *gEditContainer = nil;
 static UIView *gMenuView = nil;
 static NSMutableArray<UIView *> *gMarkers = nil;
 static UIView *gPendingBind = nil;
 static BKIOHIDEventSystemClientRef gBindClient = NULL;
 static UIView *gBindBanner = nil;
+static double gBallNX = 0.88;
+static double gBallNY = 0.30;
+static int gOrientOverride = 0;
+static int gLastOrient = 0;
+static int gAppliedOrient = 0;
 
 static void BKStartBindCapture(void);
 static void BKToggleEnabled(void);
 static void BKOpenEditor(void);
 static void BKShowMenu(void);
+static void BKRelayoutAll(void);
 
 static UIWindowScene *BKScene(void)
 {
@@ -50,6 +61,56 @@ static UIWindowScene *BKScene(void)
     return nil;
 }
 
+// Tamanho do painel em coordenadas nativas: sempre retrato, independente de como
+// [UIScreen bounds] esteja devolvendo agora.
+static CGSize BKPanelSize(void)
+{
+    CGSize s = [UIScreen mainScreen].bounds.size;
+    if (s.width > s.height) return CGSizeMake(s.height, s.width);
+    return s;
+}
+
+static CGSize BKSquareSize(void)
+{
+    CGSize s = [UIScreen mainScreen].bounds.size;
+    CGFloat side = MAX(s.width, s.height);
+    return CGSizeMake(side, side);
+}
+
+#pragma mark - Orientacao
+
+static int BKFrontMostOrientation(void)
+{
+    Class sbCls = objc_getClass("SpringBoard");
+    if (!sbCls) return 0;
+    id sb = ((id (*)(id, SEL))objc_msgSend)(sbCls, @selector(sharedApplication));
+    if (!sb) return 0;
+    SEL sel = @selector(_frontMostAppOrientation);
+    if ([sb respondsToSelector:sel] == NO) return 0;
+    int o = ((int (*)(id, SEL))objc_msgSend)(sb, sel);
+    if (o < 1 || o > 4) return 0;
+    return o;
+}
+
+static int BKDeviceOrientation(void)
+{
+    Class c = objc_getClass("UIDevice");
+    if (!c) return 0;
+    id d = ((id (*)(id, SEL))objc_msgSend)(c, @selector(currentDevice));
+    if (!d) return 0;
+    return ((int (*)(id, SEL))objc_msgSend)(d, @selector(orientation));
+}
+
+static int BKCurrentOrient(void)
+{
+    if (gOrientOverride >= 1 && gOrientOverride <= 4) return gOrientOverride;
+    int o = BKFrontMostOrientation();
+    if (o) { gLastOrient = o; return o; }
+    int d = BKDeviceOrientation();
+    if (d >= 1 && d <= 4) { gLastOrient = d; return d; }
+    return gLastOrient ? gLastOrient : 1;
+}
+
 @interface BKPassWindow : UIWindow
 @end
 
@@ -57,24 +118,98 @@ static UIWindowScene *BKScene(void)
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event
 {
     UIView *v = [super hitTest:point withEvent:event];
-    if (!v || v == self.rootViewController.view) return nil;
+    if (!v || v == self.rootViewController.view || v.tag == kBKTagContainer) return nil;
     return v;
 }
 @end
 
-static UIWindow *BKMakeWindow(CGFloat level, BOOL passthrough)
+static UIWindow *BKMakeWindow(CGFloat level, BOOL passthrough, UIView **outContainer)
 {
     UIWindowScene *sc = BKScene();
     if (!sc) return nil;
     UIWindow *w = passthrough ? [[BKPassWindow alloc] initWithWindowScene:sc] : [[UIWindow alloc] initWithWindowScene:sc];
-    w.frame = sc.coordinateSpace.bounds;
+    CGSize sq = BKSquareSize();
+    CGSize p = BKPanelSize();
+    w.frame = CGRectMake(-(sq.width - p.width) / 2.0, -(sq.height - p.height) / 2.0, sq.width, sq.height);
     w.windowLevel = level;
     w.backgroundColor = UIColor.clearColor;
     UIViewController *vc = [[UIViewController alloc] init];
     vc.view.backgroundColor = UIColor.clearColor;
     w.rootViewController = vc;
+
+    UIView *c = [[UIView alloc] init];
+    c.tag = kBKTagContainer;
+    c.backgroundColor = UIColor.clearColor;
+    [vc.view addSubview:c];
+    if (outContainer) *outContainer = c;
+
     w.hidden = YES;
     return w;
+}
+
+// Gira o container para a orientacao atual. O container mantem bounds de painel;
+// a matriz faz o resto, inclusive a conversao dos toques.
+static void BKApplyTo(UIWindow *w, UIView *c, int o)
+{
+    if (!w || !c) return;
+    CGSize p = BKPanelSize();
+    c.transform = CGAffineTransformIdentity;
+    c.bounds = CGRectMake(0, 0, p.width, p.height);
+    c.center = CGPointMake(w.bounds.size.width / 2.0, w.bounds.size.height / 2.0);
+    CGAffineTransform t = CGAffineTransformIdentity;
+    if (o == 2) t = CGAffineTransformMakeRotation(M_PI);
+    else if (o == 3) t = CGAffineTransformMakeRotation(-M_PI_2);
+    else if (o == 4) t = CGAffineTransformMakeRotation(M_PI_2);
+    c.transform = t;
+}
+
+static void BKClampBall(void)
+{
+    CGSize p = BKPanelSize();
+    double mx = 30.0 / p.width;
+    double my = 30.0 / p.height;
+    if (gBallNX < mx) gBallNX = mx;
+    if (gBallNX > 1.0 - mx) gBallNX = 1.0 - mx;
+    if (gBallNY < my) gBallNY = my;
+    if (gBallNY > 1.0 - my) gBallNY = 1.0 - my;
+}
+
+static void BKPlaceBall(void)
+{
+    if (!gBall || !gBallContainer) return;
+    BKClampBall();
+    CGSize p = gBallContainer.bounds.size;
+    gBall.center = CGPointMake(gBallNX * p.width, gBallNY * p.height);
+}
+
+static void BKPlaceMenu(void)
+{
+    if (!gMenuView || !gBallContainer) return;
+    CGSize p = gBallContainer.bounds.size;
+    CGFloat mw = gMenuView.bounds.size.width;
+    CGFloat mh = gMenuView.bounds.size.height;
+    CGFloat x = gBall.center.x - mw + 28;
+    if (gBallNX < 0.5) x = gBall.center.x - 28;
+    x = MAX(4, MIN(p.width - mw - 4, x));
+    CGFloat y = gBall.center.y + 34;
+    if (y + mh > p.height - 4) y = gBall.center.y - mh - 34;
+    y = MAX(4, MIN(p.height - mh - 4, y));
+    gMenuView.frame = CGRectMake(x, y, mw, mh);
+}
+
+static void BKRelayoutAll(void)
+{
+    int o = BKCurrentOrient();
+    if (o == gAppliedOrient) { BKPlaceBall(); BKPlaceMenu(); return; }
+    gAppliedOrient = o;
+    BKApplyTo(gBallWindow, gBallContainer, o);
+    BKApplyTo(gEditorWindow, gEditContainer, o);
+    BKPlaceBall();
+    BKPlaceMenu();
+    if (gBindBanner && gEditContainer) {
+        CGSize p = gEditContainer.bounds.size;
+        gBindBanner.frame = CGRectMake(p.width / 2.0 - 130, p.height - 90, 260, 36);
+    }
 }
 
 static NSDictionary *BKReadCfg(void)
@@ -270,35 +405,40 @@ static void BKStartBindCapture(void)
 - (void)ballTap { BKShowMenu(); }
 - (void)ballPan:(UIPanGestureRecognizer *)pan
 {
-    if (!gBallWindow) return;
-    CGPoint t = [pan translationInView:gBallWindow];
-    CGRect f = gBallWindow.frame;
-    f.origin.x += t.x;
-    f.origin.y += t.y;
-    CGSize s = [UIScreen mainScreen].bounds.size;
-    f.origin.x = MAX(56 - f.size.width, MIN(s.width - 56, f.origin.x));
-    f.origin.y = MAX(0, MIN(s.height - f.size.height, f.origin.y));
-    gBallWindow.frame = f;
-    [pan setTranslation:CGPointZero inView:gBallWindow];
+    if (!gBallContainer) return;
+    CGPoint t = [pan translationInView:gBallContainer];
+    CGSize p = gBallContainer.bounds.size;
+    gBallNX += t.x / p.width;
+    gBallNY += t.y / p.height;
+    BKPlaceBall();
+    BKPlaceMenu();
+    [pan setTranslation:CGPointZero inView:gBallContainer];
 }
 - (void)menuEdit { [gMenuView removeFromSuperview]; gMenuView = nil; BKOpenEditor(); }
 - (void)menuToggle { BKToggleEnabled(); [gMenuView removeFromSuperview]; gMenuView = nil; }
-- (void)addTap { BKMarkerView *m = BKMakeMarker(@"Tap", CGPointMake(UIScreen.mainScreen.bounds.size.width/2, UIScreen.mainScreen.bounds.size.height/2)); [gEditorWindow.rootViewController.view addSubview:m]; [gMarkers addObject:m]; }
-- (void)addPress { BKMarkerView *m = BKMakeMarker(@"Press", CGPointMake(UIScreen.mainScreen.bounds.size.width/2 + 60, UIScreen.mainScreen.bounds.size.height/2)); [gEditorWindow.rootViewController.view addSubview:m]; [gMarkers addObject:m]; }
-- (void)addHold { BKMarkerView *m = BKMakeMarker(@"Hold", CGPointMake(UIScreen.mainScreen.bounds.size.width/2 - 60, UIScreen.mainScreen.bounds.size.height/2)); [gEditorWindow.rootViewController.view addSubview:m]; [gMarkers addObject:m]; }
-- (void)addDir { BKMarkerView *m = BKMakeMarker(@"Dir", CGPointMake(UIScreen.mainScreen.bounds.size.width/3, UIScreen.mainScreen.bounds.size.height/2)); [gEditorWindow.rootViewController.view addSubview:m]; [gMarkers addObject:m]; }
+- (void)addTap { [self addType:@"Tap" dx:0]; }
+- (void)addPress { [self addType:@"Press" dx:60]; }
+- (void)addHold { [self addType:@"Hold" dx:-60]; }
+- (void)addDir { [self addType:@"Dir" dx:-100]; }
+- (void)addType:(NSString *)type dx:(CGFloat)dx
+{
+    if (!gEditContainer) return;
+    CGSize p = gEditContainer.bounds.size;
+    CGPoint c = CGPointMake(p.width / 2.0 + dx, p.height / 2.0);
+    BKMarkerView *m = BKMakeMarker(type, c);
+    [gEditContainer addSubview:m];
+    [gMarkers addObject:m];
+}
 - (void)editorDone
 {
-    UIView *canvas = gEditorWindow.rootViewController.view;
-    CGSize cs = canvas.bounds.size;
-    BOOL land = cs.width > cs.height;
+    if (!gEditContainer) return;
+    CGSize cs = gEditContainer.bounds.size;
     NSMutableArray *pts = [NSMutableArray array];
     for (BKMarkerView *m in gMarkers) {
         NSMutableDictionary *d = [NSMutableDictionary dictionary];
         d[@"Type"] = m.type;
         d[@"X"] = @(MAX(0.0, MIN(1.0, m.center.x / cs.width)));
         d[@"Y"] = @(MAX(0.0, MIN(1.0, m.center.y / cs.height)));
-        d[@"Land"] = @(land);
         if ([m.type isEqualToString:@"Dir"]) {
             d[@"Button"] = m.keyEnc ?: @"m:0";
             d[@"Radius"] = @(m.radius);
@@ -318,9 +458,11 @@ static void BKStartBindCapture(void)
     BKStopBindClient();
     [gEditorWindow setHidden:YES];
     gEditorWindow = nil;
+    gEditContainer = nil;
     gMarkers = nil;
     gPendingBind = nil;
     gBindBanner = nil;
+    gAppliedOrient = 0;
 }
 @end
 
@@ -337,6 +479,7 @@ static UIButton *BKMenuBtn(NSString *title, SEL sel, UIColor *color)
 static void BKShowMenu(void)
 {
     if (gMenuView) { [gMenuView removeFromSuperview]; gMenuView = nil; return; }
+    if (!gBallContainer) return;
     UIView *menu = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 168, 96)];
     menu.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.92];
     menu.layer.cornerRadius = 12;
@@ -349,8 +492,8 @@ static void BKShowMenu(void)
     [menu addSubview:b1];
     [menu addSubview:b2];
     gMenuView = menu;
-    [gBallWindow addSubview:menu];
-    menu.frame = CGRectMake(0, 0, 168, 96);
+    [gBallContainer addSubview:menu];
+    BKPlaceMenu();
 }
 
 static void BKAddBtn(UIStackView *bar, NSString *title, SEL sel, UIColor *color)
@@ -369,16 +512,17 @@ static void BKAddBtn(UIStackView *bar, NSString *title, SEL sel, UIColor *color)
 
 static void BKReloadMarkersFromCfg(void)
 {
+    if (!gMarkers) return;
     for (UIView *v in gMarkers) [v removeFromSuperview];
     [gMarkers removeAllObjects];
+    if (!gEditContainer) return;
     NSDictionary *cfg = BKReadCfg();
     id pts = cfg[@"Profiles"][gFrontBundle ?: @""];
     if (![pts isKindOfClass:[NSArray class]]) return;
-    CGSize cs = gEditorWindow.rootViewController.view.bounds.size;
+    CGSize cs = gEditContainer.bounds.size;
     for (NSDictionary *pt in (NSArray *)pts) {
         NSString *type = pt[@"Type"] ?: @"Tap";
         CGPoint uiPt = CGPointMake([pt[@"X"] floatValue] * cs.width, [pt[@"Y"] floatValue] * cs.height);
-        if (pt[@"Land"] && [pt[@"Land"] boolValue]) uiPt = CGPointMake(uiPt.y, uiPt.x);
         BKMarkerView *m = BKMakeMarker(type, uiPt);
         m.keyEnc = pt[@"Key"] ?: pt[@"Button"];
         m.holdMs = pt[@"HoldMs"] ? [pt[@"HoldMs"] intValue] : 400;
@@ -392,11 +536,14 @@ static void BKReloadMarkersFromCfg(void)
 static void BKOpenEditor(void)
 {
     if (gEditorWindow) return;
-    gEditorWindow = BKMakeWindow(UIWindowLevelAlert + 60, NO);
+    gEditorWindow = BKMakeWindow(UIWindowLevelAlert + 60, NO, &gEditContainer);
     if (!gEditorWindow) return;
     gMarkers = [NSMutableArray array];
-    CGRect screen = gEditorWindow.frame;
-    UIView *canvas = gEditorWindow.rootViewController.view;
+    gAppliedOrient = 0;
+    BKApplyTo(gEditorWindow, gEditContainer, BKCurrentOrient());
+    gAppliedOrient = BKCurrentOrient();
+
+    UIView *canvas = gEditContainer;
     canvas.backgroundColor = [UIColor colorWithWhite:0 alpha:0.25];
 
     UIStackView *bar = [[UIStackView alloc] init];
@@ -405,7 +552,7 @@ static void BKOpenEditor(void)
     bar.translatesAutoresizingMaskIntoConstraints = NO;
     [canvas addSubview:bar];
     [NSLayoutConstraint activateConstraints:@[
-        [bar.topAnchor constraintEqualToAnchor:canvas.safeAreaLayoutGuide.topAnchor constant:8],
+        [bar.topAnchor constraintEqualToAnchor:canvas.topAnchor constant:8],
         [bar.centerXAnchor constraintEqualToAnchor:canvas.centerXAnchor],
     ]];
     BKAddBtn(bar, @"+Toque", @selector(addTap), UIColor.systemBlueColor);
@@ -414,7 +561,8 @@ static void BKOpenEditor(void)
     BKAddBtn(bar, @"+Direção", @selector(addDir), UIColor.systemPurpleColor);
     BKAddBtn(bar, @"Concluir", @selector(editorDone), UIColor.systemGrayColor);
 
-    gBindBanner = [[UIView alloc] initWithFrame:CGRectMake(screen.size.width/2 - 130, screen.size.height - 90, 260, 36)];
+    CGSize p = canvas.bounds.size;
+    gBindBanner = [[UIView alloc] initWithFrame:CGRectMake(p.width / 2.0 - 130, p.height - 90, 260, 36)];
     gBindBanner.backgroundColor = [UIColor colorWithWhite:0 alpha:0.8];
     gBindBanner.layer.cornerRadius = 8;
     gBindBanner.hidden = YES;
@@ -442,24 +590,26 @@ static void BKToggleEnabled(void)
 static void BKSetupBall(void)
 {
     if (gBallWindow) return;
-    gBallWindow = BKMakeWindow(UIWindowLevelAlert + 50, YES);
+    gBallWindow = BKMakeWindow(UIWindowLevelAlert + 50, YES, &gBallContainer);
     if (!gBallWindow) return;
-    CGRect screen = gBallWindow.frame;
-    gBallWindow.frame = CGRectMake(screen.size.width - 224, screen.size.height * 0.35, 224, 96);
-    UIViewController *vc = gBallWindow.rootViewController;
-    UIButton *ball = [UIButton buttonWithType:UIButtonTypeCustom];
-    ball.frame = CGRectMake(168, 0, 56, 56);
-    ball.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.85];
-    ball.layer.cornerRadius = 28;
-    ball.layer.borderColor = UIColor.systemYellowColor.CGColor;
-    ball.layer.borderWidth = 2;
-    [ball setTitle:@"BK" forState:UIControlStateNormal];
-    [ball setTitleColor:UIColor.systemYellowColor forState:UIControlStateNormal];
-    ball.titleLabel.font = [UIFont boldSystemFontOfSize:15];
-    [ball addTarget:[BKActionTarget shared] action:@selector(ballTap) forControlEvents:UIControlEventTouchUpInside];
+    BKApplyTo(gBallWindow, gBallContainer, BKCurrentOrient());
+    gAppliedOrient = BKCurrentOrient();
+
+    gBall = [UIButton buttonWithType:UIButtonTypeCustom];
+    gBall.frame = CGRectMake(0, 0, 56, 56);
+    gBall.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.85];
+    gBall.layer.cornerRadius = 28;
+    gBall.layer.borderColor = UIColor.systemYellowColor.CGColor;
+    gBall.layer.borderWidth = 2;
+    [gBall setTitle:@"BK" forState:UIControlStateNormal];
+    [gBall setTitleColor:UIColor.systemYellowColor forState:UIControlStateNormal];
+    gBall.titleLabel.font = [UIFont boldSystemFontOfSize:15];
+    [gBall addTarget:[BKActionTarget shared] action:@selector(ballTap) forControlEvents:UIControlEventTouchUpInside];
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:[BKActionTarget shared] action:@selector(ballPan:)];
-    [ball addGestureRecognizer:pan];
-    [vc.view addSubview:ball];
+    [gBall addGestureRecognizer:pan];
+    [gBallContainer addSubview:gBall];
+    BKPlaceBall();
+
     gBallWindow.hidden = NO;
     [@"ball" writeToFile:@"/var/mobile/bk_ball_shown.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
@@ -488,6 +638,7 @@ static void BKOverlayInit(void)
     NSDictionary *cfg = BKReadCfg();
     gEnabledFlag = cfg[@"Enabled"] ? [cfg[@"Enabled"] boolValue] : YES;
     gFrontBundle = cfg[@"ActiveBundle"];
+    gOrientOverride = cfg[@"OrientOverride"] ? [cfg[@"OrientOverride"] intValue] : 0;
     [@"overlay" writeToFile:@"/var/mobile/bk_overlay_loaded.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
 
     __block int tries = 0;
@@ -498,6 +649,7 @@ static void BKOverlayInit(void)
     [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
         if (gBallWindow && gBallWindow.hidden) gBallWindow.hidden = NO;
         if (gEditorWindow && gEditorWindow.hidden) gEditorWindow.hidden = NO;
+        BKRelayoutAll();
         BKPollFrontmost();
     }];
 }

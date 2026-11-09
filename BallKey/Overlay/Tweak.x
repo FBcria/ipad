@@ -14,6 +14,12 @@ static BOOL gEnabled = NO;
 static int gOrientOverride = 0;
 static CGPoint gBallPos = {0.06, 0.85};
 
+static void BKMark(NSString *name)
+{
+    [name writeToFile:[@"/var/mobile/bk_" stringByAppendingString:name]
+           atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
 static int BKFrontMostOrientation(void)
 {
     Class sbCls = objc_getClass("SpringBoard");
@@ -134,8 +140,7 @@ static void BKSetupBall(void)
 
     [gBallWindow.rootViewController.view addSubview:gBall];
     gBallWindow.hidden = NO;
-    [@"ball" writeToFile:@"/var/mobile/bk_ball_shown.txt"
-              atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    BKMark(@"ball_shown.txt");
     BKRelayout();
 }
 
@@ -211,8 +216,7 @@ static void BKOverlayInit(void)
     gEnabled = [cfg[@"Enabled"] boolValue];
     gFrontBundle = cfg[@"ActiveBundle"];
     gOrientOverride = cfg[@"OrientOverride"] ? [cfg[@"OrientOverride"] intValue] : 0;
-    [@"overlay" writeToFile:@"/var/mobile/bk_overlay_loaded.txt"
-                atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    BKMark(@"overlay_loaded.txt");
 
     __block int tries = 0;
     [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
@@ -229,6 +233,7 @@ static void BKOverlayInit(void)
 
 %ctor {
     @autoreleasepool {
+        BKMark(@"overlay_ctor.txt");
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             BKOverlayInit();

@@ -1,7 +1,8 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
-#import <notify.h>
+#import <objc/message.h>
 #import <objc/runtime.h>
+#import <notify.h>
 
 #define kBKConfigPath @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 
@@ -28,15 +29,11 @@ static int BKFrontMostOrientation(void)
     return (int)((int (*)(id, SEL))objc_msgSend)(app, s2);
 }
 
-static UIScreen *BKScr(void) { return [UIScreen mainScreen]; }
-
 static CGRect BKSpace(void)
 {
-    UIScreen *s = BKScr();
-    if (gOrientOverride == 3 || gOrientOverride == 4 || BKFrontMostOrientation() == 3
-        || BKFrontMostOrientation() == 4) {
-        return s.coordinateSpace.bounds;
-    }
+    UIScreen *s = [UIScreen mainScreen];
+    int o = gOrientOverride ? gOrientOverride : BKFrontMostOrientation();
+    if (o == 3 || o == 4) return s.coordinateSpace.bounds;
     return s.bounds;
 }
 
@@ -45,7 +42,7 @@ static void BKRelayout(void)
     if (!gBallWindow) return;
     CGRect sp = BKSpace();
     gBallWindow.frame = sp;
-    gMenuWindow.frame = sp;
+    if (gMenuWindow) gMenuWindow.frame = sp;
     CGFloat side = 44.0;
     gBall.frame = CGRectMake(gBallPos.x * sp.size.width - side / 2,
                              gBallPos.y * sp.size.height - side / 2, side, side);
@@ -59,7 +56,8 @@ static void BKPost(const char *name)
 
 static void BKSetEnabled(BOOL on)
 {
-    NSMutableDictionary *cfg = [NSMutableDictionary dictionaryWithContentsOfFile:kBKConfigPath] ?: [NSMutableDictionary dictionary];
+    NSMutableDictionary *cfg = [NSMutableDictionary dictionaryWithContentsOfFile:kBKConfigPath]
+        ?: [NSMutableDictionary dictionary];
     cfg[@"Enabled"] = @(on);
     [cfg writeToFile:kBKConfigPath atomically:YES];
     gEnabled = on;
@@ -84,9 +82,11 @@ static void BKToggleMenu(void)
         box.tag = 77;
         box.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.95];
         box.layer.cornerRadius = 14;
-        box.center = CGPointMake(gMenuWindow.bounds.size.width / 2, gMenuWindow.bounds.size.height / 2);
+        box.center = CGPointMake(gMenuWindow.bounds.size.width / 2,
+                                 gMenuWindow.bounds.size.height / 2);
 
-        NSArray *titles = @[@"Ativar / Desativar", @"Testar centro (P)", @"Dump de toque", @"Recarregar", @"Fechar"];
+        NSArray *titles = @[@"Ativar / Desativar", @"Testar centro", @"Dump de toque",
+                            @"Recarregar", @"Fechar"];
         for (NSUInteger i = 0; i < titles.count; i++) {
             UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
             b.frame = CGRectMake(12, 14 + (CGFloat)i * 46, 216, 40);
@@ -125,11 +125,11 @@ static void BKSetupBall(void)
     l.textAlignment = NSTextAlignmentCenter;
     [gBall addSubview:l];
 
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:gBall
-                                                                        action:@selector(bkPan:)];
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc]
+        initWithTarget:gBallWindow.rootViewController action:@selector(bkPan:)];
     [gBall addGestureRecognizer:pan];
-    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:gBall
-                                                                        action:@selector(bkTap:)];
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
+        initWithTarget:gBallWindow.rootViewController action:@selector(bkTap:)];
     [gBall addGestureRecognizer:tap];
 
     [gBallWindow.rootViewController.view addSubview:gBall];
@@ -160,21 +160,34 @@ static void BKPollFrontmost(void)
     BKPost("com.wjf.ballkey.reload");
 }
 
+@interface UIViewController (BKMenu)
+- (void)bkMenuTap:(UIButton *)b;
+- (void)bkPan:(UIPanGestureRecognizer *)g;
+- (void)bkTap:(UITapGestureRecognizer *)g;
+@end
+
 @implementation UIViewController (BKMenu)
+
 - (void)bkMenuTap:(UIButton *)b
 {
     NSInteger i = b.tag - 100;
-    if (i == 0) BKSetEnabled(!gEnabled);
-    else if (i == 1) BKPost("com.wjf.ballkey.test");
-    else if (i == 2) {
+    if (i == 0) {
+        BKSetEnabled(!gEnabled);
+    } else if (i == 1) {
+        BKPost("com.wjf.ballkey.test");
+    } else if (i == 2) {
         NSMutableDictionary *cfg = [NSMutableDictionary dictionaryWithContentsOfFile:kBKConfigPath]
             ?: [NSMutableDictionary dictionary];
         cfg[@"Dump"] = @(![cfg[@"Dump"] boolValue]);
         [cfg writeToFile:kBKConfigPath atomically:YES];
         BKPost("com.wjf.ballkey.reload");
-    } else if (i == 3) BKPost("com.wjf.ballkey.reload");
-    else if (i == 4) gMenuWindow.hidden = YES;
+    } else if (i == 3) {
+        BKPost("com.wjf.ballkey.reload");
+    } else {
+        gMenuWindow.hidden = YES;
+    }
 }
+
 - (void)bkPan:(UIPanGestureRecognizer *)g
 {
     UIView *v = g.view;
@@ -183,10 +196,13 @@ static void BKPollFrontmost(void)
     v.center = p;
     gBallPos = CGPointMake(p.x / sp.size.width, p.y / sp.size.height);
 }
+
 - (void)bkTap:(UITapGestureRecognizer *)g
 {
+    (void)g;
     BKToggleMenu();
 }
+
 @end
 
 static void BKOverlayInit(void)
@@ -204,6 +220,7 @@ static void BKOverlayInit(void)
         BKSetupBall();
     }];
     [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
+        (void)t;
         if (gBallWindow && gBallWindow.hidden) gBallWindow.hidden = NO;
         BKRelayout();
         BKPollFrontmost();

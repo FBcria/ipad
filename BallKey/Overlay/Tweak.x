@@ -182,6 +182,12 @@ static void BKWriteCfg(NSMutableDictionary *cfg)
     BKPost("com.wjf.ballkey.reload");
 }
 
+static BOOL BKGetDump(void)
+{
+    NSNumber *n = BKReadCfg()[@"Dump"];
+    return n ? [n boolValue] : NO;
+}
+
 static NSString *BKStatusText(void)
 {
     NSString *s = [NSString stringWithContentsOfFile:kBKStatusPath
@@ -603,20 +609,23 @@ static void BKToggleMenu(void)
     st.text = BKStatusText();
     [box addSubview:st];
 
+    BOOL dump = BKGetDump();
     NSArray *titles = @[@"Editar teclas",
                         [NSString stringWithFormat:@"Sensi FPS %.2f  (-)", BKGetSens()],
                         @"Sensi FPS  (+)",
                         gEnabled ? @"Desativar" : @"Ativar",
                         @"Testar centro",
-                        @"Dump de toque",
-                        @"Recarregar",
+                        dump ? @"Dump: LIGADO" : @"Dump: desligado",
+                        @"Reler config",
                         @"Fechar"];
     for (NSUInteger i = 0; i < titles.count; i++) {
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
         b.frame = CGRectMake(12, 40 + (CGFloat)i * 46, 226, 40);
         [b setTitle:titles[i] forState:UIControlStateNormal];
-        [b setTitleColor:(i == 3 && gEnabled ? [UIColor systemGreenColor] : [UIColor whiteColor])
-                forState:UIControlStateNormal];
+        UIColor *col = [UIColor whiteColor];
+        if (i == 3 && gEnabled) col = [UIColor systemGreenColor];
+        if (i == 5 && dump) col = [UIColor systemOrangeColor];
+        [b setTitleColor:col forState:UIControlStateNormal];
         b.backgroundColor = [UIColor colorWithWhite:0.22 alpha:1];
         b.layer.cornerRadius = 8;
         b.tag = 100 + (NSInteger)i;
@@ -677,18 +686,24 @@ static void BKToggleMenu(void)
     }
     if (i == 4) {
         BKPost("com.wjf.ballkey.test");
+        dispatch_async(dispatch_get_main_queue(), ^{
+            BKToggleMenu();
+            BKToggleMenu();
+        });
+        return;
+    }
+    if (i == 7) {
+        gMenuWindow.hidden = YES;
         return;
     }
     if (i == 5) {
         NSMutableDictionary *cfg = BKReadCfg();
-        cfg[@"Dump"] = @(![cfg[@"Dump"] boolValue]);
+        BOOL on = ![cfg[@"Dump"] boolValue];
+        cfg[@"Dump"] = @(on);
         BKWriteCfg(cfg);
+        BKLog(@"dump=%d", (int)on);
     } else if (i == 6) {
         BKPost("com.wjf.ballkey.reload");
-        return;
-    } else if (i == 7) {
-        gMenuWindow.hidden = YES;
-        return;
     } else if (i == 1) {
         BKSetSens(BKGetSens() - 0.05);
     } else if (i == 2) {
@@ -764,7 +779,7 @@ static void BKPollFrontmost(void)
     id sb = ((id (*)(id, SEL))objc_msgSend)(sbCls, @selector(sharedApplication));
     if (!sb) return;
     SEL sel = @selector(_accessibilityFrontMostApplication);
-    if (![sb respondsToSelector:sel]) return;
+    if (![sb respondsToSelector:sel]) return 0;
     id app = ((id (*)(id, SEL))objc_msgSend)(sb, sel);
     NSString *bid = app ? ((id (*)(id, SEL))objc_msgSend)(app, @selector(bundleIdentifier)) : nil;
     if (![bid isKindOfClass:[NSString class]]) return;

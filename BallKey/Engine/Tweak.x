@@ -15,7 +15,6 @@ typedef struct {
     BKIOHIDEventSystemClientRef (*ClientCreateWithType)(CFAllocatorRef, int, void *);
     void (*RegisterCB)(BKIOHIDEventSystemClientRef, void *, void *, void *);
     void (*SetQueue)(BKIOHIDEventSystemClientRef, dispatch_queue_t);
-    void (*SetMatching)(BKIOHIDEventSystemClientRef, CFTypeRef);
     void (*Activate)(BKIOHIDEventSystemClientRef);
     void (*Dispatch)(BKIOHIDEventSystemClientRef, BKIOHIDEventRef);
     int (*GetType)(BKIOHIDEventRef);
@@ -114,6 +113,7 @@ static uint16_t gPrevMask = 0;
 static int gPendingDir = 0;
 static int gHandledUsage = -1;
 static int gLastOrient = 3;
+static int gEvSeen = 0;
 
 static void BKSendLast(NSNumber *idx);
 
@@ -143,9 +143,9 @@ static void BKMark(NSString *name)
 
 static void BKStatus(void)
 {
-    NSString *s = [NSString stringWithFormat:@"ativo=%d marcadores=%lu app=%@ trava=%d tecla=%d sensi=%.2f",
+    NSString *s = [NSString stringWithFormat:@"ativo=%d marcadores=%lu app=%@ trava=%d tecla=%d sensi=%.2f ev=%d",
                    (int)gEnabled, (unsigned long)gPoints.count, gActiveBundle ?: @"-",
-                   (int)gFps, gFpsKey, gFpsSens];
+                   (int)gFps, gFpsKey, gFpsSens, gEvSeen];
     [s writeToFile:kBKStatusPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
@@ -167,7 +167,6 @@ static BOOL BKLoadIOKit(void)
     gIO.ClientCreateWithType = dlsym(gIOKit, "IOHIDEventSystemClientCreateWithType");
     gIO.RegisterCB = dlsym(gIOKit, "IOHIDEventSystemClientRegisterEventCallback");
     gIO.SetQueue = dlsym(gIOKit, "IOHIDEventSystemClientSetDispatchQueue");
-    gIO.SetMatching = dlsym(gIOKit, "IOHIDEventSystemClientSetMatching");
     gIO.Activate = dlsym(gIOKit, "IOHIDEventSystemClientActivate");
     gIO.Dispatch = dlsym(gIOKit, "IOHIDEventSystemClientDispatchEvent");
     gIO.GetType = dlsym(gIOKit, "IOHIDEventGetType");
@@ -761,6 +760,10 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
     if (!ev) return;
     @try {
     int type = gIO.GetType(ev);
+    if (gEvSeen < 25) {
+        gEvSeen++;
+        BKAppend([NSString stringWithFormat:@"E t=%d", type]);
+    }
 
     if (type == kIOHIDEventTypeKeyboard) {
         int page = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardUsagePage);
@@ -826,21 +829,11 @@ static void BKEngineInit(void)
     }
 
     @try {
-        if (gIO.SetMatching) {
-            NSArray *matching = @[
-                @{ @"DeviceUsagePage": @1, @"DeviceUsage": @6 },
-                @{ @"DeviceUsagePage": @1, @"DeviceUsage": @2 },
-                @{ @"DeviceUsagePage": @9, @"DeviceUsage": @1 },
-                @{ @"DeviceUsagePage": @1, @"DeviceUsage": @1 },
-            ];
-            gIO.SetMatching(gListenClient, (__bridge CFTypeRef)matching);
-            BKAppend(@"I match=1");
-        }
         if (gIO.RegisterCB) gIO.RegisterCB(gListenClient, BKListenCB, NULL, NULL);
         dispatch_queue_t q = dispatch_get_main_queue();
         if (gIO.SetQueue) gIO.SetQueue(gListenClient, q);
         if (gIO.Activate) gIO.Activate(gListenClient);
-        BKAppend(@"I tipo=2");
+        BKAppend(@"I tipo=2 sem-filtro");
     } @catch (NSException *e) {
         BKAppend([NSString stringWithFormat:@"! init %@", e.reason]);
         return;

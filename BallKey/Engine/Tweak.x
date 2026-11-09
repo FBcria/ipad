@@ -63,6 +63,11 @@ float IOHIDEventGetFloatValue(BKIOHIDEventRef event, IOHIDEventField field);
 #define kBKFieldType            ((IOHIDEventField)((11u << 16) | 4u))
 #define kBKFieldTouchPhase      ((IOHIDEventField)((11u << 16) | 26u))
 
+// Bits de mascara ausentes no header vendorizado.
+#define kBKEventStop            0x08u
+#define kBKEventPeak            0x10u
+#define kBKEventStart           0x100u
+
 #pragma mark - Estado
 
 static BKIOHIDEventSystemClientRef gListenClient = NULL;
@@ -326,7 +331,7 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
         if (!gSendClient) return;
     }
 
-    uint32_t opt = (gVariant == 4) ? 0u : kBKSetOpt;
+    uint32_t opt = kBKSetOpt;
 
     float rx = BKClamp(nx);
     float ry = BKClamp(ny);
@@ -345,31 +350,40 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
         else if (phase == 2) wire = gEndPhase;
     }
 
+    // pressao e alcance reais: toque real nunca tem forca zero
+    float tp = (phase == 2) ? 0.0f : 1.0f;
+    int range = (phase == 2) ? 0 : 1;
+    int touch = (phase == 2) ? 0 : 1;
+
+    uint32_t fdx = (gVariant == 1 || gVariant == 5) ? 1u : (uint32_t)(idx + 1);
+    uint32_t fid = (gVariant == 1 || gVariant == 5) ? 2u : (uint32_t)(idx + 101);
+    int di = (gVariant == 2 || gVariant == 5) ? 1 : 0;
+    float rad = (gVariant == 3 || gVariant == 5) ? 20.0f : 0.0f;
+    float qual = (gVariant == 3 || gVariant == 5) ? 1.0f : 0.0f;
+
+    int mask;
+    if (phase == 0) {
+        mask = kIOHIDDigitizerEventPosition;
+    } else {
+        mask = kIOHIDDigitizerEventRange | kIOHIDDigitizerEventTouch | kIOHIDDigitizerEventPosition;
+    }
+    if (gVariant == 4 || gVariant == 5) {
+        if (phase == 1) mask |= (kBKEventStart | kBKEventPeak);
+        else if (phase == 2) mask |= kBKEventStop;
+    }
+
     uint64_t ab = mach_absolute_time();
-    uint32_t index = (uint32_t)(idx + 1);
-    uint32_t ident = (uint32_t)(idx + 101);
 
     BKIOHIDEventRef hand = IOHIDEventCreateDigitizerEvent(kCFAllocatorDefault, ab, kBKTransducerHand,
-        0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        0, 1, (uint32_t)mask, 0, rx, ry, 0, tp, 0, (uint8_t)range, (uint8_t)di, 0);
     if (!hand) return;
 
     IOHIDEventSetIntegerValueWithOptions(hand, kBKFieldDisplayInt, 1, opt);
-    IOHIDEventSetIntegerValueWithOptions(hand, kBKFieldBuiltIn,
-        (gVariant == 1) ? (int)kBKTransducerHand : 1, opt);
-
-    int mask;
-    int touch;
-    if (phase == 0) {
-        mask = kIOHIDDigitizerEventPosition;
-        touch = 1;
-    } else {
-        mask = kIOHIDDigitizerEventRange | kIOHIDDigitizerEventTouch | kIOHIDDigitizerEventPosition;
-        touch = (phase == 2) ? 0 : 1;
-    }
+    IOHIDEventSetIntegerValueWithOptions(hand, kBKFieldBuiltIn, 1, opt);
 
     BKIOHIDEventRef finger = IOHIDEventCreateDigitizerFingerEventWithQuality(kCFAllocatorDefault, ab,
-        index, ident, (uint32_t)mask, rx, ry, 0, 0, 0, 0, 0, 0, 0, 0,
-        (uint8_t)touch, (uint8_t)touch, 0);
+        fdx, fid, (uint32_t)mask, rx, ry, 0, tp, 0, rad, rad, qual, 1.0f, 0,
+        (uint8_t)range, (uint8_t)touch, 0);
     if (finger) {
         IOHIDEventSetIntegerValueWithOptions(finger, kBKFieldDisplayInt, 1, opt);
         if (gEndPhase) {
@@ -380,7 +394,7 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
     }
 
     IOHIDEventSetIntegerValueWithOptions(hand, kIOHIDEventFieldDigitizerEventMask, mask, opt);
-    IOHIDEventSetIntegerValueWithOptions(hand, kIOHIDEventFieldDigitizerRange, touch, opt);
+    IOHIDEventSetIntegerValueWithOptions(hand, kIOHIDEventFieldDigitizerRange, range, opt);
     IOHIDEventSetIntegerValueWithOptions(hand, kIOHIDEventFieldDigitizerTouch, touch, opt);
     if (gEndPhase) {
         IOHIDEventSetIntegerValueWithOptions(hand, kBKFieldTouchPhase, wire, opt);
@@ -396,9 +410,9 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
     CFRelease(hand);
 
     BKNotifyUserActivity();
-    BKAppend([NSString stringWithFormat:@"D v=%d ph=%d o=%d u=%d f=%d r=%d s=%d x=%.3f y=%.3f X=%.3f Y=%.3f",
+    BKAppend([NSString stringWithFormat:@"D v=%d ph=%d o=%d u=%d f=%d r=%d s=%d tp=%.1f x=%.3f y=%.3f X=%.3f Y=%.3f",
               gVariant, phase, o, BKDeviceOrientation(), BKFrontMostOrientation(), (int)gRaw, (int)gSpace,
-              rx, ry, nx, ny]);
+              tp, rx, ry, nx, ny]);
 }
 
 static void BKSendLast(NSNumber *idx)
@@ -542,7 +556,7 @@ static void BKHandleMove(float dx, float dy)
 
 static void BKVarStep(int v, int n)
 {
-    if (v >= 5) {
+    if (v >= 6) {
         gVariant = 0;
         gRaw = NO;
         gSpace = NO;

@@ -3,6 +3,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <notify.h>
+#import <stdarg.h>
 
 #define kBKConfigPath @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 
@@ -13,6 +14,9 @@ static NSString *gFrontBundle = nil;
 static BOOL gEnabled = NO;
 static int gOrientOverride = 0;
 static CGPoint gBallPos = {0.06, 0.85};
+
+static CGRect BKSpace(void);
+static UIWindowScene *BKMainScene(void);
 
 static void BKMark(NSString *name)
 {
@@ -65,7 +69,7 @@ static UIWindow *BKMakeWindow(CGFloat level)
     if (!scene) return nil;
 
     UIWindow *w = [[UIWindow alloc] initWithWindowScene:scene];
-    w.frame = BKSpacePtr();
+    w.frame = BKSpace();
     w.windowLevel = level;
     w.backgroundColor = [UIColor clearColor];
     w.alpha = 1.0;

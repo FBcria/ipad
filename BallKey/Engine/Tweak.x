@@ -15,6 +15,7 @@ typedef struct {
     BKIOHIDEventSystemClientRef (*ClientCreateWithType)(CFAllocatorRef, int, void *);
     void (*RegisterCB)(BKIOHIDEventSystemClientRef, void *, void *, void *);
     void (*SetQueue)(BKIOHIDEventSystemClientRef, dispatch_queue_t);
+    void (*SetMatching)(BKIOHIDEventSystemClientRef, CFTypeRef);
     void (*Activate)(BKIOHIDEventSystemClientRef);
     void (*Dispatch)(BKIOHIDEventSystemClientRef, BKIOHIDEventRef);
     int (*GetType)(BKIOHIDEventRef);
@@ -32,6 +33,7 @@ typedef struct {
 } BKIO;
 
 #define kBKConfigPath           @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
+#define kBKStatusPath           @"/var/mobile/bk_status.txt"
 #define kBKLogPath              @"/var/mobile/bk_debug.log"
 #define kBKNotifyReload         "com.wjf.ballkey.reload"
 #define kBKNotifyTest           "com.wjf.ballkey.test"
@@ -52,7 +54,7 @@ typedef struct {
 #define kBKPtrY                 (17u << 16 | 1u)
 #define kBKPtrMask              (17u << 16 | 3u)
 #define kBKMoveFactor           0.000977
-#define kBKFpsKey               224
+#define kBKDefaultFpsKey        224
 
 #define kIOHIDEventTypeKeyboard                3
 #define kIOHIDEventFieldKeyboardUsagePage      (3u << 16 | 0u)
@@ -86,7 +88,6 @@ static NSMutableDictionary *gGen = nil;
 static NSMutableDictionary *gCur = nil;
 
 static BOOL gRotate = YES;
-static BOOL gSpace = NO;
 static BOOL gFollowCursor = NO;
 static double gFollowSens = 1.0;
 static int gOrientOverride = 0;
@@ -94,6 +95,8 @@ static BOOL gDump = NO;
 
 static BOOL gFps = NO;
 static double gFpsSens = 1.0;
+static int gFpsKey = kBKDefaultFpsKey;
+static double gFpsX = 0.5, gFpsY = 0.5;
 static double gFireX = 0.83, gFireY = 0.66;
 static double gAdsX = 0.95, gAdsY = 0.53;
 static double gAimX = 0.5, gAimY = 0.5;
@@ -138,6 +141,14 @@ static void BKMark(NSString *name)
            atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
+static void BKStatus(void)
+{
+    NSString *s = [NSString stringWithFormat:@"en=%d n=%lu b=%@ fps=%d key=%d sens=%.2f",
+                   (int)gEnabled, (unsigned long)gPoints.count, gActiveBundle ?: @"-",
+                   (int)gFps, gFpsKey, gFpsSens];
+    [s writeToFile:kBKStatusPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
 #pragma mark - IOKit dinâmico
 
 static BOOL BKLoadIOKit(void)
@@ -156,6 +167,7 @@ static BOOL BKLoadIOKit(void)
     gIO.ClientCreateWithType = dlsym(gIOKit, "IOHIDEventSystemClientCreateWithType");
     gIO.RegisterCB = dlsym(gIOKit, "IOHIDEventSystemClientRegisterEventCallback");
     gIO.SetQueue = dlsym(gIOKit, "IOHIDEventSystemClientSetDispatchQueue");
+    gIO.SetMatching = dlsym(gIOKit, "IOHIDEventSystemClientSetMatching");
     gIO.Activate = dlsym(gIOKit, "IOHIDEventSystemClientActivate");
     gIO.Dispatch = dlsym(gIOKit, "IOHIDEventSystemClientDispatchEvent");
     gIO.GetType = dlsym(gIOKit, "IOHIDEventGetType");
@@ -221,7 +233,6 @@ static double BKClamp(double v)
     return v;
 }
 
-// Visual -> painel
 static void BKConvInv(double vx, double vy, int orient, double *ox, double *oy)
 {
     double rx = vx, ry = vy;
@@ -239,6 +250,14 @@ static void BKConvInv(double vx, double vy, int orient, double *ox, double *oy)
 
 static void BKReleaseAll(void);
 
+static int BKUsageFromKey(id k)
+{
+    if (![k isKindOfClass:[NSString class]]) return 0;
+    NSArray *p = [(NSString *)k componentsSeparatedByString:@":"];
+    if (p.count != 2 || ![p[0] isEqualToString:@"k"]) return 0;
+    return [p[1] intValue];
+}
+
 static void BKLoadConfig(void)
 {
     NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:kBKConfigPath];
@@ -252,16 +271,20 @@ static void BKLoadConfig(void)
     }
 
     if ([cfg[@"Rotate"] isKindOfClass:[NSNumber class]]) gRotate = [cfg[@"Rotate"] boolValue];
-    if ([cfg[@"Space"] isKindOfClass:[NSNumber class]]) gSpace = [cfg[@"Space"] boolValue];
     if ([cfg[@"FollowCursor"] isKindOfClass:[NSNumber class]]) gFollowCursor = [cfg[@"FollowCursor"] boolValue];
     if ([cfg[@"FollowSens"] isKindOfClass:[NSNumber class]]) gFollowSens = [cfg[@"FollowSens"] doubleValue];
     if ([cfg[@"OrientOverride"] isKindOfClass:[NSNumber class]]) gOrientOverride = [cfg[@"OrientOverride"] intValue];
     if ([cfg[@"Dump"] isKindOfClass:[NSNumber class]]) gDump = [cfg[@"Dump"] boolValue];
     if ([cfg[@"FpsSens"] isKindOfClass:[NSNumber class]]) gFpsSens = [cfg[@"FpsSens"] doubleValue];
+    if ([cfg[@"FpsX"] isKindOfClass:[NSNumber class]]) gFpsX = [cfg[@"FpsX"] doubleValue];
+    if ([cfg[@"FpsY"] isKindOfClass:[NSNumber class]]) gFpsY = [cfg[@"FpsY"] doubleValue];
     if ([cfg[@"FireX"] isKindOfClass:[NSNumber class]]) gFireX = [cfg[@"FireX"] doubleValue];
     if ([cfg[@"FireY"] isKindOfClass:[NSNumber class]]) gFireY = [cfg[@"FireY"] doubleValue];
     if ([cfg[@"AdsX"] isKindOfClass:[NSNumber class]]) gAdsX = [cfg[@"AdsX"] doubleValue];
     if ([cfg[@"AdsY"] isKindOfClass:[NSNumber class]]) gAdsY = [cfg[@"AdsY"] doubleValue];
+
+    int fk = BKUsageFromKey(cfg[@"FpsKey"]);
+    gFpsKey = fk > 0 ? fk : kBKDefaultFpsKey;
 
     if (pts.count > 0) {
         gPoints = pts;
@@ -275,13 +298,14 @@ static void BKLoadConfig(void)
     gPendingDir = 0;
     gHandledUsage = -1;
     gPrevMask = 0;
-    gAimX = 0.5;
-    gAimY = 0.5;
+    gAimX = gFpsX;
+    gAimY = gFpsY;
 
     if (!gEnabled) BKReleaseAll();
 
-    BKAppend([NSString stringWithFormat:@"C en=%d b=%@ n=%lu", (int)gEnabled,
-              gActiveBundle ?: @"-", (unsigned long)gPoints.count]);
+    BKStatus();
+    BKAppend([NSString stringWithFormat:@"C en=%d b=%@ n=%lu key=%d",
+              (int)gEnabled, gActiveBundle ?: @"-", (unsigned long)gPoints.count, gFpsKey]);
 }
 
 #pragma mark - Toque
@@ -297,11 +321,10 @@ static void BKNotifyUserActivity(void)
     if ([timer respondsToSelector:s1]) {
         ((void (*)(id, SEL))objc_msgSend)(timer, s1);
     } else if ([timer respondsToSelector:s2]) {
-        ((void (*)(id, SEL, id))objc_msgSend)(timer, s2, nil);
+        ((void (*)(id, SEL))objc_msgSend)(timer, s2, nil);
     }
 }
 
-// fase: 0 move, 1 desce, 2 sobe
 static void BKSend(double nx, double ny, int phase, NSUInteger idx)
 {
     if (!gIO.Dispatch) return;
@@ -438,8 +461,8 @@ static void BKReleaseAll(void)
     gDirActive = NO;
     gFps = NO;
     gAdsDown = NO;
-    gAimX = 0.5;
-    gAimY = 0.5;
+    gAimX = gFpsX;
+    gAimY = gFpsY;
 }
 
 #pragma mark - Conversão de marcador
@@ -520,13 +543,13 @@ static void BKFpsMove(double dx, double dy)
     gAimX += dx * gFpsSens * kBKMoveFactor;
     gAimY += dy * gFpsSens * kBKMoveFactor;
 
-    if (gAimX < 0.15 || gAimX > 0.85 || gAimY < 0.15 || gAimY > 0.85) {
+    if (fabs(gAimX - gFpsX) > 0.33 || fabs(gAimY - gFpsY) > 0.33) {
         BKUp(kBKIdxAim);
-        double cxp = 0.5, cyp = 0.5;
-        if (gRotate) BKConvInv(0.5, 0.5, BKCurrentOrient(), &cxp, &cyp);
+        double cxp = gFpsX, cyp = gFpsY;
+        if (gRotate) BKConvInv(gFpsX, gFpsY, BKCurrentOrient(), &cxp, &cyp);
         BKDown(kBKIdxAim, cxp, cyp);
-        gAimX = BKClamp(0.5 + dx * gFpsSens * kBKMoveFactor);
-        gAimY = BKClamp(0.5 + dy * gFpsSens * kBKMoveFactor);
+        gAimX = BKClamp(gFpsX + dx * gFpsSens * kBKMoveFactor);
+        gAimY = BKClamp(gFpsY + dy * gFpsSens * kBKMoveFactor);
     }
 
     double px = gAimX, py = gAimY;
@@ -544,16 +567,18 @@ static void BKFpsToggle(void)
             BKUp(kBKIdxAds);
         }
         BKAppend(@"F off");
+        BKStatus();
         return;
     }
 
     gFps = YES;
-    gAimX = 0.5;
-    gAimY = 0.5;
-    double px = 0.5, py = 0.5;
-    if (gRotate) BKConvInv(0.5, 0.5, BKCurrentOrient(), &px, &py);
+    gAimX = gFpsX;
+    gAimY = gFpsY;
+    double px = gFpsX, py = gFpsY;
+    if (gRotate) BKConvInv(gFpsX, gFpsY, BKCurrentOrient(), &px, &py);
     BKDown(kBKIdxAim, px, py);
     BKAppend(@"F on");
+    BKStatus();
 }
 
 static void BKFpsFire(void)
@@ -591,7 +616,6 @@ static void BKCursorTap(void)
     NSUInteger idx = kBKIdxCursor;
     double px = gCx, py = gCy;
     if (gRotate) BKConvInv(gCx, gCy, BKCurrentOrient(), &px, &py);
-    BKAppend([NSString stringWithFormat:@"C vis=%.3f,%.3f pn=%.3f,%.3f", gCx, gCy, px, py]);
     BKDown(idx, px, py);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
         BKUp(idx);
@@ -633,7 +657,7 @@ static void BKHandleKey(int usage, BOOL down)
             NSDictionary *pt = gPoints[i];
             if (![pt[@"Type"] isEqualToString:@"Dir"]) continue;
             BKHandleDir(pt, d, down);
-            BKAppend([NSString stringWithFormat:@"B %@ dir=%d d=%d", key, d, (int)down]);
+            if (gDump) BKAppend([NSString stringWithFormat:@"B %@ dir=%d d=%d", key, d, (int)down]);
             return;
         }
     }
@@ -644,10 +668,10 @@ static void BKHandleKey(int usage, BOOL down)
         NSString *k = pt[@"Key"];
         if (![k isKindOfClass:[NSString class]] || ![k isEqualToString:key]) continue;
         BKHandlePoint(pt, i, down);
-        BKAppend([NSString stringWithFormat:@"B %@ hit=1", key]);
+        if (gDump) BKAppend([NSString stringWithFormat:@"B %@ hit=1", key]);
         return;
     }
-    BKAppend([NSString stringWithFormat:@"B %@ hit=0", key]);
+    if (gDump) BKAppend([NSString stringWithFormat:@"B %@ hit=0", key]);
 }
 
 static void BKHandleButton(int b, BOOL down)
@@ -655,19 +679,16 @@ static void BKHandleButton(int b, BOOL down)
     if (gFps) {
         if (b == 0) {
             if (down) BKFpsFire();
-            BKAppend(@"M fire");
             return;
         }
         if (b == 1) {
             BKFpsAds(down);
-            BKAppend(@"M ads");
             return;
         }
     }
 
     if (b == 0 && gFollowCursor && down) {
         BKCursorTap();
-        BKAppend(@"M cur");
         return;
     }
 
@@ -677,7 +698,7 @@ static void BKHandleButton(int b, BOOL down)
         NSString *k = pt[@"Key"];
         if (![k isKindOfClass:[NSString class]] || ![k isEqualToString:key]) continue;
         BKHandlePoint(pt, i, down);
-        BKAppend([NSString stringWithFormat:@"B %@ hit=1", key]);
+        if (gDump) BKAppend([NSString stringWithFormat:@"B %@ hit=1", key]);
         return;
     }
 }
@@ -702,7 +723,6 @@ static const double kBKProbe[5][2] = {
 
 static void BKProbe(void)
 {
-    BKAppend(@"P ini");
     for (int i = 0; i < 5; i++) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)i * 1200 * NSEC_PER_MSEC),
                        dispatch_get_main_queue(), ^{
@@ -710,9 +730,7 @@ static void BKProbe(void)
             double y = kBKProbe[i][1];
             double px = x, py = y;
             if (gRotate) BKConvInv(x, y, BKCurrentOrient(), &px, &py);
-            BKAppend([NSString stringWithFormat:@"P %d vis=%.3f,%.3f pn=%.3f,%.3f", i, x, y, px, py]);
             BKTap(90 + (NSUInteger)i, px, py);
-            if (i == 4) BKAppend(@"P fim");
         });
     }
 }
@@ -739,9 +757,10 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         int repeat = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardRepeat);
         if (repeat) return;
         gPendingDir = down ? 1 : -1;
+        if (gDump) BKAppend([NSString stringWithFormat:@"K %d pg=%d d=%d", usage, page, down]);
         if ((page == 0 || page == 7) && usage >= 4 && usage <= 231) {
             gHandledUsage = usage;
-            if (usage == kBKFpsKey) {
+            if (usage == gFpsKey) {
                 if (down) BKFpsToggle();
                 return;
             }
@@ -794,6 +813,17 @@ static void BKEngineInit(void)
     if (!gListenClient) {
         BKAppend(@"I client=0");
         return;
+    }
+
+    if (gIO.SetMatching) {
+        NSArray *matching = @[
+            @{ @"DeviceUsagePage": @1, @"DeviceUsage": @6 },
+            @{ @"DeviceUsagePage": @1, @"DeviceUsage": @2 },
+            @{ @"DeviceUsagePage": @9, @"DeviceUsage": @1 },
+            @{ @"DeviceUsagePage": @1, @"DeviceUsage": @1 },
+        ];
+        gIO.SetMatching(gListenClient, (__bridge CFTypeRef)matching);
+        BKAppend(@"I match=1");
     }
 
     if (gIO.RegisterCB) gIO.RegisterCB(gListenClient, BKListenCB, NULL, NULL);

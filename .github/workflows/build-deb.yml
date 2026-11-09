@@ -1,4 +1,4 @@
-name: build-deb
+name: Build
 
 on:
   push:
@@ -17,79 +17,93 @@ jobs:
 
       - name: Dependências
         run: |
-          set -e
           sudo apt-get update
-          sudo apt-get install -y build-essential fakeroot rsync curl perl zip git \
-            libxml2 libxml2-dev libtinfo6 dpkg-dev
+          sudo apt-get install -y libxml2 libxml2-dev libtinfo6 dpkg-dev make curl git jq
 
       - name: Instalar Theos
         run: |
           set -e
+          export THEOS=$HOME/theos
           bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
-          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
-          echo "$HOME/theos/bin" >> "$GITHUB_PATH"
+          echo "THEOS=$THEOS" >> $GITHUB_ENV
 
       - name: Aplicar fork RootHide
         run: |
           set -e
-          cd "$THEOS"
-          git remote set-url origin https://github.com/roothide/theos.git
-          git fetch --depth 1 origin master
-          git reset --hard FETCH_HEAD
-          git submodule update --init --recursive || true
-          if ! grep -rq "roothide" makefiles/; then
-            echo "fork do RootHide não foi aplicado"
-            exit 1
-          fi
-          echo "esquemas disponíveis:"
-          ls makefiles/package/ 2>/dev/null || true
+          git -C "$THEOS" remote set-url origin https://github.com/roothide/theos.git
+          git -C "$THEOS" fetch --depth 1 origin master
+          git -C "$THEOS" reset --hard FETCH_HEAD
+          grep -rq roothide "$THEOS/makefiles/" || { echo "fork nao aplicado"; exit 1; }
 
       - name: Conferir toolchain
         run: |
           set -e
-          test -x "$THEOS/toolchain/linux/iphone/bin/clang" || { echo "toolchain ausente"; exit 1; }
-          "$THEOS/toolchain/linux/iphone/bin/clang" --version
-          ls "$THEOS/sdks" | head
+          test -d "$THEOS/toolchain/linux/iphone" || { echo "toolchain ausente"; exit 1; }
+          test -d "$THEOS/sdks" || { echo "sdks ausentes"; exit 1; }
 
-      - name: Versão
-        id: ver
-        working-directory: BallKey
-        run: |
-          V=$(grep -m1 '^Version:' control | awk '{print $2}')
-          echo "v=$V" >> "$GITHUB_OUTPUT"
-          echo "Versão: $V"
-
-      - name: Build
-        working-directory: BallKey
+      - name: Localizar Makefile
+        id: mk
         run: |
           set -e
-          make clean || true
-          make package FINALPACKAGE=1 ARCHS=arm64
-          ls -la packages/
+          ls -la
+          if [ -f BallKey/Makefile ]; then
+            echo "dir=BallKey" >> $GITHUB_OUTPUT
+          elif [ -f Makefile ]; then
+            echo "dir=." >> $GITHUB_OUTPUT
+          else
+            echo "Makefile nao encontrado"
+            find . -maxdepth 3 -name Makefile -print
+            exit 1
+          fi
 
-      - name: Upload artifact
+      - name: Versão do control
+        id: ver
+        run: |
+          set -e
+          C="${{ steps.mk.outputs.dir }}/control"
+          V=$(grep -m1 '^Version:' "$C" | awk '{print $2}')
+          test -n "$V" || { echo "Version ausente no control"; exit 1; }
+          echo "version=$V" >> $GITHUB_OUTPUT
+
+      - name: Build
+        run: |
+          set -e
+          make -C "${{ steps.mk.outputs.dir }}" clean
+          make -C "${{ steps.mk.outputs.dir }}" package FINALPACKAGE=1
+
+      - name: Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ballkey-${{ github.run_number }}
-          path: BallKey/packages/*.deb
-          retention-days: 14
+          name: ballkey-${{ steps.ver.outputs.version }}-${{ github.run_number }}
+          path: ${{ steps.mk.outputs.dir }}/packages/*.deb
           if-no-files-found: error
 
-      - name: Publicar release
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}-${{ github.run_number }}
+          name: BallKey v${{ steps.ver.outputs.version }} (${{ github.run_number }})
+          files: ${{ steps.mk.outputs.dir }}/packages/*.deb
+
+      - name: Podar releases antigas
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          TAG="v${{ steps.ver.outputs.v }}-${{ github.run_number }}"
-          gh release create "$TAG" BallKey/packages/*.deb \
-            --title "BallKey ${{ steps.ver.outputs.v }} (${{ github.run_number }})" \
-            --notes "Build ${{ github.run_number }}"
-          gh release list --limit 50 --json tagName -q '.[].tagName' \
-            | tail -n +16 \
-            | xargs -r -n1 gh release delete -y --cleanup-tag
+          gh release list --limit 100 --json tagName,createdAt \
+            --jq 'sort_by(.createdAt) | reverse | .[15:] | .[].tagName' \
+          | while read -r t; do
+              echo "apagando $t"
+              gh release delete "$t" --yes --cleanup-tag
+            done
 
       - name: Resumo
         if: always()
         run: |
-          echo "### BallKey ${{ steps.ver.outputs.v }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "Run ${{ github.run_number }} — ubuntu-24.04" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### BallKey"
+            echo "- Versao: ${{ steps.ver.outputs.version }}"
+            echo "- Run: ${{ github.run_number }}"
+            echo "- Diretorio: ${{ steps.mk.outputs.dir }}"
+            echo "- Status: ${{ job.status }}"
+          } >> $GITHUB_STEP_SUMMARY

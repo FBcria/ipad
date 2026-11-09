@@ -1,6 +1,5 @@
 // BallKey Engine — injetado no SpringBoard.
-// Escuta teclado/mouse via HID e sintetiza toques de dedo reais
-// (pacote hand + finger, BuiltIn, senderID — linhagem SimulateTouch).
+// Escuta teclado/mouse via HID e sintetiza toques de dedo reais.
 
 #import <Foundation/Foundation.h>
 #import <CoreFoundation/CoreFoundation.h>
@@ -59,13 +58,14 @@ double IOHIDEventGetFloatValue(BKIOHIDEventRef event, IOHIDEventField field);
 #define kBKPtrX                 (17u << 16 | 0u)
 #define kBKPtrY                 (17u << 16 | 1u)
 #define kBKPtrMask              (17u << 16 | 3u)
-#define kBKMoveFactor           0.000977f
+#define kBKMoveFactor           0.000977
 #define kBKToggleUsage          14
 #define kBKProbeUsage           19
 
-// Ausentes no header vendorizado. Digitizer = tipo 11; Type = 4,
+// Ausentes no header vendorizado. Digitizer = tipo 11; Type = 4, BuiltIn = 22,
 // IsDisplayIntegrated = 25, TouchPhase = 26.
 #define kBKFieldType            ((IOHIDEventField)((11u << 16) | 4u))
+#define kBKFieldBuiltIn         ((IOHIDEventField)((11u << 16) | 22u))
 #define kBKFieldTouchPhase      ((IOHIDEventField)((11u << 16) | 26u))
 
 // Bits de mascara ausentes no header vendorizado.
@@ -107,7 +107,6 @@ static int gLastOrient = 0;
 static double gCx = 0.5, gCy = 0.5;
 static uint32_t gSeq = 0;
 static BOOL gProbing = NO;
-static int gVariant = 0;
 static uint64_t gRealSid = 0;
 static int gRealLeft = 12;
 
@@ -360,16 +359,10 @@ static void BKSend(double nx, double ny, int phase, NSUInteger idx)
     int range = (phase == 2) ? 0 : 1;
     int touch = (phase == 2) ? 0 : 1;
 
-    int mask;
-    if (phase == 0) {
-        mask = kIOHIDDigitizerEventPosition;
-    } else {
-        mask = kIOHIDDigitizerEventRange | kIOHIDDigitizerEventTouch | kIOHIDDigitizerEventPosition;
-    }
-    if (gVariant == 1) {
-        mask |= (kBKEventIdentity | kBKEventAttribute);
-        if (phase == 2) mask |= kBKEventStop;
-    }
+    // mascara real: Identity e Attribute sempre, Stop no levantamento
+    int mask = kIOHIDDigitizerEventRange | kIOHIDDigitizerEventTouch |
+               kIOHIDDigitizerEventPosition | kBKEventIdentity | kBKEventAttribute;
+    if (phase == 2) mask |= kBKEventStop;
 
     uint64_t ab = mach_absolute_time();
 
@@ -378,6 +371,7 @@ static void BKSend(double nx, double ny, int phase, NSUInteger idx)
     if (!hand) return;
 
     IOHIDEventSetIntegerValueWithOptions(hand, kBKFieldType, kBKTransducerHand, opt);
+    IOHIDEventSetIntegerValueWithOptions(hand, kBKFieldBuiltIn, 1, opt);
     IOHIDEventSetIntegerValueWithOptions(hand, kBKFieldDisplayInt, 1, opt);
     IOHIDEventSetFloatValue(hand, kIOHIDEventFieldDigitizerX, rx);
     IOHIDEventSetFloatValue(hand, kIOHIDEventFieldDigitizerY, ry);
@@ -387,6 +381,7 @@ static void BKSend(double nx, double ny, int phase, NSUInteger idx)
         (uint8_t)range, (uint8_t)touch, 0);
     if (finger) {
         IOHIDEventSetIntegerValueWithOptions(finger, kBKFieldType, kBKTransducerFinger, opt);
+        IOHIDEventSetIntegerValueWithOptions(finger, kBKFieldBuiltIn, 1, opt);
         IOHIDEventSetIntegerValueWithOptions(finger, kBKFieldDisplayInt, 1, opt);
         IOHIDEventSetFloatValue(finger, kIOHIDEventFieldDigitizerX, rx);
         IOHIDEventSetFloatValue(finger, kIOHIDEventFieldDigitizerY, ry);
@@ -412,8 +407,8 @@ static void BKSend(double nx, double ny, int phase, NSUInteger idx)
     CFRelease(hand);
 
     BKNotifyUserActivity();
-    BKAppend([NSString stringWithFormat:@"D v=%d ph=%d o=%d u=%d f=%d r=%d s=%d tp=%.1f sid=%llx x=%.3f y=%.3f X=%.3f Y=%.3f",
-              gVariant, phase, o, BKDeviceOrientation(), BKFrontMostOrientation(), (int)gRaw, (int)gSpace,
+    BKAppend([NSString stringWithFormat:@"D ph=%d o=%d u=%d f=%d r=%d s=%d tp=%.1f sid=%llx x=%.3f y=%.3f X=%.3f Y=%.3f",
+              phase, o, BKDeviceOrientation(), BKFrontMostOrientation(), (int)gRaw, (int)gSpace,
               tp, sid, rx, ry, nx, ny]);
 }
 
@@ -585,36 +580,46 @@ static void BKDumpReal(BKIOHIDEventRef ev, int depth)
 
 #pragma mark - Probe
 
-static void BKVarStep(int v, int n)
+static const double kBKProbe[5][2] = {
+    { 0.50, 0.50 },
+    { 0.20, 0.50 },
+    { 0.80, 0.50 },
+    { 0.50, 0.20 },
+    { 0.50, 0.80 }
+};
+
+static void BKProbeStep(int pass, int i)
 {
-    if (v >= 2) {
-        gVariant = 0;
-        gRaw = NO;
-        gSpace = NO;
-        gProbing = NO;
-        BKAppend(@"V fim");
-        return;
-    }
-    if (n >= 2) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 700 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-            BKVarStep(v + 1, 0);
-        });
+    if (i >= 5) {
+        if (pass == 0) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1200 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+                BKAppend(@"P --- conv ---");
+                BKProbeStep(1, 0);
+            });
+        } else {
+            gRaw = NO;
+            gProbing = NO;
+            BKAppend(@"P fim");
+        }
         return;
     }
 
-    gVariant = v;
-    NSUInteger idx = 90 + (NSUInteger)(v * 2 + n);
-    BKAppend([NSString stringWithFormat:@"V %d n=%d", v, n]);
+    gRaw = (pass == 0);
 
-    BKSend(0.5, 0.5, 1, idx);
+    NSUInteger idx = 80 + (NSUInteger)i + (NSUInteger)(pass * 5);
+    double x = kBKProbe[i][0];
+    double y = kBKProbe[i][1];
+
+    BKAppend([NSString stringWithFormat:@"P %@ i=%d x=%.3f y=%.3f", pass ? @"tr" : @"raw", i, x, y]);
+    BKSend(x, y, 1, idx);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        BKSend(0.5, 0.5, 0, idx);
+        BKSend(x, y, 0, idx);
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 70 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        BKSend(0.5, 0.5, 2, idx);
+        BKSend(x, y, 2, idx);
     });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1000 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        BKVarStep(v, n + 1);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 900 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        BKProbeStep(pass, i + 1);
     });
 }
 
@@ -623,10 +628,8 @@ static void BKProbeRun(void)
     if (gProbing) return;
     gProbing = YES;
     gRaw = YES;
-    gSpace = NO;
-    BKAppend([NSString stringWithFormat:@"V inicio o=%d tela=%.0fx%.0f sidreal=%llx",
-              BKCurrentOrient(), BKScreenW(), BKScreenH(), gRealSid]);
-    BKVarStep(0, 0);
+    BKAppend([NSString stringWithFormat:@"P inicio o=%d tela=%.0fx%.0f", BKCurrentOrient(), BKScreenW(), BKScreenH()]);
+    BKProbeStep(0, 0);
 }
 
 #pragma mark - Mapeamento

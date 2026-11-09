@@ -39,6 +39,8 @@ BKIOHIDEventRef IOHIDEventCreateDigitizerFingerEventWithQuality(CFAllocatorRef a
 void IOHIDEventAppendEvent(BKIOHIDEventRef event, BKIOHIDEventRef childEvent);
 void IOHIDEventSetIntegerValueWithOptions(BKIOHIDEventRef event, IOHIDEventField field, int value, uint32_t options);
 void IOHIDEventSetSenderID(BKIOHIDEventRef event, uint64_t senderID);
+uint64_t IOHIDEventGetSenderID(BKIOHIDEventRef event);
+CFArrayRef IOHIDEventGetChildren(BKIOHIDEventRef event);
 int IOHIDEventGetType(BKIOHIDEventRef event);
 int IOHIDEventGetIntegerValue(BKIOHIDEventRef event, IOHIDEventField field);
 float IOHIDEventGetFloatValue(BKIOHIDEventRef event, IOHIDEventField field);
@@ -51,6 +53,7 @@ float IOHIDEventGetFloatValue(BKIOHIDEventRef event, IOHIDEventField field);
 #define kBKClientTypeMonitor    1
 #define kBKTypeKeyExtra         15
 #define kBKTypePointer          17
+#define kBKTypeDigitizer        11
 #define kBKPtrX                 (17u << 16 | 0u)
 #define kBKPtrY                 (17u << 16 | 1u)
 #define kBKPtrMask              (17u << 16 | 3u)
@@ -104,6 +107,8 @@ static float gCx = 0.5f, gCy = 0.5f;
 static uint32_t gSeq = 0;
 static BOOL gProbing = NO;
 static int gVariant = 0;
+static uint64_t gRealSid = 0;
+static int gRealLeft = 12;
 
 static void BKSendLast(NSNumber *idx);
 static void BKProbeRun(void);
@@ -357,19 +362,15 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
 
     uint32_t fdx = (gVariant == 1 || gVariant == 5) ? 1u : (uint32_t)(idx + 1);
     uint32_t fid = (gVariant == 1 || gVariant == 5) ? 2u : (uint32_t)(idx + 101);
-    int di = (gVariant == 2 || gVariant == 5) ? 1 : 0;
-    float rad = (gVariant == 3 || gVariant == 5) ? 20.0f : 0.0f;
-    float qual = (gVariant == 3 || gVariant == 5) ? 1.0f : 0.0f;
+    int di = 1;
+    float rad = 20.0f;
+    float qual = 1.0f;
 
     int mask;
     if (phase == 0) {
         mask = kIOHIDDigitizerEventPosition;
     } else {
         mask = kIOHIDDigitizerEventRange | kIOHIDDigitizerEventTouch | kIOHIDDigitizerEventPosition;
-    }
-    if (gVariant == 4 || gVariant == 5) {
-        if (phase == 1) mask |= (kBKEventStart | kBKEventPeak);
-        else if (phase == 2) mask |= kBKEventStop;
     }
 
     uint64_t ab = mach_absolute_time();
@@ -399,20 +400,18 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
     if (gEndPhase) {
         IOHIDEventSetIntegerValueWithOptions(hand, kBKFieldTouchPhase, wire, opt);
     }
-    if (gVariant != 2) IOHIDEventSetSenderID(hand, kBKSenderID);
 
-    BKIOHIDEventSystemClientRef cli = gSendClient;
-    if (gVariant == 3) {
-        if (!gAltClient) gAltClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
-        if (gAltClient) cli = gAltClient;
-    }
-    IOHIDEventSystemClientDispatchEvent(cli, hand);
+    uint64_t sid = kBKSenderID;
+    if (gVariant == 1 && gRealSid) sid = gRealSid;
+    if (gVariant != 2) IOHIDEventSetSenderID(hand, sid);
+
+    IOHIDEventSystemClientDispatchEvent(gSendClient, hand);
     CFRelease(hand);
 
     BKNotifyUserActivity();
-    BKAppend([NSString stringWithFormat:@"D v=%d ph=%d o=%d u=%d f=%d r=%d s=%d tp=%.1f x=%.3f y=%.3f X=%.3f Y=%.3f",
+    BKAppend([NSString stringWithFormat:@"D v=%d ph=%d o=%d u=%d f=%d r=%d s=%d tp=%.1f sid=%llx x=%.3f y=%.3f X=%.3f Y=%.3f",
               gVariant, phase, o, BKDeviceOrientation(), BKFrontMostOrientation(), (int)gRaw, (int)gSpace,
-              tp, rx, ry, nx, ny]);
+              tp, sid, rx, ry, nx, ny]);
 }
 
 static void BKSendLast(NSNumber *idx)
@@ -443,7 +442,7 @@ static void BKMove(NSUInteger idx, float nx, float ny)
 
 static void BKUp(NSUInteger idx)
 {
-    if (![gDown[@(idx)] boolValue]) return;
+    if (!gDown[@(idx)] boolValue) return;
     gDown[@(idx)] = @NO;
     BKSendLast(@(idx));
     [gCur removeObjectForKey:@(idx)];
@@ -552,11 +551,38 @@ static void BKHandleMove(float dx, float dy)
     BKMove(gDirIdx, gDirX, gDirY);
 }
 
+#pragma mark - Dump de toque real
+
+static void BKDumpReal(BKIOHIDEventRef ev, int depth)
+{
+    if (gRealLeft <= 0 || !ev) return;
+    uint64_t sid = IOHIDEventGetSenderID(ev);
+    if (sid == kBKSenderID) return;
+    gRealLeft--;
+    if (!gRealSid && sid) gRealSid = sid;
+
+    NSMutableString *s = [NSMutableString stringWithFormat:@"R d=%d t=%d sid=%llx", depth, IOHIDEventGetType(ev), sid];
+    for (int f = 0; f < 27; f++) {
+        IOHIDEventField fld = (IOHIDEventField)((11u << 16) | (unsigned)f);
+        [s appendFormat:@" %d:%.3f/%d", f,
+            IOHIDEventGetFloatValue(ev, fld), IOHIDEventGetIntegerValue(ev, fld)];
+    }
+    BKAppend(s);
+
+    if (depth >= 1) return;
+    CFArrayRef kids = IOHIDEventGetChildren(ev);
+    if (!kids) return;
+    CFIndex n = CFArrayGetCount(kids);
+    for (CFIndex i = 0; i < n && i < 3; i++) {
+        BKDumpReal((BKIOHIDEventRef)CFArrayGetValueAtIndex(kids, i), depth + 1);
+    }
+}
+
 #pragma mark - Probe
 
 static void BKVarStep(int v, int n)
 {
-    if (v >= 6) {
+    if (v >= 3) {
         gVariant = 0;
         gRaw = NO;
         gSpace = NO;
@@ -593,7 +619,8 @@ static void BKProbeRun(void)
     gProbing = YES;
     gRaw = YES;
     gSpace = NO;
-    BKAppend([NSString stringWithFormat:@"V inicio o=%d tela=%.0fx%.0f", BKCurrentOrient(), BKScreenW(), BKScreenH()]);
+    BKAppend([NSString stringWithFormat:@"V inicio o=%d tela=%.0fx%.0f sidreal=%llx",
+              BKCurrentOrient(), BKScreenW(), BKScreenH(), gRealSid]);
     BKVarStep(0, 0);
 }
 
@@ -728,6 +755,8 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         BKHandleMove(dx, dy);
         if (gEnabled && gPoints.count) BKHandleMask((uint16_t)bmask);
         else gPrevMask = (uint16_t)bmask;
+    } else if (type == kBKTypeDigitizer) {
+        BKDumpReal(ev, 0);
     }
 }
 

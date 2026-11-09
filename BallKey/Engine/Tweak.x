@@ -13,6 +13,7 @@
 #import "BKConfig.h"
 
 #pragma mark - Externs IOKit
+// IOHIDFloat e double: NAO trocar por float, quebra a passagem de argumento.
 
 typedef const void *BKIOHIDEventRef;
 typedef struct __IOHIDEventSystemClient *BKIOHIDEventSystemClientRef;
@@ -27,27 +28,28 @@ void IOHIDEventSystemClientActivate(BKIOHIDEventSystemClientRef client);
 
 BKIOHIDEventRef IOHIDEventCreateDigitizerEvent(CFAllocatorRef allocator, uint64_t timeStamp, uint32_t type,
     uint32_t index, uint32_t identity, uint32_t eventMask, uint32_t buttonMask,
-    float x, float y, float z, float tipPressure, float barrelPressure,
+    double x, double y, double z, double tipPressure, double barrelPressure,
     uint8_t range, uint8_t touch, uint32_t options);
 
 BKIOHIDEventRef IOHIDEventCreateDigitizerFingerEventWithQuality(CFAllocatorRef allocator, uint64_t timeStamp,
     uint32_t index, uint32_t identity, uint32_t eventMask,
-    float x, float y, float z, float tipPressure, float twist,
-    float minorRadius, float majorRadius, float quality, float density, float irregularity,
+    double x, double y, double z, double tipPressure, double twist,
+    double minorRadius, double majorRadius, double quality, double density, double irregularity,
     uint8_t range, uint8_t touch, uint32_t options);
 
 void IOHIDEventAppendEvent(BKIOHIDEventRef event, BKIOHIDEventRef childEvent);
 void IOHIDEventSetIntegerValueWithOptions(BKIOHIDEventRef event, IOHIDEventField field, int value, uint32_t options);
+void IOHIDEventSetFloatValue(BKIOHIDEventRef event, IOHIDEventField field, double value);
 void IOHIDEventSetSenderID(BKIOHIDEventRef event, uint64_t senderID);
 uint64_t IOHIDEventGetSenderID(BKIOHIDEventRef event);
 CFArrayRef IOHIDEventGetChildren(BKIOHIDEventRef event);
 int IOHIDEventGetType(BKIOHIDEventRef event);
 int IOHIDEventGetIntegerValue(BKIOHIDEventRef event, IOHIDEventField field);
-float IOHIDEventGetFloatValue(BKIOHIDEventRef event, IOHIDEventField field);
+double IOHIDEventGetFloatValue(BKIOHIDEventRef event, IOHIDEventField field);
 
 #define kBKTransducerHand       3
+#define kBKTransducerFinger     2
 #define kBKFieldDisplayInt      720921
-#define kBKFieldBuiltIn         4
 #define kBKSetOpt               0xF0000000u
 #define kBKSenderID             0xDEFACEDBEEFFECE5ull
 #define kBKClientTypeMonitor    1
@@ -67,9 +69,9 @@ float IOHIDEventGetFloatValue(BKIOHIDEventRef event, IOHIDEventField field);
 #define kBKFieldTouchPhase      ((IOHIDEventField)((11u << 16) | 26u))
 
 // Bits de mascara ausentes no header vendorizado.
+#define kBKEventIdentity        0x20u
+#define kBKEventAttribute       0x40u
 #define kBKEventStop            0x08u
-#define kBKEventPeak            0x10u
-#define kBKEventStart           0x100u
 
 #pragma mark - Estado
 
@@ -85,7 +87,7 @@ static NSMutableDictionary *gCur = nil;
 
 static BOOL gDirDown = NO;
 static NSUInteger gDirIdx = 0;
-static float gDirX = 0, gDirY = 0, gDirAX = 0, gDirAY = 0, gDirR = 0.12f, gDirS = 1.0f;
+static double gDirX = 0, gDirY = 0, gDirAX = 0, gDirAY = 0, gDirR = 0.12, gDirS = 1.0;
 
 static uint16_t gPrevMask = 0;
 static int gPendingDir = 0;
@@ -96,13 +98,13 @@ static BOOL gRotate = YES;
 static BOOL gRaw = NO;
 static BOOL gSpace = NO;
 static BOOL gFollowCursor = YES;
-static float gFollowSens = 1.0f;
+static double gFollowSens = 1.0;
 static int gOrientOverride = 0;
 static int gEndPhase = 0;
 static BOOL gDump = YES;
 static int gDumpLeft = 60;
 static int gLastOrient = 0;
-static float gCx = 0.5f, gCy = 0.5f;
+static double gCx = 0.5, gCy = 0.5;
 static uint32_t gSeq = 0;
 static BOOL gProbing = NO;
 static int gVariant = 0;
@@ -134,34 +136,34 @@ static void BKAppend(NSString *line)
 
 #pragma mark - Tela
 
-static float BKScreenW(void)
+static double BKScreenW(void)
 {
     Class c = objc_getClass("UIScreen");
-    if (!c) return 414.0f;
+    if (!c) return 414.0;
     id s = ((id (*)(id, SEL))objc_msgSend)(c, @selector(mainScreen));
-    if (!s) return 414.0f;
+    if (!s) return 414.0;
     SEL sel = @selector(bounds);
     CGRect r;
     if ([s respondsToSelector:sel]) {
         r = ((CGRect (*)(id, SEL))objc_msgSend)(s, sel);
         return r.size.width;
     }
-    return 414.0f;
+    return 414.0;
 }
 
-static float BKScreenH(void)
+static double BKScreenH(void)
 {
     Class c = objc_getClass("UIScreen");
-    if (!c) return 896.0f;
+    if (!c) return 896.0;
     id s = ((id (*)(id, SEL))objc_msgSend)(c, @selector(mainScreen));
-    if (!s) return 896.0f;
+    if (!s) return 896.0;
     SEL sel = @selector(bounds);
     CGRect r;
     if ([s respondsToSelector:sel]) {
         r = ((CGRect (*)(id, SEL))objc_msgSend)(s, sel);
         return r.size.height;
     }
-    return 896.0f;
+    return 896.0;
 }
 
 #pragma mark - Orientacao
@@ -267,12 +269,12 @@ static void BKLoadConfig(void)
     if ([cfg[@"Rotate"] isKindOfClass:[NSNumber class]]) gRotate = [cfg[@"Rotate"] boolValue];
     if ([cfg[@"Space"] isKindOfClass:[NSNumber class]]) gSpace = [cfg[@"Space"] boolValue];
     if ([cfg[@"FollowCursor"] isKindOfClass:[NSNumber class]]) gFollowCursor = [cfg[@"FollowCursor"] boolValue];
-    if ([cfg[@"FollowSens"] isKindOfClass:[NSNumber class]]) gFollowSens = [cfg[@"FollowSens"] floatValue];
+    if ([cfg[@"FollowSens"] isKindOfClass:[NSNumber class]]) gFollowSens = [cfg[@"FollowSens"] doubleValue];
     if ([cfg[@"OrientOverride"] isKindOfClass:[NSNumber class]]) gOrientOverride = [cfg[@"OrientOverride"] intValue];
     if ([cfg[@"EndPhase"] isKindOfClass:[NSNumber class]]) gEndPhase = [cfg[@"EndPhase"] intValue];
     if ([cfg[@"Dump"] isKindOfClass:[NSNumber class]]) gDump = [cfg[@"Dump"] boolValue];
-    if (gFollowSens <= 0.05f) gFollowSens = 0.05f;
-    if (gFollowSens > 20.0f) gFollowSens = 20.0f;
+    if (gFollowSens <= 0.05) gFollowSens = 0.05;
+    if (gFollowSens > 20.0) gFollowSens = 20.0;
     if (gEndPhase != 2 && gEndPhase != 3) gEndPhase = 0;
 
     gEnabled = enabled && pts.count > 0;
@@ -289,7 +291,7 @@ static void BKLoadConfig(void)
 
 #pragma mark - Toque
 
-static float BKClamp(float v)
+static double BKClamp(double v)
 {
     if (v < 0) return 0;
     if (v > 1) return 1;
@@ -297,14 +299,14 @@ static float BKClamp(float v)
 }
 
 // Converte ponto do espaco retrato nativo para o espaco do app.
-static void BKConv(float x, float y, int orient, float *ox, float *oy)
+static void BKConv(double x, double y, int orient, double *ox, double *oy)
 {
-    float rx = x;
-    float ry = y;
+    double rx = x;
+    double ry = y;
     switch (orient) {
-        case 2: rx = 1.0f - x; ry = 1.0f - y; break;
-        case 3: rx = y;        ry = 1.0f - x; break;
-        case 4: rx = 1.0f - y; ry = x;        break;
+        case 2: rx = 1.0 - x; ry = 1.0 - y; break;
+        case 3: rx = y;       ry = 1.0 - x; break;
+        case 4: rx = 1.0 - y; ry = x;       break;
         default: break;
     }
     *ox = BKClamp(rx);
@@ -327,7 +329,7 @@ static void BKNotifyUserActivity(void)
 }
 
 // fase: 0 move, 1 desce, 2 sobe
-static void BKSend(float nx, float ny, int phase, NSUInteger idx)
+static void BKSend(double nx, double ny, int phase, NSUInteger idx)
 {
     if (!gSendClient) {
         gSendClient = IOHIDEventSystemClientCreateWithType(kCFAllocatorDefault, kBKClientTypeMonitor, NULL);
@@ -337,8 +339,8 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
 
     uint32_t opt = kBKSetOpt;
 
-    float rx = BKClamp(nx);
-    float ry = BKClamp(ny);
+    double rx = BKClamp(nx);
+    double ry = BKClamp(ny);
     int o = BKCurrentOrient();
 
     if (gRotate && !gRaw) BKConv(rx, ry, o, &rx, &ry);
@@ -354,16 +356,9 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
         else if (phase == 2) wire = gEndPhase;
     }
 
-    // pressao e alcance reais: toque real nunca tem forca zero
-    float tp = (phase == 2) ? 0.0f : 1.0f;
+    double tp = (phase == 2) ? 0.0 : 1.0;
     int range = (phase == 2) ? 0 : 1;
     int touch = (phase == 2) ? 0 : 1;
-
-    uint32_t fdx = (gVariant == 1) ? 1u : (uint32_t)(idx + 1);
-    uint32_t fid = (gVariant == 1) ? 2u : (uint32_t)(idx + 101);
-    int di = 1;
-    float rad = 20.0f;
-    float qual = 1.0f;
 
     int mask;
     if (phase == 0) {
@@ -371,21 +366,30 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
     } else {
         mask = kIOHIDDigitizerEventRange | kIOHIDDigitizerEventTouch | kIOHIDDigitizerEventPosition;
     }
+    if (gVariant == 1) {
+        mask |= (kBKEventIdentity | kBKEventAttribute);
+        if (phase == 2) mask |= kBKEventStop;
+    }
 
     uint64_t ab = mach_absolute_time();
 
     BKIOHIDEventRef hand = IOHIDEventCreateDigitizerEvent(kCFAllocatorDefault, ab, kBKTransducerHand,
-        0, 1, (uint32_t)mask, 0, rx, ry, 0, tp, 0, (uint8_t)range, (uint8_t)di, 0);
+        0, 1, (uint32_t)mask, 0, rx, ry, 0, tp, 0, (uint8_t)range, 1, 0);
     if (!hand) return;
 
+    IOHIDEventSetIntegerValueWithOptions(hand, kBKFieldType, kBKTransducerHand, opt);
     IOHIDEventSetIntegerValueWithOptions(hand, kBKFieldDisplayInt, 1, opt);
-    IOHIDEventSetIntegerValueWithOptions(hand, kBKFieldBuiltIn, 1, opt);
+    IOHIDEventSetFloatValue(hand, kIOHIDEventFieldDigitizerX, rx);
+    IOHIDEventSetFloatValue(hand, kIOHIDEventFieldDigitizerY, ry);
 
     BKIOHIDEventRef finger = IOHIDEventCreateDigitizerFingerEventWithQuality(kCFAllocatorDefault, ab,
-        fdx, fid, (uint32_t)mask, rx, ry, 0, tp, 0, rad, rad, qual, 1.0f, 0,
+        1, 2, (uint32_t)mask, rx, ry, 0, tp, 0, 20.0, 20.0, 1.0, 1.0, 0,
         (uint8_t)range, (uint8_t)touch, 0);
     if (finger) {
+        IOHIDEventSetIntegerValueWithOptions(finger, kBKFieldType, kBKTransducerFinger, opt);
         IOHIDEventSetIntegerValueWithOptions(finger, kBKFieldDisplayInt, 1, opt);
+        IOHIDEventSetFloatValue(finger, kIOHIDEventFieldDigitizerX, rx);
+        IOHIDEventSetFloatValue(finger, kIOHIDEventFieldDigitizerY, ry);
         if (gEndPhase) {
             IOHIDEventSetIntegerValueWithOptions(finger, kBKFieldTouchPhase, wire, opt);
         }
@@ -401,8 +405,8 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
     }
 
     uint64_t sid = kBKSenderID;
-    if (gVariant == 1 && gRealSid) sid = gRealSid;
-    if (gVariant != 2) IOHIDEventSetSenderID(hand, sid);
+    if (gRealSid) sid = gRealSid;
+    IOHIDEventSetSenderID(hand, sid);
 
     IOHIDEventSystemClientDispatchEvent(gSendClient, hand);
     CFRelease(hand);
@@ -417,10 +421,10 @@ static void BKSendLast(NSNumber *idx)
 {
     NSArray *a = gCur[idx];
     if (![a isKindOfClass:[NSArray class]] || a.count < 2) return;
-    BKSend([a[0] floatValue], [a[1] floatValue], 2, [idx unsignedIntegerValue]);
+    BKSend([a[0] doubleValue], [a[1] doubleValue], 2, [idx unsignedIntegerValue]);
 }
 
-static void BKDown(NSUInteger idx, float nx, float ny)
+static void BKDown(NSUInteger idx, double nx, double ny)
 {
     if ([gDown[@(idx)] boolValue]) return;
     nx = BKClamp(nx);
@@ -430,7 +434,7 @@ static void BKDown(NSUInteger idx, float nx, float ny)
     BKSend(nx, ny, 1, idx);
 }
 
-static void BKMove(NSUInteger idx, float nx, float ny)
+static void BKMove(NSUInteger idx, double nx, double ny)
 {
     BOOL held = [gDown[@(idx)] boolValue];
     if (held == NO) return;
@@ -451,7 +455,7 @@ static void BKUp(NSUInteger idx)
 
 #pragma mark - Acoes
 
-static void BKTap(NSUInteger idx, float nx, float ny)
+static void BKTap(NSUInteger idx, double nx, double ny)
 {
     BKDown(idx, nx, ny);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
@@ -466,8 +470,8 @@ static void BKTap(NSUInteger idx, float nx, float ny)
 static void BKCursorTap(void)
 {
     NSUInteger idx = 40 + (NSUInteger)(gSeq++ % 16);
-    float x = gCx;
-    float y = gCy;
+    double x = gCx;
+    double y = gCy;
     BKSend(x, y, 1, idx);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
         BKSend(x, y, 0, idx);
@@ -477,7 +481,7 @@ static void BKCursorTap(void)
     });
 }
 
-static void BKHold(NSUInteger idx, float nx, float ny, int ms)
+static void BKHold(NSUInteger idx, double nx, double ny, int ms)
 {
     BKDown(idx, nx, ny);
     NSNumber *gen = @([gGen[@(idx)] intValue] + 1);
@@ -492,10 +496,10 @@ static void BKHandleDir(NSDictionary *pt, NSUInteger idx, BOOL down)
 {
     if (down) {
         if (gDirDown) return;
-        gDirAX = BKClamp([pt[@"X"] floatValue]);
-        gDirAY = BKClamp([pt[@"Y"] floatValue]);
-        gDirR = pt[@"Radius"] ? [pt[@"Radius"] floatValue] : 0.12f;
-        gDirS = pt[@"Sens"] ? [pt[@"Sens"] floatValue] : 1.0f;
+        gDirAX = BKClamp([pt[@"X"] doubleValue]);
+        gDirAY = BKClamp([pt[@"Y"] doubleValue]);
+        gDirR = pt[@"Radius"] ? [pt[@"Radius"] doubleValue] : 0.12;
+        gDirS = pt[@"Sens"] ? [pt[@"Sens"] doubleValue] : 1.0;
         gDirX = gDirAX;
         gDirY = gDirAY;
         gDirIdx = idx;
@@ -511,15 +515,15 @@ static void BKHandleDir(NSDictionary *pt, NSUInteger idx, BOOL down)
 static void BKHandlePoint(NSDictionary *pt, NSUInteger idx, BOOL down)
 {
     NSString *type = pt[@"Type"] ?: @"Tap";
-    float nx = [pt[@"X"] floatValue];
-    float ny = [pt[@"Y"] floatValue];
+    double nx = [pt[@"X"] doubleValue];
+    double ny = [pt[@"Y"] doubleValue];
     if ([type isEqualToString:@"Tap"]) {
         if (down) {
             BKTap(idx, nx, ny);
             NSUInteger k = idx;
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
                 BKAppend(@"T centro");
-                BKTap(k, 0.5f, 0.5f);
+                BKTap(k, 0.5, 0.5);
             });
         }
     } else if ([type isEqualToString:@"Press"]) {
@@ -531,7 +535,7 @@ static void BKHandlePoint(NSDictionary *pt, NSUInteger idx, BOOL down)
     }
 }
 
-static void BKHandleMove(float dx, float dy)
+static void BKHandleMove(double dx, double dy)
 {
     if (dx == 0 && dy == 0) return;
 
@@ -542,10 +546,10 @@ static void BKHandleMove(float dx, float dy)
 
     gDirX += dx * gDirS * kBKMoveFactor;
     gDirY += dy * gDirS * kBKMoveFactor;
-    float ddx = gDirX - gDirAX;
-    float ddy = gDirY - gDirAY;
-    float len = sqrtf(ddx * ddx + ddy * ddy);
-    if (len > gDirR && len > 0.0001f) {
+    double ddx = gDirX - gDirAX;
+    double ddy = gDirY - gDirAY;
+    double len = sqrt(ddx * ddx + ddy * ddy);
+    if (len > gDirR && len > 0.0001) {
         gDirX = gDirAX + ddx / len * gDirR;
         gDirY = gDirAY + ddy / len * gDirR;
     }
@@ -565,7 +569,7 @@ static void BKDumpReal(BKIOHIDEventRef ev, int depth)
     NSMutableString *s = [NSMutableString stringWithFormat:@"R d=%d t=%d sid=%llx", depth, IOHIDEventGetType(ev), sid];
     for (int f = 0; f < 27; f++) {
         IOHIDEventField fld = (IOHIDEventField)((11u << 16) | (unsigned)f);
-        [s appendFormat:@" %d:%.3f/%d", f,
+        [s appendFormat:@" %d:%.4f/%d", f,
             IOHIDEventGetFloatValue(ev, fld), IOHIDEventGetIntegerValue(ev, fld)];
     }
     BKAppend(s);
@@ -583,7 +587,7 @@ static void BKDumpReal(BKIOHIDEventRef ev, int depth)
 
 static void BKVarStep(int v, int n)
 {
-    if (v >= 3) {
+    if (v >= 2) {
         gVariant = 0;
         gRaw = NO;
         gSpace = NO;
@@ -602,12 +606,12 @@ static void BKVarStep(int v, int n)
     NSUInteger idx = 90 + (NSUInteger)(v * 2 + n);
     BKAppend([NSString stringWithFormat:@"V %d n=%d", v, n]);
 
-    BKSend(0.5f, 0.5f, 1, idx);
+    BKSend(0.5, 0.5, 1, idx);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        BKSend(0.5f, 0.5f, 0, idx);
+        BKSend(0.5, 0.5, 0, idx);
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 70 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        BKSend(0.5f, 0.5f, 2, idx);
+        BKSend(0.5, 0.5, 2, idx);
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1000 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
         BKVarStep(v, n + 1);
@@ -749,8 +753,8 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         gHandledUsage = -1;
         if (gEnabled && gPoints.count) BKHandleKey(usage, dir > 0);
     } else if (type == kBKTypePointer) {
-        float dx = IOHIDEventGetFloatValue(ev, kBKPtrX);
-        float dy = IOHIDEventGetFloatValue(ev, kBKPtrY);
+        double dx = IOHIDEventGetFloatValue(ev, kBKPtrX);
+        double dy = IOHIDEventGetFloatValue(ev, kBKPtrY);
         int bmask = IOHIDEventGetIntegerValue(ev, kBKPtrMask);
         BKDumpPointer(ev);
         BKHandleMove(dx, dy);

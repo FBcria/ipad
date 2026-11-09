@@ -119,8 +119,22 @@ static int gPendingDir = 0;
 static int gHandledUsage = -1;
 static int gLastOrient = 3;
 static int gEvSeen = 0;
+static int gLastExtra = -1;
+static uint64_t gLastExtraNs = 0;
 
 static void BKSendLast(NSNumber *idx);
+
+#pragma mark - Tempo
+
+static uint64_t BKNowNs(void)
+{
+    static mach_timebase_info_data_t tb;
+    static int once = 0;
+    if (!once) { mach_timebase_info(&tb); once = 1; }
+    uint64_t t = mach_absolute_time();
+    if (tb.denom == 0) return t;
+    return t * tb.numer / tb.denom;
+}
 
 #pragma mark - Log
 
@@ -200,6 +214,9 @@ static BKIOHIDEventSystemClientRef BKNewClient(void)
         c = gIO.ClientCreateWithType(kCFAllocatorDefault, kBKClientTypeMonitor, NULL);
     }
     if (!c && gIO.ClientCreate) c = gIO.ClientCreate(kCFAllocatorDefault);
+    if (!c) return NULL;
+    if (gIO.SetQueue) gIO.SetQueue(c, dispatch_get_main_queue());
+    if (gIO.Activate) gIO.Activate(c);
     return c;
 }
 
@@ -345,7 +362,11 @@ static void BKSend(double nx, double ny, int phase, NSUInteger idx)
 
     if (!gSendClient) {
         gSendClient = BKNewClient();
-        if (!gSendClient) return;
+        if (!gSendClient) {
+            BKAppend(@"! send sem cliente");
+            return;
+        }
+        BKAppend(@"I send=1");
     }
 
     double rx = BKClamp(nx);
@@ -357,7 +378,10 @@ static void BKSend(double nx, double ny, int phase, NSUInteger idx)
 
     BKIOHIDEventRef hand = gIO.CreateDigitizer(kCFAllocatorDefault, ab,
         kBKTransducerHand, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    if (!hand) return;
+    if (!hand) {
+        BKAppend(@"! send sem hand");
+        return;
+    }
 
     gIO.SetIntOpt(hand, kBKFieldDisplayInt, 1, kBKSetOpt);
     gIO.SetIntOpt(hand, kBKFieldBuiltIn, 1, kBKSetOpt);
@@ -792,6 +816,10 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
             gHandledUsage = -1;
             return;
         }
+        uint64_t now = BKNowNs();
+        if (usage == gLastExtra && (now - gLastExtraNs) < 90000000ull) return;
+        gLastExtra = usage;
+        gLastExtraNs = now;
         if (gEnabled && gPoints.count && usage >= 4 && usage <= 231) {
             BKHandleKey(usage, dir > 0);
         }
@@ -820,7 +848,6 @@ static void BKEngineInit(void)
     gCur = [NSMutableDictionary dictionary];
 
     BKAppend(@"I init");
-    BKMark(@"engine_ctor.txt");
 
     if (!BKLoadIOKit()) return;
 
@@ -831,8 +858,6 @@ static void BKEngineInit(void)
             return;
         }
         if (gIO.RegisterCB) gIO.RegisterCB(gListenClient, BKListenCB, NULL, NULL);
-        if (gIO.SetQueue) gIO.SetQueue(gListenClient, dispatch_get_main_queue());
-        if (gIO.Activate) gIO.Activate(gListenClient);
         BKAppend(@"I listen=1");
     } @catch (NSException *e) {
         BKAppend([NSString stringWithFormat:@"! init %@", e.reason]);
@@ -853,6 +878,7 @@ static void BKEngineInit(void)
         (void)t;
         BKProbe();
     });
+    BKAppend(@"I notify=1");
 
     BKLoadConfig();
 
@@ -863,7 +889,7 @@ static void BKEngineInit(void)
 %ctor {
     @autoreleasepool {
         BKMark(@"engine_ctor.txt");
-        BKAppend(@"I init");
+        BKAppend(@"I ctor");
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             BKEngineInit();

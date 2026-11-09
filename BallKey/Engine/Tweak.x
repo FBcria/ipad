@@ -296,21 +296,6 @@ static double BKClamp(double v)
     return v;
 }
 
-// Painel -> visual: identidade quando a interface ja gira por nos.
-static void BKConv(double x, double y, int orient, double *ox, double *oy)
-{
-    double rx = x;
-    double ry = y;
-    switch (orient) {
-        case 2: rx = 1.0 - x; ry = 1.0 - y; break;
-        case 3: rx = y;       ry = 1.0 - x; break;
-        case 4: rx = 1.0 - y; ry = x;       break;
-        default: break;
-    }
-    *ox = BKClamp(rx);
-    *oy = BKClamp(ry);
-}
-
 // Visual -> painel: usada pelo cursor, que vive no espaco visual.
 static void BKConvInv(double vx, double vy, int orient, double *ox, double *oy)
 {

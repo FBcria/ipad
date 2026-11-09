@@ -21,8 +21,8 @@ static BOOL gEnabled = NO;
 static int gOrientOverride = 0;
 static CGPoint gBallPos = {0.06, 0.85};
 
-static BKMarkerView *gPending = nil;
 static void *gIOKit = NULL;
+static void *gCapClient = NULL;
 static struct {
     void *(*Create)(CFAllocatorRef);
     void *(*CreateWithType)(CFAllocatorRef, int, void *);
@@ -33,7 +33,6 @@ static struct {
     int (*GetType)(void *);
     int64_t (*GetInt)(void *, int32_t);
 } gCap;
-static void *gCapClient = NULL;
 
 static CGRect BKSpace(void);
 static UIWindowScene *BKMainScene(void);
@@ -54,9 +53,10 @@ static UIWindowScene *BKMainScene(void);
 @property (nonatomic, copy) NSString *type;
 @property (nonatomic, copy) NSString *keyEnc;
 @property (nonatomic, assign) CGFloat radius;
-@property (nonatomic, assign) CGFloat sens;
 @property (nonatomic, strong) UILabel *label;
 @end
+
+static BKMarkerView *gPending = nil;
 
 static void BKMark(NSString *name)
 {
@@ -182,7 +182,7 @@ static NSString *BKStatusText(void)
 {
     NSString *s = [NSString stringWithContentsOfFile:kBKStatusPath
                                             encoding:NSUTF8StringEncoding error:nil];
-    return s.length ? s : @"en=? n=?";
+    return s.length ? s : @"ativo=? marcadores=? app=?";
 }
 
 #pragma mark - Captura de tecla
@@ -198,6 +198,7 @@ static void BKStopCapture(void)
 
 static void BKCapCB(void *target, void *refcon, void *queue, void *ev)
 {
+    (void)target; (void)refcon; (void)queue;
     if (!ev || !gPending) return;
     int type = gCap.GetType(ev);
     NSString *enc = nil;
@@ -220,7 +221,7 @@ static void BKCapCB(void *target, void *refcon, void *queue, void *ev)
     gPending = nil;
     dispatch_async(dispatch_get_main_queue(), ^{
         m.keyEnc = enc;
-        m.label.text = [NSString stringWithFormat:@"%@\n%@", m.type, enc];
+        m.label.text = [NSString stringWithFormat:@"%@\n%@", m.label.text.length ? [[m.label.text componentsSeparatedByString:@"\n"] firstObject] : @"?", enc];
         gBanner.hidden = YES;
         BKStopCapture();
     });
@@ -296,6 +297,16 @@ static void BKStartCapture(BKMarkerView *m)
 }
 @end
 
+static NSString *BKTypeName(NSString *t)
+{
+    if ([t isEqualToString:@"Tap"]) return @"Toque";
+    if ([t isEqualToString:@"Press"]) return @"Pressionar";
+    if ([t isEqualToString:@"Hold"]) return @"Segurar";
+    if ([t isEqualToString:@"Dir"]) return @"Direção";
+    if ([t isEqualToString:@"Fps"]) return @"Trava FPS";
+    return t;
+}
+
 static UIColor *BKTypeColor(NSString *t)
 {
     if ([t isEqualToString:@"Tap"]) return [UIColor systemBlueColor];
@@ -307,7 +318,7 @@ static UIColor *BKTypeColor(NSString *t)
 
 static BKMarkerView *BKMakeMarker(NSString *type, CGPoint c, NSString *enc)
 {
-    CGFloat side = 52;
+    CGFloat side = 56;
     BKMarkerView *m = [[BKMarkerView alloc] initWithFrame:
         CGRectMake(c.x - side / 2, c.y - side / 2, side, side)];
     UIColor *col = BKTypeColor(type);
@@ -318,7 +329,6 @@ static BKMarkerView *BKMakeMarker(NSString *type, CGPoint c, NSString *enc)
     m.type = type;
     m.keyEnc = enc;
     m.radius = 0.09;
-    m.sens = 1.0;
 
     UILabel *l = [[UILabel alloc] initWithFrame:m.bounds];
     l.textAlignment = NSTextAlignmentCenter;
@@ -326,7 +336,7 @@ static BKMarkerView *BKMakeMarker(NSString *type, CGPoint c, NSString *enc)
     l.textColor = UIColor.whiteColor;
     l.numberOfLines = 2;
     l.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    l.text = [NSString stringWithFormat:@"%@\n%@", type, enc ?: @"?"];
+    l.text = [NSString stringWithFormat:@"%@\n%@", BKTypeName(type), enc ?: @"?"];
     [m addSubview:l];
     m.label = l;
 
@@ -359,17 +369,16 @@ static void BKSaveEditor(void)
         NSMutableDictionary *d = [NSMutableDictionary dictionary];
         d[@"X"] = @(x);
         d[@"Y"] = @(y);
+        d[@"Type"] = m.type;
         if ([m.type isEqualToString:@"Fps"]) {
-            d[@"Type"] = @"Fps";
             d[@"Key"] = m.keyEnc ?: @"k:224";
             continue;
         }
-        d[@"Type"] = m.type;
         if ([m.type isEqualToString:@"Dir"]) {
             double r = m.radius;
             d[@"Key"] = m.keyEnc ?: @"m:0";
             d[@"Radius"] = @(r);
-            d[@"Sens"] = @(m.sens);
+            d[@"Sens"] = @(1.0);
             d[@"Center"] = [NSString stringWithFormat:@"%.5f,%.5f", x, y];
             d[@"Up"] = [NSString stringWithFormat:@"%.5f,%.5f", x, y - r];
             d[@"Down"] = [NSString stringWithFormat:@"%.5f,%.5f", x, y + r];
@@ -437,27 +446,27 @@ static void BKOpenEditor(void)
     gCanvas.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [root addSubview:gCanvas];
 
-    NSArray *row1 = @[@[@"+Toque", @"Tap"], @[@"+Press", @"Press"],
-                      @[@"+Hold", @"Hold"], @[@"+Dir", @"Dir"], @[@"+Trava", @"Fps"]];
+    NSArray *row1 = @[@[@"+ Toque", @"Tap"], @[@"+ Pressionar", @"Press"],
+                      @[@"+ Segurar", @"Hold"], @[@"+ Direção", @"Dir"], @[@"+ Trava", @"Fps"]];
     CGFloat bx = 8;
     for (NSArray *pair in row1) {
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-        b.frame = CGRectMake(bx, 8, 68, 34);
+        b.frame = CGRectMake(bx, 8, 76, 34);
         [b setTitle:pair[0] forState:UIControlStateNormal];
         [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
         b.backgroundColor = [BKTypeColor(pair[1]) colorWithAlphaComponent:0.85];
         b.layer.cornerRadius = 8;
-        b.titleLabel.font = [UIFont boldSystemFontOfSize:12];
+        b.titleLabel.font = [UIFont boldSystemFontOfSize:11];
         [b addTarget:gEditWindow.rootViewController
               action:@selector(bkAdd:)
     forControlEvents:UIControlEventTouchUpInside];
         b.tag = 200 + [row1 indexOfObject:pair];
         [root addSubview:b];
-        bx += 74;
+        bx += 82;
     }
 
     UIButton *save = [UIButton buttonWithType:UIButtonTypeSystem];
-    save.frame = CGRectMake(root.bounds.size.width - 150, 8, 68, 34);
+    save.frame = CGRectMake(root.bounds.size.width - 158, 8, 70, 34);
     [save setTitle:@"Salvar" forState:UIControlStateNormal];
     [save setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     save.backgroundColor = [UIColor systemGreenColor];
@@ -468,7 +477,7 @@ static void BKOpenEditor(void)
     [root addSubview:save];
 
     UIButton *sair = [UIButton buttonWithType:UIButtonTypeSystem];
-    sair.frame = CGRectMake(root.bounds.size.width - 76, 8, 68, 34);
+    sair.frame = CGRectMake(root.bounds.size.width - 82, 8, 74, 34);
     [sair setTitle:@"Sair" forState:UIControlStateNormal];
     [sair setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     sair.backgroundColor = [UIColor systemGrayColor];
@@ -478,8 +487,8 @@ static void BKOpenEditor(void)
    forControlEvents:UIControlEventTouchUpInside];
     [root addSubview:sair];
 
-    gBanner = [[UIView alloc] initWithFrame:CGRectMake(root.bounds.size.width / 2 - 150,
-                                                      root.bounds.size.height - 54, 300, 34)];
+    gBanner = [[UIView alloc] initWithFrame:CGRectMake(root.bounds.size.width / 2 - 155,
+                                                      root.bounds.size.height - 54, 310, 34)];
     gBanner.backgroundColor = [UIColor colorWithWhite:0 alpha:0.85];
     gBanner.layer.cornerRadius = 8;
     gBanner.hidden = YES;
@@ -550,7 +559,6 @@ static void BKSetEnabled(BOOL on)
     cfg[@"Enabled"] = @(on);
     BKWriteCfg(cfg);
     gEnabled = on;
-    BKLog(@"toggle en=%d", (int)on);
 }
 
 static void BKSetSens(double v)
@@ -560,7 +568,6 @@ static void BKSetSens(double v)
     NSMutableDictionary *cfg = BKReadCfg();
     cfg[@"FpsSens"] = @(v);
     BKWriteCfg(cfg);
-    BKLog(@"sens=%.2f", v);
 }
 
 static double BKGetSens(void)
@@ -594,14 +601,14 @@ static void BKToggleMenu(void)
                              gMenuWindow.bounds.size.height / 2);
 
     UILabel *st = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 226, 26)];
-    st.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
+    st.font = [UIFont monospacedSystemFontOfSize:9 weight:UIFontWeightRegular];
     st.textColor = [UIColor systemYellowColor];
     st.text = BKStatusText();
     [box addSubview:st];
 
     NSArray *titles = @[@"Editar teclas",
-                        [NSString stringWithFormat:@"Trava FPS (sensi %.2f) -", BKGetSens()],
-                        @"Sensibilidade +",
+                        [NSString stringWithFormat:@"Sensi FPS %.2f  (-)", BKGetSens()],
+                        @"Sensi FPS  (+)",
                         gEnabled ? @"Desativar" : @"Ativar",
                         @"Testar centro",
                         @"Dump de toque",

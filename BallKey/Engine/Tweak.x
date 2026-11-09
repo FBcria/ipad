@@ -118,15 +118,18 @@ static void BKSendLast(NSNumber *idx);
 
 static void BKAppend(NSString *line)
 {
-    NSString *full = [line stringByAppendingString:@"\n"];
+    NSData *d = [[line stringByAppendingString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding];
     NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:kBKLogPath];
     if (!fh) {
-        [full writeToFile:kBKLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        [d writeToFile:kBKLogPath atomically:YES];
         return;
     }
-    [fh seekToEndOfFile];
-    [fh writeData:[full dataUsingEncoding:NSUTF8StringEncoding]];
-    [fh closeFile];
+    @try {
+        [fh seekToEndOfFile];
+        [fh writeData:d];
+        [fh closeFile];
+    } @catch (NSException *e) {
+    }
 }
 
 static void BKMark(NSString *name)
@@ -265,6 +268,9 @@ static void BKLoadConfig(void)
     gPoints = pts;
     gPendingDir = 0;
     gHandledUsage = -1;
+    gPrevMask = 0;
+    gAimX = 0.5;
+    gAimY = 0.5;
 
     if (!gEnabled) BKReleaseAll();
 
@@ -392,9 +398,12 @@ static void BKUp(NSUInteger idx)
 
 static void BKTap(NSUInteger idx, double nx, double ny)
 {
+    if ([gDown[@(idx)] boolValue]) BKUp(idx);
     BKDown(idx, nx, ny);
+    NSNumber *gen = @([gGen[@(idx)] intValue] + 1);
+    gGen[@(idx)] = gen;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        BKUp(idx);
+        if ([gGen[@(idx)] isEqualToNumber:gen]) BKUp(idx);
     });
 }
 
@@ -417,10 +426,14 @@ static void BKReleaseAll(void)
             BKSendLast(k);
         }
     }
+    [gCur removeAllObjects];
+    [gGen removeAllObjects];
     for (int i = 0; i < 4; i++) gDirHeld[i] = NO;
     gDirActive = NO;
     gFps = NO;
     gAdsDown = NO;
+    gAimX = 0.5;
+    gAimY = 0.5;
 }
 
 #pragma mark - Conversão de marcador
@@ -503,12 +516,11 @@ static void BKFpsMove(double dx, double dy)
 
     if (gAimX < 0.15 || gAimX > 0.85 || gAimY < 0.15 || gAimY > 0.85) {
         BKUp(kBKIdxAim);
-        gAimX = 0.5;
-        gAimY = 0.5;
-        double px = 0.5, py = 0.5;
-        if (gRotate) BKConvInv(0.5, 0.5, BKCurrentOrient(), &px, &py);
-        BKDown(kBKIdxAim, px, py);
-        return;
+        double cxp = 0.5, cyp = 0.5;
+        if (gRotate) BKConvInv(0.5, 0.5, BKCurrentOrient(), &cxp, &cyp);
+        BKDown(kBKIdxAim, cxp, cyp);
+        gAimX = BKClamp(0.5 + dx * gFpsSens * kBKMoveFactor);
+        gAimY = BKClamp(0.5 + dy * gFpsSens * kBKMoveFactor);
     }
 
     double px = gAimX, py = gAimY;

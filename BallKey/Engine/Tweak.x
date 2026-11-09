@@ -75,7 +75,6 @@ float IOHIDEventGetFloatValue(BKIOHIDEventRef event, IOHIDEventField field);
 
 static BKIOHIDEventSystemClientRef gListenClient = NULL;
 static BKIOHIDEventSystemClientRef gSendClient = NULL;
-static BKIOHIDEventSystemClientRef gAltClient = NULL;
 static NSArray *gPoints = nil;
 static BOOL gEnabled = NO;
 static NSString *gActiveBundle = nil;
@@ -658,7 +657,7 @@ static void BKHandleButton(int b, BOOL down)
     BOOL hit = NO;
     for (NSUInteger i = 0; i < gPoints.count; i++) {
         NSDictionary *pt = gPoints[i];
-        if ([pt[@"Type"] isEqualToString:@"Dir"]) continue;
+        if (![pt[@"Type"] isEqualToString:@"Dir"]) continue;
         NSString *k = pt[@"Button"];
         if (![k isKindOfClass:[NSString class]] || ![k isEqualToString:key]) continue;
         BKHandleDir(pt, i, down);

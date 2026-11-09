@@ -147,6 +147,30 @@ static void BKApplyTo(UIWindow *w, UIView *c, int o)
     c.transform = t;
 }
 
+// fracao de painel -> fracao visual
+static void BKFrac2Vis(double *x, double *y, int o)
+{
+    double px = *x, py = *y;
+    switch (o) {
+        case 2: *x = 1.0 - px; *y = 1.0 - py; break;
+        case 3: *x = py;       *y = 1.0 - px; break;
+        case 4: *x = 1.0 - py; *y = px;       break;
+        default: break;
+    }
+}
+
+// fracao visual -> fracao de painel
+static void BKFrac2Panel(double *x, double *y, int o)
+{
+    double vx = *x, vy = *y;
+    switch (o) {
+        case 2: *x = 1.0 - vx; *y = 1.0 - vy; break;
+        case 3: *x = 1.0 - vy; *y = vx;       break;
+        case 4: *x = vy;       *y = 1.0 - vx; break;
+        default: break;
+    }
+}
+
 static void BKClampBall(void)
 {
     if (!gBallContainer) return;
@@ -423,8 +447,11 @@ static void BKStartBindCapture(void)
     for (BKMarkerView *m in gMarkers) {
         NSMutableDictionary *d = [NSMutableDictionary dictionary];
         d[@"Type"] = m.type;
-        d[@"X"] = @(MAX(0.0, MIN(1.0, m.center.x / cs.width)));
-        d[@"Y"] = @(MAX(0.0, MIN(1.0, m.center.y / cs.height)));
+        double fx = MAX(0.0, MIN(1.0, m.center.x / cs.width));
+        double fy = MAX(0.0, MIN(1.0, m.center.y / cs.height));
+        BKFrac2Vis(&fx, &fy, BKCurrentOrient());
+        d[@"X"] = @(fx);
+        d[@"Y"] = @(fy);
         if ([m.type isEqualToString:@"Dir"]) {
             d[@"Button"] = m.keyEnc ?: @"m:0";
             d[@"Radius"] = @(m.radius);
@@ -508,7 +535,10 @@ static void BKReloadMarkersFromCfg(void)
     CGSize cs = gEditContainer.bounds.size;
     for (NSDictionary *pt in (NSArray *)pts) {
         NSString *type = pt[@"Type"] ?: @"Tap";
-        CGPoint uiPt = CGPointMake([pt[@"X"] floatValue] * cs.width, [pt[@"Y"] floatValue] * cs.height);
+        double fx = [pt[@"X"] doubleValue];
+        double fy = [pt[@"Y"] doubleValue];
+        BKFrac2Panel(&fx, &fy, BKCurrentOrient());
+        CGPoint uiPt = CGPointMake(fx * cs.width, fy * cs.height);
         BKMarkerView *m = BKMakeMarker(type, uiPt);
         m.keyEnc = pt[@"Key"] ?: pt[@"Button"];
         m.holdMs = pt[@"HoldMs"] ? [pt[@"HoldMs"] intValue] : 400;

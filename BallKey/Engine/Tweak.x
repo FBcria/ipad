@@ -95,7 +95,6 @@ static int gHandledUsage = -1;
 
 // diagnostico / calibracao
 static BOOL gRotate = YES;
-static BOOL gRaw = NO;
 static BOOL gSpace = NO;
 static BOOL gFollowCursor = YES;
 static double gFollowSens = 1.0;
@@ -297,7 +296,7 @@ static double BKClamp(double v)
     return v;
 }
 
-// Converte ponto do espaco retrato nativo para o espaco do app.
+// Painel -> visual: identidade quando a interface ja gira por nos.
 static void BKConv(double x, double y, int orient, double *ox, double *oy)
 {
     double rx = x;
@@ -306,6 +305,21 @@ static void BKConv(double x, double y, int orient, double *ox, double *oy)
         case 2: rx = 1.0 - x; ry = 1.0 - y; break;
         case 3: rx = y;       ry = 1.0 - x; break;
         case 4: rx = 1.0 - y; ry = x;       break;
+        default: break;
+    }
+    *ox = BKClamp(rx);
+    *oy = BKClamp(ry);
+}
+
+// Visual -> painel: usada pelo cursor, que vive no espaco visual.
+static void BKConvInv(double vx, double vy, int orient, double *ox, double *oy)
+{
+    double rx = vx;
+    double ry = vy;
+    switch (orient) {
+        case 2: rx = 1.0 - vx; ry = 1.0 - vy; break;
+        case 3: rx = 1.0 - vy; ry = vx;       break;
+        case 4: rx = vy;       ry = 1.0 - vx; break;
         default: break;
     }
     *ox = BKClamp(rx);
@@ -340,9 +354,6 @@ static void BKSend(double nx, double ny, int phase, NSUInteger idx)
 
     double rx = BKClamp(nx);
     double ry = BKClamp(ny);
-    int o = BKCurrentOrient();
-
-    if (gRotate && !gRaw) BKConv(rx, ry, o, &rx, &ry);
 
     if (gSpace) {
         rx = rx * BKScreenW();
@@ -359,7 +370,6 @@ static void BKSend(double nx, double ny, int phase, NSUInteger idx)
     int range = (phase == 2) ? 0 : 1;
     int touch = (phase == 2) ? 0 : 1;
 
-    // mascara real: Identity e Attribute sempre, Stop no levantamento
     int mask = kIOHIDDigitizerEventRange | kIOHIDDigitizerEventTouch |
                kIOHIDDigitizerEventPosition | kBKEventIdentity | kBKEventAttribute;
     if (phase == 2) mask |= kBKEventStop;
@@ -407,8 +417,8 @@ static void BKSend(double nx, double ny, int phase, NSUInteger idx)
     CFRelease(hand);
 
     BKNotifyUserActivity();
-    BKAppend([NSString stringWithFormat:@"D ph=%d o=%d u=%d f=%d r=%d s=%d tp=%.1f sid=%llx x=%.3f y=%.3f X=%.3f Y=%.3f",
-              phase, o, BKDeviceOrientation(), BKFrontMostOrientation(), (int)gRaw, (int)gSpace,
+    BKAppend([NSString stringWithFormat:@"D ph=%d o=%d u=%d f=%d s=%d tp=%.1f sid=%llx x=%.3f y=%.3f X=%.3f Y=%.3f",
+              phase, BKCurrentOrient(), BKDeviceOrientation(), BKFrontMostOrientation(), (int)gSpace,
               tp, sid, rx, ry, nx, ny]);
 }
 
@@ -461,18 +471,20 @@ static void BKTap(NSUInteger idx, double nx, double ny)
     });
 }
 
-// Clique no cursor virtual: identidade rotativa para nao colidir em cliques rapidos.
+// Clique no cursor: cursor esta em espaco visual, converte para painel.
 static void BKCursorTap(void)
 {
     NSUInteger idx = 40 + (NSUInteger)(gSeq++ % 16);
-    double x = gCx;
-    double y = gCy;
-    BKSend(x, y, 1, idx);
+    double px = gCx;
+    double py = gCy;
+    if (gRotate) BKConvInv(gCx, gCy, BKCurrentOrient(), &px, &py);
+    BKAppend([NSString stringWithFormat:@"C cur vis=%.3f,%.3f pn=%.3f,%.3f", gCx, gCy, px, py]);
+    BKSend(px, py, 1, idx);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        BKSend(x, y, 0, idx);
+        BKSend(px, py, 0, idx);
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 70 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        BKSend(x, y, 2, idx);
+        BKSend(px, py, 2, idx);
     });
 }
 
@@ -593,30 +605,31 @@ static void BKProbeStep(int pass, int i)
     if (i >= 5) {
         if (pass == 0) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1200 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-                BKAppend(@"P --- conv ---");
+                BKAppend(@"P --- inv ---");
                 BKProbeStep(1, 0);
             });
         } else {
-            gRaw = NO;
             gProbing = NO;
             BKAppend(@"P fim");
         }
         return;
     }
 
-    gRaw = (pass == 0);
-
     NSUInteger idx = 80 + (NSUInteger)i + (NSUInteger)(pass * 5);
     double x = kBKProbe[i][0];
     double y = kBKProbe[i][1];
+    double px = x;
+    double py = y;
+    if (pass == 1 && gRotate) BKConvInv(x, y, BKCurrentOrient(), &px, &py);
 
-    BKAppend([NSString stringWithFormat:@"P %@ i=%d x=%.3f y=%.3f", pass ? @"tr" : @"raw", i, x, y]);
-    BKSend(x, y, 1, idx);
+    BKAppend([NSString stringWithFormat:@"P %@ i=%d vis=%.3f,%.3f pn=%.3f,%.3f",
+              pass ? @"inv" : @"raw", i, x, y, px, py]);
+    BKSend(px, py, 1, idx);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        BKSend(x, y, 0, idx);
+        BKSend(px, py, 0, idx);
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 70 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        BKSend(x, y, 2, idx);
+        BKSend(px, py, 2, idx);
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 900 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
         BKProbeStep(pass, i + 1);
@@ -627,7 +640,6 @@ static void BKProbeRun(void)
 {
     if (gProbing) return;
     gProbing = YES;
-    gRaw = YES;
     BKAppend([NSString stringWithFormat:@"P inicio o=%d tela=%.0fx%.0f", BKCurrentOrient(), BKScreenW(), BKScreenH()]);
     BKProbeStep(0, 0);
 }
@@ -653,10 +665,7 @@ static void BKHandleKey(int usage, BOOL down)
 static void BKHandleButton(int b, BOOL down)
 {
     if (gFollowCursor && b == 0) {
-        if (down) {
-            BKAppend([NSString stringWithFormat:@"B m:0 cur=1 x=%.3f y=%.3f", gCx, gCy]);
-            BKCursorTap();
-        }
+        if (down) BKCursorTap();
         return;
     }
 

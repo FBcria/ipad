@@ -5,6 +5,7 @@
 #import <notify.h>
 #import <dlfcn.h>
 #import <stdarg.h>
+#import <mach/mach_time.h>
 
 #define kBKConfigPath @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 #define kBKStatusPath @"/var/mobile/bk_status.txt"
@@ -33,6 +34,8 @@ static struct {
     int (*GetType)(void *);
     int64_t (*GetInt)(void *, int32_t);
 } gCap;
+
+static uint64_t gCapIgnoreUntil = 0;
 
 static CGRect BKSpace(void);
 static UIWindowScene *BKMainScene(void);
@@ -189,43 +192,50 @@ static NSString *BKStatusText(void)
 
 static void BKStopCapture(void)
 {
-    if (gCapClient) {
+    if (!gCapClient) return;
+    @try {
         if (gCap.SetQueue) gCap.SetQueue(gCapClient, NULL);
-        CFRelease(gCapClient);
-        gCapClient = NULL;
+    } @catch (NSException *e) {
     }
+    CFRelease(gCapClient);
+    gCapClient = NULL;
 }
 
 static void BKCapCB(void *target, void *refcon, void *queue, void *ev)
 {
     (void)target; (void)refcon; (void)queue;
     if (!ev || !gPending) return;
-    int type = gCap.GetType(ev);
-    NSString *enc = nil;
-    if (type == 3) {
-        int page = (int)gCap.GetInt(ev, (3 << 16 | 0));
-        int usage = (int)gCap.GetInt(ev, (3 << 16 | 1));
-        int down = (int)gCap.GetInt(ev, (3 << 16 | 2));
-        if ((page == 0 || page == 7) && down && usage >= 4 && usage <= 231) {
-            enc = [NSString stringWithFormat:@"k:%d", usage];
+    if (mach_absolute_time() < gCapIgnoreUntil) return;
+    @try {
+        int type = gCap.GetType(ev);
+        NSString *enc = nil;
+        if (type == 3) {
+            int page = (int)gCap.GetInt(ev, (3 << 16 | 0));
+            int usage = (int)gCap.GetInt(ev, (3 << 16 | 1));
+            int down = (int)gCap.GetInt(ev, (3 << 16 | 2));
+            if ((page == 0 || page == 7) && down && usage >= 4 && usage <= 231) {
+                enc = [NSString stringWithFormat:@"k:%d", usage];
+            }
+        } else if (type == 17) {
+            int mask = (int)gCap.GetInt(ev, (17 << 16 | 3));
+            if (mask & 1) enc = @"m:0";
+            else if (mask & 2) enc = @"m:1";
+            else if (mask & 4) enc = @"m:2";
         }
-    } else if (type == 17) {
-        int mask = (int)gCap.GetInt(ev, (17 << 16 | 3));
-        if (mask & 1) enc = @"m:0";
-        else if (mask & 2) enc = @"m:1";
-        else if (mask & 4) enc = @"m:2";
-    }
-    if (!enc) return;
+        if (!enc) return;
 
-    BKMarkerView *m = gPending;
-    gPending = nil;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        m.keyEnc = enc;
-        m.label.text = [NSString stringWithFormat:@"%@\n%@",
-                        [m.label.text componentsSeparatedByString:@"\n"].firstObject, enc];
-        gBanner.hidden = YES;
-        BKStopCapture();
-    });
+        BKMarkerView *m = gPending;
+        gPending = nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            m.keyEnc = enc;
+            m.label.text = [NSString stringWithFormat:@"%@\n%@",
+                            [m.label.text componentsSeparatedByString:@"\n"].firstObject, enc];
+            gBanner.hidden = YES;
+            BKStopCapture();
+        });
+    } @catch (NSException *e) {
+        BKLog(@"cap: %@", e.reason);
+    }
 }
 
 static void BKStartCapture(BKMarkerView *m)
@@ -248,21 +258,28 @@ static void BKStartCapture(BKMarkerView *m)
     BKStopCapture();
     gPending = m;
     gBanner.hidden = NO;
-    gCapClient = gCap.CreateWithType ? gCap.CreateWithType(kCFAllocatorDefault, 1, NULL)
-                                     : gCap.Create(kCFAllocatorDefault);
-    if (!gCapClient) return;
-    if (gCap.SetMatching) {
-        NSArray *matching = @[
-            @{ @"DeviceUsagePage": @1, @"DeviceUsage": @6 },
-            @{ @"DeviceUsagePage": @1, @"DeviceUsage": @2 },
-            @{ @"DeviceUsagePage": @9, @"DeviceUsage": @1 },
-        ];
-        gCap.SetMatching(gCapClient, (__bridge CFTypeRef)matching);
+    gCapIgnoreUntil = mach_absolute_time() + 250000000ull;
+
+    @try {
+        gCapClient = gCap.CreateWithType ? gCap.CreateWithType(kCFAllocatorDefault, 2, NULL)
+                                         : gCap.Create(kCFAllocatorDefault);
+        if (!gCapClient) return;
+        if (gCap.SetMatching) {
+            NSArray *matching = @[
+                @{ @"DeviceUsagePage": @1, @"DeviceUsage": @6 },
+                @{ @"DeviceUsagePage": @1, @"DeviceUsage": @2 },
+                @{ @"DeviceUsagePage": @9, @"DeviceUsage": @1 },
+            ];
+            gCap.SetMatching(gCapClient, (__bridge CFTypeRef)matching);
+        }
+        gCap.RegisterCB(gCapClient, BKCapCB, NULL, NULL);
+        dispatch_queue_t q = dispatch_get_main_queue();
+        if (gCap.SetQueue) gCap.SetQueue(gCapClient, q);
+        if (gCap.Activate) gCap.Activate(gCapClient);
+        BKLog(@"cap: inicio tipo=2");
+    } @catch (NSException *e) {
+        BKLog(@"cap falhou: %@", e.reason);
     }
-    gCap.RegisterCB(gCapClient, BKCapCB, NULL, NULL);
-    dispatch_queue_t q = dispatch_get_main_queue();
-    if (gCap.SetQueue) gCap.SetQueue(gCapClient, q);
-    if (gCap.Activate) gCap.Activate(gCapClient);
 }
 
 #pragma mark - Marcador

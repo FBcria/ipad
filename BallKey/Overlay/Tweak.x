@@ -29,7 +29,8 @@ static struct {
     void *(*Create)(CFAllocatorRef);
     void *(*CreateWithType)(CFAllocatorRef, int, void *);
     void (*RegisterCB)(void *, void *, void *, void *);
-    void (*SetQueue)(void *, dispatch_queue_t);
+    void (*Schedule)(void *, CFRunLoopRef, CFStringRef);
+    void (*Unschedule)(void *, CFRunLoopRef, CFStringRef);
     void (*Activate)(void *);
     int (*GetType)(void *);
     int64_t (*GetInt)(void *, int32_t);
@@ -196,16 +197,14 @@ static void BKStopCapture(void)
     gBanner.hidden = YES;
 }
 
-static void BKFreeCapture(void)
+static void BKUnscheduleCapture(void)
 {
     gPending = nil;
-    if (!gCapClient) return;
+    if (!gCapClient || !gCap.Unschedule) return;
     @try {
-        if (gCap.SetQueue) gCap.SetQueue(gCapClient, NULL);
+        gCap.Unschedule(gCapClient, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
     } @catch (NSException *e) {
     }
-    CFRelease(gCapClient);
-    gCapClient = NULL;
 }
 
 static void BKCapCB(void *target, void *refcon, void *queue, void *ev)
@@ -259,7 +258,8 @@ static void BKStartCapture(BKMarkerView *m)
             gCap.Create = dlsym(gIOKit, "IOHIDEventSystemClientCreate");
             gCap.CreateWithType = dlsym(gIOKit, "IOHIDEventSystemClientCreateWithType");
             gCap.RegisterCB = dlsym(gIOKit, "IOHIDEventSystemClientRegisterEventCallback");
-            gCap.SetQueue = dlsym(gIOKit, "IOHIDEventSystemClientSetDispatchQueue");
+            gCap.Schedule = dlsym(gIOKit, "IOHIDEventSystemClientScheduleWithRunLoop");
+            gCap.Unschedule = dlsym(gIOKit, "IOHIDEventSystemClientUnscheduleWithRunLoop");
             gCap.Activate = dlsym(gIOKit, "IOHIDEventSystemClientActivate");
             gCap.GetType = dlsym(gIOKit, "IOHIDEventGetType");
             gCap.GetInt = dlsym(gIOKit, "IOHIDEventGetIntegerValue");
@@ -271,18 +271,27 @@ static void BKStartCapture(BKMarkerView *m)
     gBanner.hidden = NO;
     gCapIgnoreUntil = mach_absolute_time() + 250000000ull;
 
-    if (gCapClient) return;
+    if (gCapClient) {
+        if (gCap.Schedule) {
+            @try {
+                gCap.Schedule(gCapClient, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+            } @catch (NSException *e) {
+            }
+        }
+        return;
+    }
 
     @try {
-        gCapClient = gCap.CreateWithType ? gCap.CreateWithType(kCFAllocatorDefault, 2, NULL)
+        gCapClient = gCap.CreateWithType ? gCap.CreateWithType(kCFAllocatorDefault, 1, NULL)
                                          : gCap.Create(kCFAllocatorDefault);
         if (!gCapClient) {
             BKLog(@"cap: cliente nulo");
             return;
         }
         gCap.RegisterCB(gCapClient, BKCapCB, NULL, NULL);
-        dispatch_queue_t q = dispatch_get_main_queue();
-        if (gCap.SetQueue) gCap.SetQueue(gCapClient, q);
+        if (gCap.Schedule) {
+            gCap.Schedule(gCapClient, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+        }
         if (gCap.Activate) gCap.Activate(gCapClient);
         BKLog(@"cap: cliente criado");
     } @catch (NSException *e) {
@@ -443,7 +452,7 @@ static void BKSaveEditor(void)
 
 static void BKCloseEditor(void)
 {
-    BKFreeCapture();
+    BKUnscheduleCapture();
     [gEditWindow setHidden:YES];
     gEditWindow = nil;
     gCanvas = nil;
@@ -643,13 +652,17 @@ static void BKToggleMenu(void)
 {
     (void)b;
     BKSaveEditor();
-    BKCloseEditor();
+    dispatch_async(dispatch_get_main_queue(), ^{
+        BKCloseEditor();
+    });
 }
 
 - (void)bkClose:(UIButton *)b
 {
     (void)b;
-    BKCloseEditor();
+    dispatch_async(dispatch_get_main_queue(), ^{
+        BKCloseEditor();
+    });
 }
 
 - (void)bkMenuTap:(UIButton *)b
@@ -657,30 +670,36 @@ static void BKToggleMenu(void)
     NSInteger i = b.tag - 100;
     if (i == 0) {
         gMenuWindow.hidden = YES;
-        BKOpenEditor();
-    } else if (i == 1) {
-        BKSetSens(BKGetSens() - 0.05);
-        BKToggleMenu();
-        BKToggleMenu();
-    } else if (i == 2) {
-        BKSetSens(BKGetSens() + 0.05);
-        BKToggleMenu();
-        BKToggleMenu();
-    } else if (i == 3) {
-        BKSetEnabled(!gEnabled);
-        BKToggleMenu();
-        BKToggleMenu();
-    } else if (i == 4) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            BKOpenEditor();
+        });
+        return;
+    }
+    if (i == 4) {
         BKPost("com.wjf.ballkey.test");
-    } else if (i == 5) {
+        return;
+    }
+    if (i == 5) {
         NSMutableDictionary *cfg = BKReadCfg();
         cfg[@"Dump"] = @(![cfg[@"Dump"] boolValue]);
         BKWriteCfg(cfg);
     } else if (i == 6) {
         BKPost("com.wjf.ballkey.reload");
-    } else {
+        return;
+    } else if (i == 7) {
         gMenuWindow.hidden = YES;
+        return;
+    } else if (i == 1) {
+        BKSetSens(BKGetSens() - 0.05);
+    } else if (i == 2) {
+        BKSetSens(BKGetSens() + 0.05);
+    } else if (i == 3) {
+        BKSetEnabled(!gEnabled);
     }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        BKToggleMenu();
+        BKToggleMenu();
+    });
 }
 
 - (void)bkPan:(UIPanGestureRecognizer *)g

@@ -20,6 +20,65 @@ static void BKMark(NSString *name)
            atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
+static void BKLog(NSString *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    NSString *s = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
+    NSData *d = [[NSString stringWithFormat:@"ov %@\n", s] dataUsingEncoding:NSUTF8StringEncoding];
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:@"/var/mobile/bk_debug.log"];
+    if (!fh) {
+        [d writeToFile:@"/var/mobile/bk_debug.log" atomically:YES];
+        return;
+    }
+    @try {
+        [fh seekToEndOfFile];
+        [fh writeData:d];
+        [fh closeFile];
+    } @catch (NSException *e) {
+    }
+}
+
+static UIWindowScene *BKMainScene(void)
+{
+    UIWindowScene *fallback = nil;
+    for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+        if (![s isKindOfClass:[UIWindowScene class]]) continue;
+        UIWindowScene *ws = (UIWindowScene *)s;
+        if (!fallback) fallback = ws;
+        if (ws.activationState == UISceneActivationStateForegroundActive) return ws;
+    }
+    if (!fallback) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        UIWindow *kw = [UIApplication sharedApplication].keyWindow;
+#pragma clang diagnostic pop
+        if (kw.windowScene) fallback = kw.windowScene;
+    }
+    return fallback;
+}
+
+static UIWindow *BKMakeWindow(CGFloat level)
+{
+    UIWindowScene *scene = BKMainScene();
+    if (!scene) return nil;
+
+    UIWindow *w = [[UIWindow alloc] initWithWindowScene:scene];
+    w.frame = BKSpacePtr();
+    w.windowLevel = level;
+    w.backgroundColor = [UIColor clearColor];
+    w.alpha = 1.0;
+    w.hidden = YES;
+
+    UIViewController *vc = [UIViewController new];
+    w.rootViewController = vc;
+    vc.view.frame = w.bounds;
+    vc.view.backgroundColor = [UIColor clearColor];
+    vc.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    return w;
+}
+
 static int BKFrontMostOrientation(void)
 {
     Class sbCls = objc_getClass("SpringBoard");
@@ -45,10 +104,12 @@ static CGRect BKSpace(void)
 
 static void BKRelayout(void)
 {
-    if (!gBallWindow) return;
+    if (!gBallWindow || !gBallWindow.windowScene) return;
     CGRect sp = BKSpace();
+    if (sp.size.width < 1.0 || sp.size.height < 1.0) return;
     gBallWindow.frame = sp;
     if (gMenuWindow) gMenuWindow.frame = sp;
+    if (!gBall) return;
     CGFloat side = 44.0;
     gBall.frame = CGRectMake(gBallPos.x * sp.size.width - side / 2,
                              gBallPos.y * sp.size.height - side / 2, side, side);
@@ -77,10 +138,11 @@ static void BKToggleMenu(void)
         return;
     }
     if (!gMenuWindow) {
-        gMenuWindow = [[UIWindow alloc] initWithFrame:BKSpace()];
-        gMenuWindow.windowLevel = UIWindowLevelAlert + 2;
-        gMenuWindow.backgroundColor = [UIColor clearColor];
-        gMenuWindow.rootViewController = [UIViewController new];
+        gMenuWindow = BKMakeWindow(UIWindowLevelAlert + 1001);
+        if (!gMenuWindow) {
+            BKLog(@"menu: sem scene");
+            return;
+        }
     }
     UIView *box = [gMenuWindow.rootViewController.view viewWithTag:77];
     if (!box) {
@@ -113,10 +175,15 @@ static void BKToggleMenu(void)
 
 static void BKSetupBall(void)
 {
-    gBallWindow = [[UIWindow alloc] initWithFrame:BKSpace()];
-    gBallWindow.windowLevel = UIWindowLevelAlert + 1;
-    gBallWindow.backgroundColor = [UIColor clearColor];
-    gBallWindow.rootViewController = [UIViewController new];
+    if (gBallWindow) return;
+
+    gBallWindow = BKMakeWindow(UIWindowLevelAlert + 1000);
+    if (!gBallWindow) {
+        BKLog(@"ball: sem scene, retry");
+        return;
+    }
+    BKLog(@"ball: scene ok bounds=%.0fx%.0f",
+          BKSpace().size.width, BKSpace().size.height);
 
     gBall = [[UIView alloc] initWithFrame:CGRectZero];
     gBall.backgroundColor = [UIColor colorWithRed:0.1 green:0.7 blue:0.5 alpha:0.85];
@@ -139,9 +206,10 @@ static void BKSetupBall(void)
     [gBall addGestureRecognizer:tap];
 
     [gBallWindow.rootViewController.view addSubview:gBall];
+    BKRelayout();
     gBallWindow.hidden = NO;
     BKMark(@"ball_shown.txt");
-    BKRelayout();
+    BKLog(@"ball: hidden=%d level=%.0f", (int)gBallWindow.hidden, gBallWindow.windowLevel);
 }
 
 static void BKPollFrontmost(void)
@@ -196,8 +264,10 @@ static void BKPollFrontmost(void)
 - (void)bkPan:(UIPanGestureRecognizer *)g
 {
     UIView *v = g.view;
+    UIView *host = v.window ?: v.superview;
     CGRect sp = BKSpace();
-    CGPoint p = [g locationInView:v.superview];
+    if (sp.size.width < 1.0 || sp.size.height < 1.0) return;
+    CGPoint p = [g locationInView:host];
     v.center = p;
     gBallPos = CGPointMake(p.x / sp.size.width, p.y / sp.size.height);
 }
@@ -220,7 +290,11 @@ static void BKOverlayInit(void)
 
     __block int tries = 0;
     [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
-        if (gBallWindow || ++tries > 30) { [t invalidate]; return; }
+        if (gBallWindow || ++tries > 30) {
+            [t invalidate];
+            if (!gBallWindow) BKLog(@"ball: desisti sem scene");
+            return;
+        }
         BKSetupBall();
     }];
     [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {

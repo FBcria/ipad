@@ -25,6 +25,11 @@ static void BKMark(NSString *name)
            atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
+static void BKCB(void *t, void *r, void *q, void *ev)
+{
+    (void)t; (void)r; (void)q; (void)ev;
+}
+
 static void BKStep2(void)
 {
     BKAppend(@"S2 ini");
@@ -38,17 +43,20 @@ static void BKStep2(void)
     void *pCreateType = dlsym(h, "IOHIDEventSystemClientCreateWithType");
     void *pCreate = dlsym(h, "IOHIDEventSystemClientCreate");
     void *pSetQueue = dlsym(h, "IOHIDEventSystemClientSetDispatchQueue");
-    BKAppend([NSString stringWithFormat:@"S2 sym ct=%d c=%d q=%d",
-              pCreateType ? 1 : 0, pCreate ? 1 : 0, pSetQueue ? 1 : 0]);
+    void *pRegister = dlsym(h, "IOHIDEventSystemClientRegisterEventCallback");
+    BKAppend([NSString stringWithFormat:@"S2 sym ct=%d c=%d q=%d r=%d",
+              pCreateType ? 1 : 0, pCreate ? 1 : 0, pSetQueue ? 1 : 0, pRegister ? 1 : 0]);
 
     typedef struct __IOHIDEventSystemClient *Cl;
     Cl (*createType)(CFAllocatorRef, int, void *);
     Cl (*create)(CFAllocatorRef);
     void (*setQueue)(Cl, dispatch_queue_t);
+    void (*registerCB)(Cl, void *, void *, void *);
 
     createType = pCreateType;
     create = pCreate;
     setQueue = pSetQueue;
+    registerCB = pRegister;
 
     Cl c = createType ? createType(kCFAllocatorDefault, 1, NULL) : NULL;
     BKAppend([NSString stringWithFormat:@"S2 createType=%d", c ? 1 : 0]);
@@ -62,6 +70,11 @@ static void BKStep2(void)
         setQueue(c, dispatch_get_main_queue());
         BKAppend(@"S2 queue=1");
     }
+
+    if (registerCB) {
+        registerCB(c, BKCB, NULL, NULL);
+        BKAppend(@"S2 reg=1");
+    }
     BKAppend(@"S2 ok");
 }
 
@@ -69,9 +82,6 @@ static void BKStep2(void)
     @autoreleasepool {
         BKMark(@"engine_ctor.txt");
         BKAppend(@"I init");
-
-        void *h = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
-        BKAppend(h ? @"I dlopen=1" : @"I dlopen=0");
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{

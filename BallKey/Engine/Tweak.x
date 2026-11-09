@@ -207,17 +207,32 @@ static BOOL BKLoadIOKit(void)
     return YES;
 }
 
-// cb NULL para cliente de envio; ordem: criar, registrar, agendar, ativar
-static BKIOHIDEventSystemClientRef BKNewClient(void *cb)
+static BKIOHIDEventSystemClientRef BKClientNew(void)
 {
     BKIOHIDEventSystemClientRef c = NULL;
     if (gIO.ClientCreateWithType) {
         c = gIO.ClientCreateWithType(kCFAllocatorDefault, kBKClientTypeMonitor, NULL);
     }
     if (!c && gIO.ClientCreate) c = gIO.ClientCreate(kCFAllocatorDefault);
-    if (!c) return NULL;
+    return c;
+}
 
-    if (cb && gIO.RegisterCB) gIO.RegisterCB(c, cb, NULL, NULL);
+// Listener: registra ANTES de fila e ativação
+static BKIOHIDEventSystemClientRef BKNewListen(void)
+{
+    BKIOHIDEventSystemClientRef c = BKClientNew();
+    if (!c) return NULL;
+    if (gIO.RegisterCB) gIO.RegisterCB(c, BKListenCB, NULL, NULL);
+    if (gIO.SetQueue) gIO.SetQueue(c, dispatch_get_main_queue());
+    if (gIO.Activate) gIO.Activate(c);
+    return c;
+}
+
+// Envio: sem callback, fila e ativação apenas
+static BKIOHIDEventSystemClientRef BKNewSend(void)
+{
+    BKIOHIDEventSystemClientRef c = BKClientNew();
+    if (!c) return NULL;
     if (gIO.SetQueue) gIO.SetQueue(c, dispatch_get_main_queue());
     if (gIO.Activate) gIO.Activate(c);
     return c;
@@ -364,7 +379,7 @@ static void BKSend(double nx, double ny, int phase, NSUInteger idx)
     @try {
 
     if (!gSendClient) {
-        gSendClient = BKNewClient(NULL);
+        gSendClient = BKNewSend();
         if (!gSendClient) {
             BKAppend(@"! send sem cliente");
             return;
@@ -855,7 +870,7 @@ static void BKEngineInit(void)
     if (!BKLoadIOKit()) return;
 
     @try {
-        gListenClient = BKNewClient(BKListenCB);
+        gListenClient = BKNewListen();
         if (!gListenClient) {
             BKAppend(@"I client=0");
             return;

@@ -15,6 +15,8 @@ typedef struct {
     BKIOHIDEventSystemClientRef (*ClientCreateWithType)(CFAllocatorRef, int, void *);
     void (*RegisterCB)(BKIOHIDEventSystemClientRef, void *, void *, void *);
     void (*SetQueue)(BKIOHIDEventSystemClientRef, dispatch_queue_t);
+    void (*Schedule)(BKIOHIDEventSystemClientRef, CFRunLoopRef, CFStringRef);
+    void (*Unschedule)(BKIOHIDEventSystemClientRef, CFRunLoopRef, CFStringRef);
     void (*Activate)(BKIOHIDEventSystemClientRef);
     void (*Dispatch)(BKIOHIDEventSystemClientRef, BKIOHIDEventRef);
     int (*GetType)(BKIOHIDEventRef);
@@ -46,7 +48,7 @@ typedef struct {
 #define kBKFieldDisplayInt      25
 #define kBKSetOpt               0xF0000000u
 #define kBKSenderID             0xDEFACEDBEEFFECE5ull
-#define kBKClientTypeAdmin      2
+#define kBKClientTypeMonitor    1
 #define kBKTypeKeyExtra         15
 #define kBKTypePointer          17
 #define kBKPtrX                 (17u << 16 | 0u)
@@ -167,6 +169,8 @@ static BOOL BKLoadIOKit(void)
     gIO.ClientCreateWithType = dlsym(gIOKit, "IOHIDEventSystemClientCreateWithType");
     gIO.RegisterCB = dlsym(gIOKit, "IOHIDEventSystemClientRegisterEventCallback");
     gIO.SetQueue = dlsym(gIOKit, "IOHIDEventSystemClientSetDispatchQueue");
+    gIO.Schedule = dlsym(gIOKit, "IOHIDEventSystemClientScheduleWithRunLoop");
+    gIO.Unschedule = dlsym(gIOKit, "IOHIDEventSystemClientUnscheduleWithRunLoop");
     gIO.Activate = dlsym(gIOKit, "IOHIDEventSystemClientActivate");
     gIO.Dispatch = dlsym(gIOKit, "IOHIDEventSystemClientDispatchEvent");
     gIO.GetType = dlsym(gIOKit, "IOHIDEventGetType");
@@ -193,7 +197,7 @@ static BKIOHIDEventSystemClientRef BKNewClient(void)
 {
     BKIOHIDEventSystemClientRef c = NULL;
     if (gIO.ClientCreateWithType) {
-        c = gIO.ClientCreateWithType(kCFAllocatorDefault, kBKClientTypeAdmin, NULL);
+        c = gIO.ClientCreateWithType(kCFAllocatorDefault, kBKClientTypeMonitor, NULL);
     }
     if (!c && gIO.ClientCreate) c = gIO.ClientCreate(kCFAllocatorDefault);
     return c;
@@ -830,10 +834,15 @@ static void BKEngineInit(void)
 
     @try {
         if (gIO.RegisterCB) gIO.RegisterCB(gListenClient, BKListenCB, NULL, NULL);
-        dispatch_queue_t q = dispatch_get_main_queue();
-        if (gIO.SetQueue) gIO.SetQueue(gListenClient, q);
+        if (gIO.Schedule) {
+            gIO.Schedule(gListenClient, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+            BKAppend(@"I sched=runloop");
+        } else if (gIO.SetQueue) {
+            gIO.SetQueue(gListenClient, dispatch_get_main_queue());
+            BKAppend(@"I sched=queue");
+        }
         if (gIO.Activate) gIO.Activate(gListenClient);
-        BKAppend(@"I tipo=2 sem-filtro");
+        BKAppend(@"I tipo=monitor");
     } @catch (NSException *e) {
         BKAppend([NSString stringWithFormat:@"! init %@", e.reason]);
         return;
@@ -870,10 +879,8 @@ static void BKEngineInit(void)
 
 %dtor {
     @autoreleasepool {
-        if (gListenClient && gIO.SetQueue) {
-            gIO.SetQueue(gListenClient, NULL);
-            CFRelease(gListenClient);
-            gListenClient = NULL;
+        if (gListenClient && gIO.Unschedule) {
+            gIO.Unschedule(gListenClient, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
         }
     }
 }

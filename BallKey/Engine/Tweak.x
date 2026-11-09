@@ -56,6 +56,7 @@ float IOHIDEventGetFloatValue(BKIOHIDEventRef event, IOHIDEventField field);
 #define kBKPtrMask              (17u << 16 | 3u)
 #define kBKMoveFactor           0.000977f
 #define kBKToggleUsage          14
+#define kBKProbeUsage           19
 
 // Ausente no header vendorizado. Digitizer = tipo 11; IsDisplayIntegrated = 25,
 // logo o proximo campo livre e 26.
@@ -636,6 +637,13 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
             return;
         }
 
+        if (usage == kBKProbeUsage && (page == 0 || page == 7)) {
+            gHandledUsage = usage;
+            gPendingDir = 0;
+            if (down) BKProbeRun();
+            return;
+        }
+
         gPendingDir = down ? 1 : -1;
         if ((page == 0 || page == 7) && usage >= 4 && usage <= 231) {
             gHandledUsage = usage;
@@ -646,7 +654,7 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         int dir = gPendingDir;
         gPendingDir = 0;
         if (usage <= 0) return;
-        if (usage == kBKToggleUsage) return;
+        if (usage == kBKToggleUsage || usage == kBKProbeUsage) return;
         if (usage == gHandledUsage) {
             gHandledUsage = -1;
             return;

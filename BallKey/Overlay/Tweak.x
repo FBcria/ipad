@@ -18,6 +18,18 @@ static CGPoint gBallPos = {0.06, 0.85};
 static CGRect BKSpace(void);
 static UIWindowScene *BKMainScene(void);
 
+@interface BKPassWindow : UIWindow
+@end
+
+@implementation BKPassWindow
+- (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e
+{
+    UIView *v = [super hitTest:p withEvent:e];
+    if (!v || v == self.rootViewController.view) return nil;
+    return v;
+}
+@end
+
 static void BKMark(NSString *name)
 {
     [name writeToFile:[@"/var/mobile/bk_" stringByAppendingString:name]
@@ -68,7 +80,7 @@ static UIWindow *BKMakeWindow(CGFloat level)
     UIWindowScene *scene = BKMainScene();
     if (!scene) return nil;
 
-    UIWindow *w = [[UIWindow alloc] initWithWindowScene:scene];
+    UIWindow *w = [[BKPassWindow alloc] initWithWindowScene:scene];
     w.frame = BKSpace();
     w.windowLevel = level;
     w.backgroundColor = [UIColor clearColor];
@@ -133,6 +145,7 @@ static void BKSetEnabled(BOOL on)
     [cfg writeToFile:kBKConfigPath atomically:YES];
     gEnabled = on;
     BKPost("com.wjf.ballkey.reload");
+    BKLog(@"toggle en=%d", (int)on);
 }
 
 static void BKToggleMenu(void)
@@ -148,32 +161,34 @@ static void BKToggleMenu(void)
             return;
         }
     }
-    UIView *box = [gMenuWindow.rootViewController.view viewWithTag:77];
-    if (!box) {
-        box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 240, 260)];
-        box.tag = 77;
-        box.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.95];
-        box.layer.cornerRadius = 14;
-        box.center = CGPointMake(gMenuWindow.bounds.size.width / 2,
-                                 gMenuWindow.bounds.size.height / 2);
 
-        NSArray *titles = @[@"Ativar / Desativar", @"Testar centro", @"Dump de toque",
-                            @"Recarregar", @"Fechar"];
-        for (NSUInteger i = 0; i < titles.count; i++) {
-            UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-            b.frame = CGRectMake(12, 14 + (CGFloat)i * 46, 216, 40);
-            [b setTitle:titles[i] forState:UIControlStateNormal];
-            [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-            b.backgroundColor = [UIColor colorWithWhite:0.22 alpha:1];
-            b.layer.cornerRadius = 8;
-            b.tag = 100 + (NSInteger)i;
-            [b addTarget:gMenuWindow.rootViewController
-                  action:@selector(bkMenuTap:)
-        forControlEvents:UIControlEventTouchUpInside];
-            [box addSubview:b];
-        }
-        [gMenuWindow.rootViewController.view addSubview:box];
+    UIView *root = gMenuWindow.rootViewController.view;
+    [[root viewWithTag:77] removeFromSuperview];
+
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 240, 260)];
+    box.tag = 77;
+    box.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.95];
+    box.layer.cornerRadius = 14;
+    box.center = CGPointMake(gMenuWindow.bounds.size.width / 2,
+                             gMenuWindow.bounds.size.height / 2);
+
+    NSArray *titles = @[gEnabled ? @"Desativar" : @"Ativar", @"Testar centro", @"Dump de toque",
+                        @"Recarregar", @"Fechar"];
+    for (NSUInteger i = 0; i < titles.count; i++) {
+        UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+        b.frame = CGRectMake(12, 14 + (CGFloat)i * 46, 216, 40);
+        [b setTitle:titles[i] forState:UIControlStateNormal];
+        [b setTitleColor:(i == 0 && gEnabled ? [UIColor systemGreenColor] : [UIColor whiteColor])
+                forState:UIControlStateNormal];
+        b.backgroundColor = [UIColor colorWithWhite:0.22 alpha:1];
+        b.layer.cornerRadius = 8;
+        b.tag = 100 + (NSInteger)i;
+        [b addTarget:gMenuWindow.rootViewController
+              action:@selector(bkMenuTap:)
+    forControlEvents:UIControlEventTouchUpInside];
+        [box addSubview:b];
     }
+    [root addSubview:box];
     gMenuWindow.hidden = NO;
 }
 
@@ -228,12 +243,14 @@ static void BKPollFrontmost(void)
     NSString *bid = app ? ((id (*)(id, SEL))objc_msgSend)(app, @selector(bundleIdentifier)) : nil;
     if (![bid isKindOfClass:[NSString class]]) return;
     if ([bid isEqualToString:gFrontBundle]) return;
+    if ([bid isEqualToString:@"com.apple.springboard"]) return;
     gFrontBundle = bid;
 
     NSMutableDictionary *cfg = [NSMutableDictionary dictionaryWithContentsOfFile:kBKConfigPath]
         ?: [NSMutableDictionary dictionary];
     cfg[@"ActiveBundle"] = bid;
     [cfg writeToFile:kBKConfigPath atomically:YES];
+    BKLog(@"front=%@", bid);
     BKPost("com.wjf.ballkey.reload");
 }
 
@@ -250,6 +267,8 @@ static void BKPollFrontmost(void)
     NSInteger i = b.tag - 100;
     if (i == 0) {
         BKSetEnabled(!gEnabled);
+        BKToggleMenu();
+        BKToggleMenu();
     } else if (i == 1) {
         BKPost("com.wjf.ballkey.test");
     } else if (i == 2) {

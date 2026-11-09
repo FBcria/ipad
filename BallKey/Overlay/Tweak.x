@@ -123,7 +123,7 @@ static int BKCurrentOrient(void)
 }
 @end
 
-static UIWindow *BKMakeWindow(CGFloat level, BOOL passthrough, UIView **outContainer)
+static UIWindow *BKMakeWindow(CGFloat level, BOOL passthrough, UIView *__strong *outContainer)
 {
     UIWindowScene *sc = BKScene();
     if (!sc) return nil;
@@ -398,6 +398,7 @@ static void BKStartBindCapture(void)
 - (void)addHold;
 - (void)addDir;
 - (void)editorDone;
+- (void)addType:(NSString *)type dx:(CGFloat)dx;
 @end
 
 @implementation BKActionTarget
@@ -539,7 +540,6 @@ static void BKOpenEditor(void)
     gEditorWindow = BKMakeWindow(UIWindowLevelAlert + 60, NO, &gEditContainer);
     if (!gEditorWindow) return;
     gMarkers = [NSMutableArray array];
-    gAppliedOrient = 0;
     BKApplyTo(gEditorWindow, gEditContainer, BKCurrentOrient());
     gAppliedOrient = BKCurrentOrient();
 

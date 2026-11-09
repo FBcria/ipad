@@ -24,10 +24,10 @@ static CGPoint gBallPos = {0.06, 0.85};
 
 static void *gIOKit = NULL;
 static void *gCapClient = NULL;
+static int gCapSeen = 0;
 static struct {
     void *(*Create)(CFAllocatorRef);
     void *(*CreateWithType)(CFAllocatorRef, int, void *);
-    void (*SetMatching)(void *, CFTypeRef);
     void (*RegisterCB)(void *, void *, void *, void *);
     void (*SetQueue)(void *, dispatch_queue_t);
     void (*Activate)(void *);
@@ -192,6 +192,13 @@ static NSString *BKStatusText(void)
 
 static void BKStopCapture(void)
 {
+    gPending = nil;
+    gBanner.hidden = YES;
+}
+
+static void BKFreeCapture(void)
+{
+    gPending = nil;
     if (!gCapClient) return;
     @try {
         if (gCap.SetQueue) gCap.SetQueue(gCapClient, NULL);
@@ -204,10 +211,16 @@ static void BKStopCapture(void)
 static void BKCapCB(void *target, void *refcon, void *queue, void *ev)
 {
     (void)target; (void)refcon; (void)queue;
-    if (!ev || !gPending) return;
-    if (mach_absolute_time() < gCapIgnoreUntil) return;
+    if (!ev) return;
     @try {
         int type = gCap.GetType(ev);
+        if (gCapSeen < 25) {
+            gCapSeen++;
+            BKLog(@"cap t=%d", type);
+        }
+        if (!gPending) return;
+        if (mach_absolute_time() < gCapIgnoreUntil) return;
+
         NSString *enc = nil;
         if (type == 3) {
             int page = (int)gCap.GetInt(ev, (3 << 16 | 0));
@@ -231,10 +244,10 @@ static void BKCapCB(void *target, void *refcon, void *queue, void *ev)
             m.label.text = [NSString stringWithFormat:@"%@\n%@",
                             [m.label.text componentsSeparatedByString:@"\n"].firstObject, enc];
             gBanner.hidden = YES;
-            BKStopCapture();
+            BKLog(@"cap ok %@", enc);
         });
     } @catch (NSException *e) {
-        BKLog(@"cap: %@", e.reason);
+        BKLog(@"cap erro: %@", e.reason);
     }
 }
 
@@ -245,7 +258,6 @@ static void BKStartCapture(BKMarkerView *m)
         if (gIOKit) {
             gCap.Create = dlsym(gIOKit, "IOHIDEventSystemClientCreate");
             gCap.CreateWithType = dlsym(gIOKit, "IOHIDEventSystemClientCreateWithType");
-            gCap.SetMatching = dlsym(gIOKit, "IOHIDEventSystemClientSetMatching");
             gCap.RegisterCB = dlsym(gIOKit, "IOHIDEventSystemClientRegisterEventCallback");
             gCap.SetQueue = dlsym(gIOKit, "IOHIDEventSystemClientSetDispatchQueue");
             gCap.Activate = dlsym(gIOKit, "IOHIDEventSystemClientActivate");
@@ -255,28 +267,24 @@ static void BKStartCapture(BKMarkerView *m)
     }
     if (!gIOKit || !gCap.Create || !gCap.RegisterCB) return;
 
-    BKStopCapture();
     gPending = m;
     gBanner.hidden = NO;
     gCapIgnoreUntil = mach_absolute_time() + 250000000ull;
 
+    if (gCapClient) return;
+
     @try {
         gCapClient = gCap.CreateWithType ? gCap.CreateWithType(kCFAllocatorDefault, 2, NULL)
                                          : gCap.Create(kCFAllocatorDefault);
-        if (!gCapClient) return;
-        if (gCap.SetMatching) {
-            NSArray *matching = @[
-                @{ @"DeviceUsagePage": @1, @"DeviceUsage": @6 },
-                @{ @"DeviceUsagePage": @1, @"DeviceUsage": @2 },
-                @{ @"DeviceUsagePage": @9, @"DeviceUsage": @1 },
-            ];
-            gCap.SetMatching(gCapClient, (__bridge CFTypeRef)matching);
+        if (!gCapClient) {
+            BKLog(@"cap: cliente nulo");
+            return;
         }
         gCap.RegisterCB(gCapClient, BKCapCB, NULL, NULL);
         dispatch_queue_t q = dispatch_get_main_queue();
         if (gCap.SetQueue) gCap.SetQueue(gCapClient, q);
         if (gCap.Activate) gCap.Activate(gCapClient);
-        BKLog(@"cap: inicio tipo=2");
+        BKLog(@"cap: cliente criado");
     } @catch (NSException *e) {
         BKLog(@"cap falhou: %@", e.reason);
     }
@@ -299,17 +307,14 @@ static void BKStartCapture(BKMarkerView *m)
 - (void)bkTap:(UITapGestureRecognizer *)g
 {
     (void)g;
+    if (gPending == self) return;
     BKStartCapture(self);
 }
 
 - (void)bkLong:(UILongPressGestureRecognizer *)g
 {
     if (g.state != UIGestureRecognizerStateBegan) return;
-    if (gPending == self) {
-        gPending = nil;
-        gBanner.hidden = YES;
-        BKStopCapture();
-    }
+    if (gPending == self) BKStopCapture();
     [gMarkers removeObject:self];
     [self removeFromSuperview];
 }
@@ -438,8 +443,7 @@ static void BKSaveEditor(void)
 
 static void BKCloseEditor(void)
 {
-    BKStopCapture();
-    gPending = nil;
+    BKFreeCapture();
     [gEditWindow setHidden:YES];
     gEditWindow = nil;
     gCanvas = nil;

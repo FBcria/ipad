@@ -1,8 +1,9 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <objc/message.h>
+#import <objc/runtime.h>
 #import <mach/mach_time.h>
 #import <notify.h>
-#import <objc/runtime.h>
 #import <math.h>
 
 typedef struct __IOHIDEvent *BKIOHIDEventRef;
@@ -33,9 +34,9 @@ extern BKIOHIDEventRef IOHIDEventCreateDigitizerFingerEventWithQuality(CFAllocat
 #define kBKLogPath              @"/var/mobile/bk_debug.log"
 #define kBKNotifyReload         "com.wjf.ballkey.reload"
 #define kBKNotifyTest           "com.wjf.ballkey.test"
+#define kBKNotifyProbe          "com.wjf.ballkey.probe"
 
 #define kBKTransducerHand       3
-#define kBKTransducerFinger     2
 #define kBKFieldX               (11u << 16 | 0u)
 #define kBKFieldY               (11u << 16 | 1u)
 #define kBKFieldTouchPhase      (11u << 16 | 26u)
@@ -51,6 +52,17 @@ extern BKIOHIDEventRef IOHIDEventCreateDigitizerFingerEventWithQuality(CFAllocat
 #define kBKPtrMask              (17u << 16 | 3u)
 #define kBKMoveFactor           0.000977
 #define kBKFpsKey               224
+
+#define kIOHIDEventTypeKeyboard                3
+#define kIOHIDEventFieldKeyboardUsagePage      (3u << 16 | 0u)
+#define kIOHIDEventFieldKeyboardUsage          (3u << 16 | 1u)
+#define kIOHIDEventFieldKeyboardDown           (3u << 16 | 2u)
+#define kIOHIDEventFieldKeyboardRepeat         (3u << 16 | 3u)
+#define kIOHIDDigitizerEventRange              0x01u
+#define kIOHIDDigitizerEventPosition           0x04u
+#define kIOHIDEventFieldDigitizerEventMask     (11u << 16 | 7u)
+#define kIOHIDEventFieldDigitizerRange         (11u << 16 | 8u)
+#define kIOHIDEventFieldDigitizerTouch         (11u << 16 | 9u)
 
 #define kBKIdxAim               70
 #define kBKIdxAds               71
@@ -84,7 +96,6 @@ static double gAimX = 0.5, gAimY = 0.5;
 static BOOL gAdsDown = NO;
 
 static BOOL gDirActive = NO;
-static NSUInteger gDirIdx = 0;
 static double gDirCX = 0, gDirCY = 0;
 static double gDirPX[4] = {0,0,0,0};
 static double gDirPY[4] = {0,0,0,0};
@@ -390,7 +401,6 @@ static void BKHandleDir(NSDictionary *pt, int dir, BOOL down)
     if (down) {
         if (!gDirActive) {
             gDirActive = YES;
-            gDirIdx = kBKIdxDir;
             gDirSens = pt[@"Sens"] ? [pt[@"Sens"] doubleValue] : 1.0;
             double cx, cy;
             BKPar(pt, @"Center", &cx, &cy);
@@ -474,7 +484,7 @@ static void BKFpsFire(void)
 {
     double px = gFireX, py = gFireY;
     if (gRotate) BKConvInv(gFireX, gFireY, BKCurrentOrient(), &px, &py);
-    BKTap(kBKIdxCursor, px, py);
+    BKTap(kBKIdxCursor + 1, px, py);
 }
 
 static void BKFpsAds(BOOL down)
@@ -490,6 +500,26 @@ static void BKFpsAds(BOOL down)
         gAdsDown = NO;
         BKUp(kBKIdxAds);
     }
+}
+
+#pragma mark - Cursor
+
+static void BKCursorMove(double dx, double dy)
+{
+    gCx = BKClamp(gCx + dx * gFollowSens * kBKMoveFactor);
+    gCy = BKClamp(gCy + dy * gFollowSens * kBKMoveFactor);
+}
+
+static void BKCursorTap(void)
+{
+    NSUInteger idx = kBKIdxCursor;
+    double px = gCx, py = gCy;
+    if (gRotate) BKConvInv(gCx, gCy, BKCurrentOrient(), &px, &py);
+    BKAppend([NSString stringWithFormat:@"C vis=%.3f,%.3f pn=%.3f,%.3f", gCx, gCy, px, py]);
+    BKDown(idx, px, py);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        BKUp(idx);
+    });
 }
 
 #pragma mark - Marcadores
@@ -520,11 +550,6 @@ static int BKDirOfKey(NSString *key)
 
 static void BKHandleKey(int usage, BOOL down)
 {
-    if (usage == kBKFpsKey) {
-        if (down) BKFpsToggle();
-        return;
-    }
-
     NSString *key = [NSString stringWithFormat:@"k:%d", usage];
     int d = BKDirOfKey(key);
     if (d >= 0) {
@@ -564,6 +589,12 @@ static void BKHandleButton(int b, BOOL down)
         }
     }
 
+    if (b == 0 && gFollowCursor && down) {
+        BKCursorTap();
+        BKAppend(@"M cur");
+        return;
+    }
+
     NSString *key = [NSString stringWithFormat:@"m:%d", b];
     for (NSUInteger i = 0; i < gPoints.count; i++) {
         NSDictionary *pt = gPoints[i];
@@ -587,27 +618,7 @@ static void BKHandleMask(uint16_t cur)
     gPrevMask = cur;
 }
 
-#pragma mark - Cursor
-
-static void BKCursorMove(double dx, double dy)
-{
-    gCx = BKClamp(gCx + dx * gFollowSens * kBKMoveFactor);
-    gCy = BKClamp(gCy + dy * gFollowSens * kBKMoveFactor);
-}
-
-static void BKCursorTap(void)
-{
-    NSUInteger idx = kBKIdxCursor + (NSUInteger)(gGen.count % 8);
-    double px = gCx, py = gCy;
-    if (gRotate) BKConvInv(gCx, gCy, BKCurrentOrient(), &px, &py);
-    BKAppend([NSString stringWithFormat:@"C vis=%.3f,%.3f pn=%.3f,%.3f", gCx, gCy, px, py]);
-    BKSend(px, py, 1, idx);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        BKSend(px, py, 2, idx);
-    });
-}
-
-#pragma mark - Probe
+#pragma mark - Testes
 
 static const double kBKProbe[5][2] = {
     {0.5, 0.5}, {0.2, 0.2}, {0.8, 0.2}, {0.2, 0.8}, {0.8, 0.8}
@@ -654,8 +665,8 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         gPendingDir = down ? 1 : -1;
         if ((page == 0 || page == 7) && usage >= 4 && usage <= 231) {
             gHandledUsage = usage;
-            if (usage == 224 && down) {
-                BKFpsToggle();
+            if (usage == kBKFpsKey) {
+                if (down) BKFpsToggle();
                 return;
             }
             if (gEnabled && gPoints.count) BKHandleKey(usage, down != 0);
@@ -669,7 +680,7 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
             gHandledUsage = -1;
             return;
         }
-        if (gEnabled && gPoints.count && (usage >= 4 && usage <= 231)) {
+        if (gEnabled && gPoints.count && usage >= 4 && usage <= 231) {
             BKHandleKey(usage, dir > 0);
         }
     } else if (type == kBKTypePointer) {
@@ -703,4 +714,45 @@ static void BKEngineInit(void)
     }
 
     IOHIDEventSystemClientRegisterEventCallback(gListenClient, BKListenCB, NULL, NULL);
-    IOHIDEventSystemClientSetDispatchQueue(gListenClient, dispatch_get_main_queue
+    dispatch_queue_t q = dispatch_get_main_queue();
+    IOHIDEventSystemClientSetDispatchQueue(gListenClient, q);
+    IOHIDEventSystemClientActivate(gListenClient);
+
+    int t1 = 0, t2 = 0, t3 = 0;
+    notify_register_dispatch(kBKNotifyReload, &t1, q, ^(int t) {
+        (void)t;
+        BKLoadConfig();
+    });
+    notify_register_dispatch(kBKNotifyTest, &t2, q, ^(int t) {
+        (void)t;
+        BKTestCenter();
+    });
+    notify_register_dispatch(kBKNotifyProbe, &t3, q, ^(int t) {
+        (void)t;
+        BKProbe();
+    });
+
+    BKLoadConfig();
+
+    BKAppend(@"I ready");
+    [@"engine" writeToFile:@"/var/mobile/bk_engine_loaded.txt"
+                atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
+%ctor {
+    @autoreleasepool {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            BKEngineInit();
+        });
+    }
+}
+
+%dtor {
+    @autoreleasepool {
+        if (gListenClient) {
+            IOHIDEventSystemClientSetDispatchQueue(gListenClient, NULL);
+            CFRelease(gListenClient);
+            gListenClient = NULL;
+        }
+    }
+}

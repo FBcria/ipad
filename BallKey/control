@@ -1,6 +1,6 @@
 Package: com.wjf.ballkey
 Name: BallKey
-Version: 2.3.0
+Version: 2.3.1
 Architecture: iphoneos-arm64
 Description: Mapeia teclado e mouse para toques
 Maintainer: wjf

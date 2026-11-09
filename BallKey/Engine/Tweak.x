@@ -296,7 +296,7 @@ static double BKClamp(double v)
     return v;
 }
 
-// Visual -> painel: usada pelo cursor, que vive no espaco visual.
+// Visual -> painel: marcadores e cursor vivem em espaco visual.
 static void BKConvInv(double vx, double vy, int orient, double *ox, double *oy)
 {
     double rx = vx;
@@ -456,7 +456,6 @@ static void BKTap(NSUInteger idx, double nx, double ny)
     });
 }
 
-// Clique no cursor: cursor esta em espaco visual, converte para painel.
 static void BKCursorTap(void)
 {
     NSUInteger idx = 40 + (NSUInteger)(gSeq++ % 16);
@@ -490,6 +489,7 @@ static void BKHandleDir(NSDictionary *pt, NSUInteger idx, BOOL down)
         if (gDirDown) return;
         gDirAX = BKClamp([pt[@"X"] doubleValue]);
         gDirAY = BKClamp([pt[@"Y"] doubleValue]);
+        if (gRotate) BKConvInv(gDirAX, gDirAY, BKCurrentOrient(), &gDirAX, &gDirAY);
         gDirR = pt[@"Radius"] ? [pt[@"Radius"] doubleValue] : 0.12;
         gDirS = pt[@"Sens"] ? [pt[@"Sens"] doubleValue] : 1.0;
         gDirX = gDirAX;
@@ -509,6 +509,7 @@ static void BKHandlePoint(NSDictionary *pt, NSUInteger idx, BOOL down)
     NSString *type = pt[@"Type"] ?: @"Tap";
     double nx = [pt[@"X"] doubleValue];
     double ny = [pt[@"Y"] doubleValue];
+    if (gRotate) BKConvInv(nx, ny, BKCurrentOrient(), &nx, &ny);
     if ([type isEqualToString:@"Tap"]) {
         if (down) {
             BKTap(idx, nx, ny);

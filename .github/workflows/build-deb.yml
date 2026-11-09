@@ -2,7 +2,6 @@ name: build-deb
 
 on:
   push:
-    branches: [main]
     paths:
       - 'BallKey/**'
       - '.github/workflows/build-deb.yml'
@@ -13,11 +12,12 @@ permissions:
 
 concurrency:
   group: build-deb
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 

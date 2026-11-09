@@ -174,7 +174,7 @@ static int BKFrontMostOrientation(void)
     id sb = ((id (*)(id, SEL))objc_msgSend)(sbCls, @selector(sharedApplication));
     if (!sb) return 0;
     SEL sel = @selector(_frontMostAppOrientation);
-    if (![sb respondsToSelector:sel]) return 0;
+    if ([sb respondsToSelector:sel] == NO) return 0;
     int o = ((int (*)(id, SEL))objc_msgSend)(sb, sel);
     if (o < 1 || o > 4) return 0;
     return o;
@@ -187,11 +187,11 @@ static int BKAccessibilityOrientation(void)
     id sb = ((id (*)(id, SEL))objc_msgSend)(sbCls, @selector(sharedApplication));
     if (!sb) return 0;
     SEL sel = @selector(_accessibilityFrontMostApplication);
-    if (![sb respondsToSelector:sel]) return 0;
+    if ([sb respondsToSelector:sel] == NO) return 0;
     id app = ((id (*)(id, SEL))objc_msgSend)(sb, sel);
     if (!app) return 0;
     SEL osel = @selector(interfaceOrientation);
-    if (![app respondsToSelector:osel]) return 0;
+    if ([app respondsToSelector:osel] == NO) return 0;
     int o = ((int (*)(id, SEL))objc_msgSend)(app, osel);
     if (o < 1 || o > 4) return 0;
     return o;
@@ -241,7 +241,7 @@ static void BKToggleEnabled(void)
 {
     NSMutableDictionary *cfg = [NSMutableDictionary dictionaryWithContentsOfFile:kBKConfigPath];
     if (!cfg) cfg = [NSMutableDictionary dictionary];
-    BOOL now = ![cfg[@"Enabled"] boolValue];
+    BOOL now = [cfg[@"Enabled"] boolValue] == NO;
     if (now && (!gPoints || gPoints.count == 0)) {
         BKAppend(@"K sem marcadores");
         return;
@@ -360,8 +360,8 @@ static void BKSend(float nx, float ny, int phase, NSUInteger idx)
     int range = (phase == 2) ? 0 : 1;
     int touch = (phase == 2) ? 0 : 1;
 
-    uint32_t fdx = (gVariant == 1 || gVariant == 5) ? 1u : (uint32_t)(idx + 1);
-    uint32_t fid = (gVariant == 1 || gVariant == 5) ? 2u : (uint32_t)(idx + 101);
+    uint32_t fdx = (gVariant == 1) ? 1u : (uint32_t)(idx + 1);
+    uint32_t fid = (gVariant == 1) ? 2u : (uint32_t)(idx + 101);
     int di = 1;
     float rad = 20.0f;
     float qual = 1.0f;
@@ -433,7 +433,8 @@ static void BKDown(NSUInteger idx, float nx, float ny)
 
 static void BKMove(NSUInteger idx, float nx, float ny)
 {
-    if (![gDown[@(idx)] boolValue]) return;
+    BOOL held = [gDown[@(idx)] boolValue];
+    if (held == NO) return;
     nx = BKClamp(nx);
     ny = BKClamp(ny);
     gCur[@(idx)] = @[ @(nx), @(ny) ];
@@ -442,7 +443,8 @@ static void BKMove(NSUInteger idx, float nx, float ny)
 
 static void BKUp(NSUInteger idx)
 {
-    if (!gDown[@(idx)] boolValue) return;
+    BOOL held = [gDown[@(idx)] boolValue];
+    if (held == NO) return;
     gDown[@(idx)] = @NO;
     BKSendLast(@(idx));
     [gCur removeObjectForKey:@(idx)];
@@ -656,7 +658,7 @@ static void BKHandleButton(int b, BOOL down)
     BOOL hit = NO;
     for (NSUInteger i = 0; i < gPoints.count; i++) {
         NSDictionary *pt = gPoints[i];
-        if (![pt[@"Type"] isEqualToString:@"Dir"]) continue;
+        if ([pt[@"Type"] isEqualToString:@"Dir"]) continue;
         NSString *k = pt[@"Button"];
         if (![k isKindOfClass:[NSString class]] || ![k isEqualToString:key]) continue;
         BKHandleDir(pt, i, down);

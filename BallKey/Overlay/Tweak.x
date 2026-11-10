@@ -110,20 +110,32 @@ static UIWindowScene *BKMainScene(void)
     return fallback;
 }
 
-// Sempre o espaço da interface (acompanha a rotação e cobre a tela toda)
+static int BKFrontMostOrientation(void)
+{
+    Class sbCls = objc_getClass("SpringBoard");
+    if (!sbCls) return 0;
+    id sb = ((id (*)(id, SEL))objc_msgSend)(sbCls, @selector(sharedApplication));
+    if (!sb) return 0;
+    SEL sel = @selector(_accessibilityFrontMostApplication);
+    if (![sb respondsToSelector:sel]) return 0;
+    id app = ((id (*)(id, SEL))objc_msgSend)(sb, sel);
+    if (!app) return 0;
+    SEL s2 = @selector(_frontMostAppOrientation);
+    if (![app respondsToSelector:s2]) return 0;
+    return (int)((int (*)(id, SEL))objc_msgSend)(app, s2);
+}
+
+// Base fixa do aparelho, virada para paisagem quando o app está deitado
 static CGRect BKSpace(void)
 {
-    UIWindowScene *sc = BKMainScene();
-    if (sc) {
-        CGRect r = sc.coordinateSpace.bounds;
-        if (r.size.width > 1.0 && r.size.height > 1.0) return r;
-    }
     UIScreen *s = [UIScreen mainScreen];
-    CGRect r = s.coordinateSpace.bounds;
-    if (r.size.width > 1.0 && r.size.height > 1.0) return r;
-    r = s.fixedCoordinateSpace.bounds;
-    if (r.size.width > 1.0 && r.size.height > 1.0) return r;
-    return s.bounds;
+    CGRect f = s.fixedCoordinateSpace.bounds;
+    if (f.size.width < 1.0 || f.size.height < 1.0) f = s.bounds;
+    int o = BKFrontMostOrientation();
+    if (o == 3 || o == 4) {
+        return CGRectMake(f.origin.x, f.origin.y, f.size.height, f.size.width);
+    }
+    return f;
 }
 
 static UIWindow *BKMakeWindow(CGFloat level, BOOL pass)
@@ -145,22 +157,6 @@ static UIWindow *BKMakeWindow(CGFloat level, BOOL pass)
     vc.view.backgroundColor = [UIColor clearColor];
     vc.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     return w;
-}
-
-static int BKFrontMostOrientation(void) __attribute__((unused));
-static int BKFrontMostOrientation(void)
-{
-    Class sbCls = objc_getClass("SpringBoard");
-    if (!sbCls) return 0;
-    id sb = ((id (*)(id, SEL))objc_msgSend)(sbCls, @selector(sharedApplication));
-    if (!sb) return 0;
-    SEL sel = @selector(_accessibilityFrontMostApplication);
-    if (![sb respondsToSelector:sel]) return 0;
-    id app = ((id (*)(id, SEL))objc_msgSend)(sb, sel);
-    if (!app) return 0;
-    SEL s2 = @selector(_frontMostAppOrientation);
-    if (![app respondsToSelector:s2]) return 0;
-    return (int)((int (*)(id, SEL))objc_msgSend)(app, s2);
 }
 
 static void BKPlaceMarker(BKMarkerView *m)
@@ -260,13 +256,9 @@ static void BKCapCB(void *target, void *refcon, void *queue, void *ev)
             if ((page == 0 || page == 7) && down && usage >= 4 && usage <= 231) {
                 enc = [NSString stringWithFormat:@"k:%d", usage];
             }
-        } else if (type == 17) {
-            int mask = (int)gCap.GetInt(ev, (17 << 16 | 3));
-            if (mask & 1) enc = @"m:0";
-            else if (mask & 2) enc = @"m:1";
-            else if (mask & 4) enc = @"m:2";
-        } else if (type == 32) {
-            int mask = (int)gCap.GetInt(ev, (32 << 16 | 3));
+        } else if (type == 17 || type == 32) {
+            int mask = (int)gCap.GetInt(ev, (type << 16 | 3));
+            if (mask == 0) mask = (int)gCap.GetInt(ev, (type << 16 | 0));
             if (mask & 1) enc = @"m:0";
             else if (mask & 2) enc = @"m:1";
             else if (mask & 4) enc = @"m:2";

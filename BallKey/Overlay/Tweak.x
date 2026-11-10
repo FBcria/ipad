@@ -110,18 +110,18 @@ static UIWindowScene *BKMainScene(void)
     return fallback;
 }
 
-// fixedCoordinateSpace: mesma referência usada pelas coordenadas do toque injetado
+// Sempre o espaço da interface (acompanha a rotação e cobre a tela toda)
 static CGRect BKSpace(void)
 {
-    UIScreen *s = [UIScreen mainScreen];
-    CGRect r = s.fixedCoordinateSpace.bounds;
-    if (r.size.width > 1.0 && r.size.height > 1.0) return r;
     UIWindowScene *sc = BKMainScene();
     if (sc) {
-        r = sc.coordinateSpace.bounds;
+        CGRect r = sc.coordinateSpace.bounds;
         if (r.size.width > 1.0 && r.size.height > 1.0) return r;
     }
-    r = s.coordinateSpace.bounds;
+    UIScreen *s = [UIScreen mainScreen];
+    CGRect r = s.coordinateSpace.bounds;
+    if (r.size.width > 1.0 && r.size.height > 1.0) return r;
+    r = s.fixedCoordinateSpace.bounds;
     if (r.size.width > 1.0 && r.size.height > 1.0) return r;
     return s.bounds;
 }
@@ -262,6 +262,11 @@ static void BKCapCB(void *target, void *refcon, void *queue, void *ev)
             }
         } else if (type == 17) {
             int mask = (int)gCap.GetInt(ev, (17 << 16 | 3));
+            if (mask & 1) enc = @"m:0";
+            else if (mask & 2) enc = @"m:1";
+            else if (mask & 4) enc = @"m:2";
+        } else if (type == 32) {
+            int mask = (int)gCap.GetInt(ev, (32 << 16 | 3));
             if (mask & 1) enc = @"m:0";
             else if (mask & 2) enc = @"m:1";
             else if (mask & 4) enc = @"m:2";
@@ -423,8 +428,9 @@ static void BKLayoutEditor(void)
     CGRect b = gEditWindow.bounds;
     if (b.size.width < 1.0 || b.size.height < 1.0) return;
 
-    gCanvas.frame = b;
     UIView *root = gEditWindow.rootViewController.view;
+    root.frame = b;
+    gCanvas.frame = b;
     UIView *bar = [root viewWithTag:88];
     if (bar) {
         bar.frame = CGRectMake(0, 0, b.size.width, 92);
@@ -894,6 +900,6 @@ static void BKOverlayInit(void)
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             BKOverlayInit();
-          });
+        });
     }
 }

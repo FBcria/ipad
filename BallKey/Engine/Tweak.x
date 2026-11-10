@@ -30,7 +30,7 @@ typedef struct {
     void (*SetSender)(BKIOHIDEventRef, uint64_t);
     void (*Append)(BKIOHIDEventRef, BKIOHIDEventRef, uint32_t);
     BKIOHIDEventRef (*CreateDigitizer)(CFAllocatorRef, uint64_t, uint32_t, uint32_t,
-        uint32_t, uint32_t, double, double, double, double, double, double,
+        uint32_t, uint32_t, uint32_t, double, double, double, double, double,
         uint8_t, uint8_t, uint32_t);
     BKIOHIDEventRef (*CreateFinger)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t,
         double, double, double, double, double, uint8_t, uint8_t, uint32_t);
@@ -113,6 +113,8 @@ typedef struct {
 #define kBKIdxAim               70
 #define kBKIdxAds               71
 #define kBKIdxDir               72
+#define kBKIdxFogo              73
+#define kBKIdxMirar             74
 #define kBKIdxCursor            40
 
 #pragma mark - Estado
@@ -191,7 +193,6 @@ static void BKSendLast(NSNumber *idx);
 static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef ev);
 static void BKReleaseAll(void);
 static void BKHandleButton(int b, BOOL down);
-static void BKLoadConfig(void);
 static void BKLoadConfig(void);
 
 #pragma mark - Tempo
@@ -468,7 +469,7 @@ static void BKPost(double x, double y, int phase)
 
     BKIOHIDEventRef parent = gIO.CreateDigitizer(kCFAllocatorDefault, mach_absolute_time(),
         kBKTransducerHand, kBKParentIndex, kBKParentIdentity, 0, 0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0);
+        0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0);
     if (!parent) {
         BKAppend(@"! sem parent");
         return;
@@ -992,7 +993,9 @@ static void BKCaptureSave(int usage, double x, double y)
 {
     double nx = x, ny = y;
     if (gRotate) BKConv(x, y, BKCurrentOrient(), &nx, &ny);
-    NSString *key = [NSString stringWithFormat:@"k:%d", usage];
+    NSString *key = usage >= 300
+        ? [NSString stringWithFormat:@"m:%d", usage - 300]
+        : [NSString stringWithFormat:@"k:%d", usage];
     NSString *out = [NSString stringWithFormat:@"%@ %.4f %.4f\n", key, nx, ny];
     NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:kBKCaptureResPath];
     if (!fh) {
@@ -1095,7 +1098,7 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         int down = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardDown);
         int repeat = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardRepeat);
         if (repeat) return;
-        if (gDump) BKAppend([NSString stringWithFormat:@"K %d pg=%d d=%d", usage, page, down));
+        if (gDump) BKAppend([NSString stringWithFormat:@"K %d pg=%d d=%d", usage, page, down]);
         if (usage <= 0) return;
 
         // botões do mouse pela página 12

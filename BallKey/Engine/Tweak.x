@@ -92,8 +92,9 @@ typedef struct {
 
 #define kBKKey3GraceNs          80000000ull
 #define kBKKey15GraceNs         60000000ull
-#define kBKBtnWatchNs           1200000000ull
-#define kBKTravaGuardNs         250000000ull
+#define kBKBtnWatchNs           700000000ull
+#define kBKBtnLockNs            100000000ull
+#define kBKTravaGuardNs         200000000ull
 #define kBKMove12FallbackNs     1000000000ull
 
 #define kIOHIDEventTypeKeyboard                3
@@ -105,6 +106,7 @@ typedef struct {
 #define kBKIdxAim               70
 #define kBKIdxAds               71
 #define kBKIdxDir               72
+#define kBKIdxFire              73
 #define kBKIdxCursor            40
 
 #pragma mark - Estado
@@ -141,10 +143,11 @@ static BOOL gFireSet = NO;
 static BOOL gAdsSet = NO;
 static double gAimX = 0.5, gAimY = 0.5;
 static BOOL gAdsDown = NO;
+static BOOL gFireDown = NO;
 static int gFpsRepor = 0;
 static double gLastMdx = 0, gLastMdy = 0;
 static uint64_t gLastMNs = 0;
-static uint64_t gFpsToggleNs = 0;
+static uint64_t gTravaGuardNs = 0;
 static uint64_t gLastMove12Ns = 0;
 
 static BOOL gDirActive = NO;
@@ -156,6 +159,7 @@ static double gDirSens = 1.0;
 
 static int gBtnOwner[kBKMaxBtn] = {0,0,0};
 static uint64_t gBtnOwnerNs[kBKMaxBtn] = {0,0,0};
+static uint64_t gBtnLastUp[kBKMaxBtn] = {0,0,0};
 
 static double gCx = 0.5, gCy = 0.5;
 static int gPendingDir = 0;
@@ -166,6 +170,7 @@ static int gLastExtra = -1;
 static uint64_t gLastExtraNs = 0;
 static int gFpsMoveLog = 0;
 static int gM11Zero = 0;
+static int gFpsSkip = 0;
 
 static BOOL gCaptureArmed = NO;
 static uint64_t gCaptureArmNs = 0;
@@ -416,7 +421,7 @@ static void BKLoadConfig(void)
     gAimY = gFpsY;
     [gKeyDown removeAllObjects];
     [gKeyLast3 removeAllObjects];
-    for (int i = 0; i < kBKMaxBtn; i++) { gBtnOwner[i] = 0; gBtnOwnerNs[i] = 0; }
+    for (int i = 0; i < kBKMaxBtn; i++) { gBtnOwner[i] = 0; gBtnOwnerNs[i] = 0; gBtnLastUp[i] = 0; }
 
     if (!gEnabled) BKReleaseAll();
 
@@ -591,6 +596,7 @@ static void BKReleaseAll(void)
     gDirActive = NO;
     gFps = NO;
     gAdsDown = NO;
+    gFireDown = NO;
     gAimX = gFpsX;
     gAimY = gFpsY;
 }
@@ -696,11 +702,17 @@ static void BKFpsMove(double dx, double dy)
     if (!gFps) return;
 
     // zona morta: relatórios repetidos com deslocamento mínimo não movem nada
-    if (fabs(dx) < kBKMoveDead && fabs(dy) < kBKMoveDead) return;
+    if (fabs(dx) < kBKMoveDead && fabs(dy) < kBKMoveDead) {
+        if (gDump && (gFpsSkip++ % 40) == 0) BKAppend(@"F zona");
+        return;
+    }
 
     // mesmo valor repetido dentro de 20 ms é o mesmo relatório
     uint64_t now = BKNowNs();
-    if (dx == gLastMdx && dy == gLastMdy && (now - gLastMNs) < kBKMoveDedupNs) return;
+    if (dx == gLastMdx && dy == gLastMdy && (now - gLastMNs) < kBKMoveDedupNs) {
+        if (gDump && (gFpsSkip++ % 40) == 0) BKAppend(@"F repetido");
+        return;
+    }
     gLastMdx = dx;
     gLastMdy = dy;
     gLastMNs = now;
@@ -716,6 +728,7 @@ static void BKFpsMove(double dx, double dy)
         double px = rx, py = ry;
         if (gRotate) BKConvInv(rx, ry, BKCurrentOrient(), &px, &py);
         BKDown(kBKIdxAim, px, py);
+        if (gDump) BKAppend([NSString stringWithFormat:@"F recuo x=%.3f y=%.3f", rx, ry]);
         return;
     }
 
@@ -732,44 +745,64 @@ static void BKFpsMove(double dx, double dy)
     }
 }
 
-static void BKFpsToggle(void)
+// A trava é segurada: aperta o Ctrl, fica no FPS; solta, sai.
+static void BKFpsOn(void)
 {
-    if (gFps) {
-        gFps = NO;
-        BKUp(kBKIdxAim);
-        if (gAdsDown) {
-            gAdsDown = NO;
-            BKUp(kBKIdxAds);
-        }
-        BKAppend(@"F off");
-        BKStatus();
-        return;
-    }
-
+    if (gFps) return;
     gFps = YES;
     gFpsMoveLog = 0;
     gFpsRepor = 0;
+    gFpsSkip = 0;
     gAimX = gFpsX;
     gAimY = gFpsY;
     double px = gFpsX, py = gFpsY;
     if (gRotate) BKConvInv(gFpsX, gFpsY, BKCurrentOrient(), &px, &py);
     BKDown(kBKIdxAim, px, py);
+    // empurrão inicial: jogo que ignora toque parado passa a ver arrasto
+    BKMove(kBKIdxAim, BKClamp(px + 0.004), BKClamp(py + 0.004));
     BKAppend([NSString stringWithFormat:@"F on ponto=%.3f,%.3f fogo=%.3f,%.3f(%d) mirar=%.3f,%.3f(%d)",
               gFpsX, gFpsY, gFireX, gFireY, (int)gFireSet, gAdsX, gAdsY, (int)gAdsSet]);
     BKStatus();
 }
 
-static void BKFpsFire(void)
+static void BKFpsOff(void)
 {
-    double fx = gFireX, fy = gFireY;
-    if (!gFireSet) {
-        fx = BKClamp(gFpsX + 0.12);
-        fy = BKClamp(gFpsY + 0.30);
+    if (!gFps) return;
+    gFps = NO;
+    BKUp(kBKIdxAim);
+    if (gAdsDown) {
+        gAdsDown = NO;
+        BKUp(kBKIdxAds);
     }
-    double px = fx, py = fy;
-    if (gRotate) BKConvInv(fx, fy, BKCurrentOrient(), &px, &py);
-    BKAppend([NSString stringWithFormat:@"F fire %.3f,%.3f", fx, fy]);
-    BKTap(kBKIdxCursor + 1, px, py);
+    if (gFireDown) {
+        gFireDown = NO;
+        BKUp(kBKIdxFire);
+    }
+    BKAppend(@"F off");
+    BKStatus();
+}
+
+// Tiro é segurado: aperta, atira; solta, para.
+static void BKFpsFire(BOOL down)
+{
+    if (down) {
+        if (gFireDown) return;
+        double fx = gFireX, fy = gFireY;
+        if (!gFireSet) {
+            fx = BKClamp(gFpsX + 0.12);
+            fy = BKClamp(gFpsY + 0.30);
+        }
+        double px = fx, py = fy;
+        if (gRotate) BKConvInv(fx, fy, BKCurrentOrient(), &px, &py);
+        gFireDown = YES;
+        BKAppend([NSString stringWithFormat:@"F fogo %.3f,%.3f", fx, fy]);
+        BKDown(kBKIdxFire, px, py);
+    } else {
+        if (!gFireDown) return;
+        gFireDown = NO;
+        BKAppend(@"F fogo solta");
+        BKUp(kBKIdxFire);
+    }
 }
 
 static void BKFpsAds(BOOL down)
@@ -789,6 +822,7 @@ static void BKFpsAds(BOOL down)
     } else {
         if (!gAdsDown) return;
         gAdsDown = NO;
+        BKAppend(@"F mirar solta");
         BKUp(kBKIdxAds);
     }
 }
@@ -865,8 +899,7 @@ static void BKHandleKey(int usage, BOOL down)
 
 // Estado de tecla próprio. Tipo 3 manda o estado real; tipo 15 só vale quando
 // o tipo 3 não falou nada sobre a mesma tecla nos últimos 80 ms (é o caso de
-// M, vírgula e ponto, que só chegam por tipo 15 e antes entravam sempre como
-// soltura por causa do estado da tecla anterior).
+// M, vírgula e ponto, que só chegam por tipo 15).
 static BOOL BKKeyEdge(int usage, int downHint, BOOL *outDown)
 {
     NSNumber *k = @(usage);
@@ -893,8 +926,9 @@ static BOOL BKKeyEdge(int usage, int downHint, BOOL *outDown)
 
 #pragma mark - Botões
 
-// Um botão tem um dono: a fonte que o apertou. As outras fontes não derrubam
-// o estado, e um vigia solta o botão se a soltura se perder.
+// Um botão tem dono. Aperta vem pelo tipo 17, solta pelo tipo 32, então
+// qualquer fonte pode soltar, mas só depois de 40 ms e com trava de 100 ms
+// contra o par duplicado que o mouse manda.
 static void BKButtonEvent(int num, BOOL down, int src)
 {
     if (num < 0) num = 0;
@@ -906,12 +940,14 @@ static void BKButtonEvent(int num, BOOL down, int src)
             gBtnOwnerNs[num] = now;
             return;
         }
-        gBtnOwner[num] = src ? src : 1;
+        if (gBtnLastUp[num] && (now - gBtnLastUp[num]) < kBKBtnLockNs) return;
+        gBtnOwner[num] = 1;
         gBtnOwnerNs[num] = now;
     } else {
         if (!gBtnOwner[num]) return;
         gBtnOwner[num] = 0;
         gBtnOwnerNs[num] = 0;
+        gBtnLastUp[num] = now;
     }
 
     BKAppend([NSString stringWithFormat:@"B m:%d d=%d s=%d", num, (int)down, src]);
@@ -926,6 +962,7 @@ static void BKButtonWatch(void)
         if ((now - gBtnOwnerNs[b]) < kBKBtnWatchNs) continue;
         gBtnOwner[b] = 0;
         gBtnOwnerNs[b] = 0;
+        gBtnLastUp[b] = now;
         BKAppend([NSString stringWithFormat:@"B m:%d d=0 s=0 vigia", b]);
         if (gEnabled && gPoints.count) BKHandleButton(b, NO);
     }
@@ -935,19 +972,14 @@ static void BKHandleButton(int b, BOOL down)
 {
     if (!gEnabled || !gPoints.count) return;
 
-    if (gFps) {
-        if (b == 0) {
-            if (down) BKFpsFire();
+    // com trava configurada, os botões só valem dentro do FPS
+    if (b == 0 || b == 1) {
+        if (!gFps) {
+            if (b == 0 && gFollowCursor && down) BKCursorTap();
             return;
         }
-        if (b == 1) {
-            BKFpsAds(down);
-            return;
-        }
-    }
-
-    if (b == 0 && gFollowCursor && down) {
-        BKCursorTap();
+        if (b == 0) BKFpsFire(down);
+        else BKFpsAds(down);
         return;
     }
 
@@ -1103,15 +1135,18 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
             // trava: a tecla escolhida, ou Ctrl esquerdo/direito se nada foi escolhido
             if (usage == gFpsKey || (gFpsKey == kBKDefaultFpsKey &&
                                      (usage == kBKCtrlLeft || usage == kBKCtrlRight))) {
-                if (!down) return;
-                uint64_t now = BKNowNs();
-                if (gFpsToggleNs && (now - gFpsToggleNs) < kBKTravaGuardNs) {
-                    BKAppend([NSString stringWithFormat:@"F repetido %d", usage]);
-                    return;
+                if (down) {
+                    uint64_t now = BKNowNs();
+                    if (gTravaGuardNs && (now - gTravaGuardNs) < kBKTravaGuardNs) {
+                        BKAppend([NSString stringWithFormat:@"F repetido %d", usage]);
+                        return;
+                    }
+                    gTravaGuardNs = now;
+                    BKAppend([NSString stringWithFormat:@"F tecla %d", usage]);
+                    BKFpsOn();
+                } else {
+                    BKFpsOff();
                 }
-                gFpsToggleNs = now;
-                BKAppend([NSString stringWithFormat:@"F tecla %d", usage]);
-                BKFpsToggle();
                 return;
             }
             BOOL dn = NO;

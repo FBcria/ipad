@@ -22,6 +22,9 @@ static BOOL gEnabled = NO;
 static int gCloseTok = 0;
 static CGPoint gBallPos = {0.06, 0.85};
 
+static int gLastOrient = 0;
+static int gAppliedOrient = 0;
+
 static void *gIOKit = NULL;
 static void *gCapClient = NULL;
 static int gCapSeen = 0;
@@ -41,6 +44,7 @@ static uint64_t gCapIgnoreUntil = 0;
 static CGRect BKSpace(void);
 static UIWindowScene *BKMainScene(void);
 static void BKLayoutEditor(void);
+static NSMutableDictionary *BKReadCfg(void);
 
 @interface BKPassWindow : UIWindow
 @end
@@ -110,32 +114,103 @@ static UIWindowScene *BKMainScene(void)
     return fallback;
 }
 
+#pragma mark - Orientação
+
+// 0 = desconhecido
 static int BKFrontMostOrientation(void)
 {
     Class sbCls = objc_getClass("SpringBoard");
     if (!sbCls) return 0;
     id sb = ((id (*)(id, SEL))objc_msgSend)(sbCls, @selector(sharedApplication));
     if (!sb) return 0;
-    SEL sel = @selector(_accessibilityFrontMostApplication);
-    if (![sb respondsToSelector:sel]) return 0;
-    id app = ((id (*)(id, SEL))objc_msgSend)(sb, sel);
+
+    // _frontMostAppOrientation é do SpringBoard, não do app
+    SEL s1 = @selector(_frontMostAppOrientation);
+    if ([sb respondsToSelector:s1]) {
+        int o = (int)((int (*)(id, SEL))objc_msgSend)(sb, s1);
+        if (o >= 1 && o <= 4) return o;
+    }
+
+    id app = nil;
+    SEL sa = @selector(_accessibilityFrontMostApplication);
+    SEL sb2 = @selector(_frontMostApplication);
+    if ([sb respondsToSelector:sa]) app = ((id (*)(id, SEL))objc_msgSend)(sb, sa);
+    if (!app && [sb respondsToSelector:sb2]) app = ((id (*)(id, SEL))objc_msgSend)(sb, sb2);
     if (!app) return 0;
+
     SEL s2 = @selector(_frontMostAppOrientation);
-    if (![app respondsToSelector:s2]) return 0;
-    return (int)((int (*)(id, SEL))objc_msgSend)(app, s2);
+    if ([app respondsToSelector:s2]) {
+        int o = (int)((int (*)(id, SEL))objc_msgSend)(app, s2);
+        if (o >= 1 && o <= 4) return o;
+    }
+    SEL s3 = @selector(interfaceOrientation);
+    if ([app respondsToSelector:s3]) {
+        int o = (int)((int (*)(id, SEL))objc_msgSend)(app, s3);
+        if (o >= 1 && o <= 4) return o;
+    }
+    return 0;
 }
 
-// Base fixa do aparelho, virada para paisagem quando o app está deitado
-static CGRect BKSpace(void)
+static int BKDeviceOrientation(void)
+{
+    Class c = objc_getClass("UIDevice");
+    if (!c) return 0;
+    id d = ((id (*)(id, SEL))objc_msgSend)(c, @selector(currentDevice));
+    if (!d) return 0;
+    int o = (int)((int (*)(id, SEL))objc_msgSend)(d, @selector(orientation));
+    if (o >= 1 && o <= 4) return o;
+    return 0;
+}
+
+// Cascata: override → app frontal → último válido → device → paisagem se for jogo
+static int BKReadOrient(void)
+{
+    NSNumber *ov = BKReadCfg()[@"OrientOverride"];
+    int o = ov ? [ov intValue] : 0;
+    if (o < 1 || o > 4) o = BKFrontMostOrientation();
+    if (o < 1 || o > 4) o = gLastOrient;
+    if (o < 1 || o > 4) o = BKDeviceOrientation();
+    if (o < 1 || o > 4) {
+        o = (gFrontBundle && ![gFrontBundle isEqualToString:@"com.apple.springboard"]) ? 3 : 1;
+    }
+    gLastOrient = o;
+    return o;
+}
+
+// Base fixa do aparelho, sempre em retrato (nativeBounds é sempre retrato)
+static CGRect BKPortraitBase(void)
 {
     UIScreen *s = [UIScreen mainScreen];
-    CGRect f = s.fixedCoordinateSpace.bounds;
-    if (f.size.width < 1.0 || f.size.height < 1.0) f = s.bounds;
-    int o = BKFrontMostOrientation();
-    if (o == 3 || o == 4) {
-        return CGRectMake(f.origin.x, f.origin.y, f.size.height, f.size.width);
+    CGFloat scale = s.nativeScale > 0 ? s.nativeScale : s.scale;
+    CGRect nb = s.nativeBounds;
+    if (nb.size.width > 1.0 && nb.size.height > 1.0 && scale > 0.0) {
+        CGFloat w = nb.size.width / scale;
+        CGFloat h = nb.size.height / scale;
+        if (w > h) { CGFloat t = w; w = h; h = t; }
+        if (w > 1.0 && h > 1.0) return CGRectMake(0, 0, w, h);
     }
-    return f;
+    CGRect b = s.bounds;
+    if (b.size.width < 1.0 || b.size.height < 1.0) b = CGRectMake(0, 0, 414, 736);
+    if (b.size.width > b.size.height) {
+        CGFloat t = b.size.width;
+        b.size.width = b.size.height;
+        b.size.height = t;
+    }
+    return CGRectMake(0, 0, b.size.width, b.size.height);
+}
+
+static CGRect BKSpaceFor(int o)
+{
+    CGRect base = BKPortraitBase();
+    if (o == 3 || o == 4) {
+        return CGRectMake(0, 0, base.size.height, base.size.width);
+    }
+    return base;
+}
+
+static CGRect BKSpace(void)
+{
+    return BKSpaceFor(BKReadOrient());
 }
 
 static UIWindow *BKMakeWindow(CGFloat level, BOOL pass)
@@ -171,18 +246,31 @@ static void BKPlaceMarker(BKMarkerView *m)
 static void BKRelayout(void)
 {
     if (!gBallWindow || !gBallWindow.windowScene) return;
-    CGRect sp = BKSpace();
+    int o = BKReadOrient();
+    CGRect sp = BKSpaceFor(o);
     if (sp.size.width < 1.0 || sp.size.height < 1.0) return;
-    gBallWindow.frame = sp;
-    if (gMenuWindow) gMenuWindow.frame = sp;
+
+    if (o != gAppliedOrient) {
+        gAppliedOrient = o;
+        BKLog(@"orient=%d espaco=%.0fx%.0f", o, sp.size.width, sp.size.height);
+    }
+
+    if (!CGRectEqualToRect(gBallWindow.frame, sp)) gBallWindow.frame = sp;
+    if (gMenuWindow) {
+        if (!CGRectEqualToRect(gMenuWindow.frame, sp)) gMenuWindow.frame = sp;
+        UIView *box = [gMenuWindow.rootViewController.view viewWithTag:77];
+        if (box) box.center = CGPointMake(sp.size.width / 2, sp.size.height / 2);
+    }
     if (gBall) {
         CGFloat side = 44.0;
+        gBallPos.x = MAX(0.02, MIN(0.98, gBallPos.x));
+        gBallPos.y = MAX(0.02, MIN(0.98, gBallPos.y));
         gBall.frame = CGRectMake(gBallPos.x * sp.size.width - side / 2,
                                  gBallPos.y * sp.size.height - side / 2, side, side);
         gBall.layer.cornerRadius = side / 2;
     }
     if (gEditWindow) {
-        gEditWindow.frame = sp;
+        if (!CGRectEqualToRect(gEditWindow.frame, sp)) gEditWindow.frame = sp;
         BKLayoutEditor();
     }
 }
@@ -256,6 +344,12 @@ static void BKCapCB(void *target, void *refcon, void *queue, void *ev)
             if ((page == 0 || page == 7) && down && usage >= 4 && usage <= 231) {
                 enc = [NSString stringWithFormat:@"k:%d", usage];
             }
+        } else if (type == 2) {
+            int num = (int)gCap.GetInt(ev, (2 << 16 | 0));
+            int st = (int)gCap.GetInt(ev, (2 << 16 | 1));
+            if (num < 0) num = 0;
+            if (num > 2) num = 0;
+            if (st) enc = [NSString stringWithFormat:@"m:%d", num];
         } else if (type == 17 || type == 32) {
             int mask = (int)gCap.GetInt(ev, (type << 16 | 3));
             if (mask == 0) mask = (int)gCap.GetInt(ev, (type << 16 | 0));
@@ -653,6 +747,7 @@ static void BKToggleMenu(void)
             return;
         }
     }
+    gMenuWindow.frame = BKSpace();
 
     UIView *root = gMenuWindow.rootViewController.view;
     [[root viewWithTag:77] removeFromSuperview];

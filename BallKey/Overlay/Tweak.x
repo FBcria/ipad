@@ -20,6 +20,7 @@ static NSMutableArray *gMarkers = nil;
 static NSString *gFrontBundle = nil;
 static BOOL gEnabled = NO;
 static int gOrientOverride = 0;
+static int gCloseTok = 0;
 static CGPoint gBallPos = {0.06, 0.85};
 
 static void *gIOKit = NULL;
@@ -685,10 +686,14 @@ static void BKToggleMenu(void)
         return;
     }
     if (i == 4) {
-        BKPost("com.wjf.ballkey.test");
-        dispatch_async(dispatch_get_main_queue(), ^{
-            BKToggleMenu();
-            BKToggleMenu();
+        gMenuWindow.hidden = YES;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 120 * NSEC_PER_MSEC),
+                       dispatch_get_main_queue(), ^{
+            BKPost("com.wjf.ballkey.test");
+        });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2600 * NSEC_PER_MSEC),
+                       dispatch_get_main_queue(), ^{
+            if (!gMenuWindow || gMenuWindow.hidden) BKToggleMenu();
         });
         return;
     }
@@ -799,6 +804,11 @@ static void BKOverlayInit(void)
     gFrontBundle = cfg[@"ActiveBundle"];
     gOrientOverride = cfg[@"OrientOverride"] ? [cfg[@"OrientOverride"] intValue] : 0;
     BKMark(@"overlay_loaded.txt");
+
+    notify_register_dispatch("com.wjf.ballkey.close", &gCloseTok, dispatch_get_main_queue(), ^(int t) {
+        (void)t;
+        if (gMenuWindow) gMenuWindow.hidden = YES;
+    });
 
     __block int tries = 0;
     [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {

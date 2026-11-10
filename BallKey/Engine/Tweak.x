@@ -76,26 +76,26 @@ typedef struct {
 #define kBKTypeTranslation      4
 #define kBKTypeButton           2
 #define kBKPtrScale             3000.0
-#define kBKMoveFactor           0.0006
-#define kBKMoveDead             1.2
-#define kBKMoveDedupNs          20000000ull
+#define kBKMoveFactor           0.0012
+#define kBKMoveDead             0.6
+#define kBKMoveDedupNs          8000000ull
 #define kBKDefaultFpsKey        224
 #define kBKCtrlLeft             224
 #define kBKCtrlRight            228
-#define kBKRecenter             0.32
+#define kBKRecenter             0.20
 #define kBKCapIgnoreNs          90000000ull
 
 // Botões: página 12 do teclado, uso 64 = esquerdo, 65 = direito, 66 = meio
 #define kBKPageBtn              12
 #define kBKUsageBtnBase         64
 #define kBKMaxBtn               3
+#define kBKNumGraceNs           250000000ull
 
 #define kBKKey3GraceNs          80000000ull
 #define kBKKey15GraceNs         60000000ull
-#define kBKBtnWatchNs           700000000ull
+#define kBKBtnWatchNs           400000000ull
 #define kBKBtnLockNs            100000000ull
 #define kBKTravaGuardNs         200000000ull
-#define kBKMove12FallbackNs     1000000000ull
 
 #define kIOHIDEventTypeKeyboard                3
 #define kIOHIDEventFieldKeyboardUsagePage      (3u << 16 | 0u)
@@ -148,7 +148,6 @@ static int gFpsRepor = 0;
 static double gLastMdx = 0, gLastMdy = 0;
 static uint64_t gLastMNs = 0;
 static uint64_t gTravaGuardNs = 0;
-static uint64_t gLastMove12Ns = 0;
 
 static BOOL gDirActive = NO;
 static double gDirCX = 0, gDirCY = 0;
@@ -160,6 +159,8 @@ static double gDirSens = 1.0;
 static int gBtnOwner[kBKMaxBtn] = {0,0,0};
 static uint64_t gBtnOwnerNs[kBKMaxBtn] = {0,0,0};
 static uint64_t gBtnLastUp[kBKMaxBtn] = {0,0,0};
+static int gLastBtnNum = 0;
+static uint64_t gLastBtnNumNs = 0;
 
 static double gCx = 0.5, gCy = 0.5;
 static int gPendingDir = 0;
@@ -701,13 +702,13 @@ static void BKFpsMove(double dx, double dy)
 {
     if (!gFps) return;
 
-    // zona morta: relatórios repetidos com deslocamento mínimo não movem nada
+    // zona morta
     if (fabs(dx) < kBKMoveDead && fabs(dy) < kBKMoveDead) {
         if (gDump && (gFpsSkip++ % 40) == 0) BKAppend(@"F zona");
         return;
     }
 
-    // mesmo valor repetido dentro de 20 ms é o mesmo relatório
+    // mesmo valor repetido em menos de 8 ms é o mesmo relatório
     uint64_t now = BKNowNs();
     if (dx == gLastMdx && dy == gLastMdy && (now - gLastMNs) < kBKMoveDedupNs) {
         if (gDump && (gFpsSkip++ % 40) == 0) BKAppend(@"F repetido");
@@ -758,7 +759,6 @@ static void BKFpsOn(void)
     double px = gFpsX, py = gFpsY;
     if (gRotate) BKConvInv(gFpsX, gFpsY, BKCurrentOrient(), &px, &py);
     BKDown(kBKIdxAim, px, py);
-    // empurrão inicial: jogo que ignora toque parado passa a ver arrasto
     BKMove(kBKIdxAim, BKClamp(px + 0.004), BKClamp(py + 0.004));
     BKAppend([NSString stringWithFormat:@"F on ponto=%.3f,%.3f fogo=%.3f,%.3f(%d) mirar=%.3f,%.3f(%d)",
               gFpsX, gFpsY, gFireX, gFireY, (int)gFireSet, gAdsX, gAdsY, (int)gAdsSet]);
@@ -926,9 +926,10 @@ static BOOL BKKeyEdge(int usage, int downHint, BOOL *outDown)
 
 #pragma mark - Botões
 
-// Um botão tem dono. Aperta vem pelo tipo 17, solta pelo tipo 32, então
-// qualquer fonte pode soltar, mas só depois de 40 ms e com trava de 100 ms
-// contra o par duplicado que o mouse manda.
+// A página 12 do teclado é a única fonte que traz número e estado juntos
+// (64 esquerdo, 65 direito, 66 meio). O tipo 32 só traz estado, com número
+// sempre 0, então serve de reserva. O tipo 17 fica só com o movimento, porque
+// o campo 0 dele é dx e não número de botão.
 static void BKButtonEvent(int num, BOOL down, int src)
 {
     if (num < 0) num = 0;
@@ -952,6 +953,14 @@ static void BKButtonEvent(int num, BOOL down, int src)
 
     BKAppend([NSString stringWithFormat:@"B m:%d d=%d s=%d", num, (int)down, src]);
     if (gEnabled && gPoints.count) BKHandleButton(num, down);
+}
+
+// Tipo 32: número vem do último uso da página 12, se recente
+static void BKButtonState(int down)
+{
+    int num = 0;
+    if (gLastBtnNumNs && (BKNowNs() - gLastBtnNumNs) < kBKNumGraceNs) num = gLastBtnNum;
+    BKButtonEvent(num, down, 32);
 }
 
 static void BKButtonWatch(void)
@@ -1027,24 +1036,13 @@ static BOOL BKTryCapture(int type, BKIOHIDEventRef ev)
                    && usage < kBKUsageBtnBase + kBKMaxBtn) {
             enc = [NSString stringWithFormat:@"m:%d", usage - kBKUsageBtnBase];
         }
-    } else if (type == kBKTypePointer) {
-        int f0 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 0u));
-        int f1 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 1u));
-        int f2 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 2u));
-        int f3 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 3u));
-        // campo 3: 1 aperta, 2 solta, 0 é movimento (campo 0/1 são dx/dy)
-        if (f3 == 1 || f3 == 2) {
-            int num = (f0 >= 0 && f0 < kBKMaxBtn) ? f0 : 0;
-            enc = [NSString stringWithFormat:@"m:%d", num];
-            BKAppend([NSString stringWithFormat:@"@ raw t=%d f=%d,%d,%d,%d", type, f0, f1, f2, f3]);
-        }
     } else if (type == kBKTypeBtn || type == kBKTypeButton) {
-        int f0 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 0u));
         int f1 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 1u));
         if (f1) {
-            int num = (f0 >= 0 && f0 < kBKMaxBtn) ? f0 : 0;
+            int num = 0;
+            if (gLastBtnNumNs && (BKNowNs() - gLastBtnNumNs) < kBKNumGraceNs) num = gLastBtnNum;
             enc = [NSString stringWithFormat:@"m:%d", num];
-            BKAppend([NSString stringWithFormat:@"@ raw t=%d f=%d,%d", type, f0, f1]);
+            BKAppend([NSString stringWithFormat:@"@ raw t=%d s=1 num=%d", type, num]);
         }
     }
 
@@ -1123,10 +1121,13 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         gPendingDir = down ? 1 : -1;
         if (gDump) BKAppend([NSString stringWithFormat:@"K %d pg=%d d=%d", usage, page, down]);
 
-        // página 12: botões do mouse
+        // página 12: botões do mouse, com número e estado
         if (page == kBKPageBtn) {
             if (usage >= kBKUsageBtnBase && usage < kBKUsageBtnBase + kBKMaxBtn) {
-                BKButtonEvent(usage - kBKUsageBtnBase, down != 0, 17);
+                int num = usage - kBKUsageBtnBase;
+                gLastBtnNum = num;
+                gLastBtnNumNs = BKNowNs();
+                BKButtonEvent(num, down != 0, 17);
             }
             return;
         }
@@ -1194,47 +1195,30 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
 
         BKDumpEv(type, ev);
     } else if (type == kBKTypeMove) {
-        double dx = gIO.GetFloat(ev, (kBKTypeMove << 16 | 0u));
-        double dy = gIO.GetFloat(ev, (kBKTypeMove << 16 | 1u));
-        if (dx == 0.0 && dy == 0.0) {
-            dx = gIO.GetFloat(ev, (kBKTypeTranslation << 16 | 0u));
-            dy = gIO.GetFloat(ev, (kBKTypeTranslation << 16 | 1u));
-        }
-        if (dx != 0.0 || dy != 0.0) gLastMove12Ns = BKNowNs();
+        // tipo 12 fica só para o log: os valores dele não param de chegar e
+        // não servem para seguir o mouse
         BKDumpEv(type, ev);
-        if (gDump) BKAppend([NSString stringWithFormat:@"M12 dx=%.3f dy=%.3f", dx, dy]);
-        if (gFps && (dx != 0.0 || dy != 0.0)) {
-            BKFpsEnsure();
-            BKFpsMove(dx, dy);
-        }
     } else if (type == kBKTypePointer) {
         int f0 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 0u));
         int f1 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 1u));
         int f3 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 3u));
         BKDumpEv(type, ev);
-        if (f3 == 1 || f3 == 2) {
-            int num = (f0 >= 0 && f0 < kBKMaxBtn) ? f0 : 0;
-            BKButtonEvent(num, f3 == 1, 17);
-        } else if (f0 || f1) {
-            // movimento em inteiros: só serve de reserva se o tipo 12 parar
+        // aqui o campo 0 é dx e o 1 é dy: é o único movimento real
+        if (f3 == 0 && (f0 || f1) && gFps) {
             if (gDump) BKAppend([NSString stringWithFormat:@"M17 dx=%d dy=%d", f0, f1]);
-            if (gFps && (BKNowNs() - gLastMove12Ns) > kBKMove12FallbackNs) {
-                BKFpsEnsure();
-                BKFpsMove(f0, f1);
-            }
+            BKFpsEnsure();
+            BKFpsMove(f0, f1);
         }
     } else if (type == kBKTypeButton) {
-        int num = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 0u));
         int st = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 1u));
         BKDumpEv(type, ev);
-        if (gDump) BKAppend([NSString stringWithFormat:@"N2 n=%d s=%d", num, st]);
-        BKButtonEvent(num, st != 0, 2);
+        if (gDump) BKAppend([NSString stringWithFormat:@"N2 s=%d", st]);
+        BKButtonState(st != 0);
     } else if (type == kBKTypeBtn) {
-        int num = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 0u));
         int st = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 1u));
         BKDumpEv(type, ev);
-        if (gDump) BKAppend([NSString stringWithFormat:@"N32 n=%d s=%d", num, st]);
-        BKButtonEvent(num, st != 0, 32);
+        if (gDump) BKAppend([NSString stringWithFormat:@"N32 s=%d", st]);
+        BKButtonState(st != 0);
     }
     } @catch (NSException *e) {
         BKAppend([NSString stringWithFormat:@"! cb %@", e.reason]);

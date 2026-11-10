@@ -105,6 +105,7 @@ static NSString *gActiveBundle = nil;
 static NSMutableDictionary *gDown = nil;
 static NSMutableDictionary *gGen = nil;
 static NSMutableDictionary *gCur = nil;
+static NSMutableDictionary *gMaskSrc = nil;
 
 static BOOL gRotate = YES;
 static BOOL gFollowCursor = NO;
@@ -130,7 +131,6 @@ static double gDirSens = 1.0;
 
 static double gCx = 0.5, gCy = 0.5;
 static uint16_t gPrevMask = 0;
-static int gBtn2Seen = 0;
 static int gPendingDir = 0;
 static int gHandledUsage = -1;
 static int gLastOrient = 3;
@@ -754,7 +754,8 @@ static void BKHandleKey(int usage, BOOL down)
 
     for (NSUInteger i = 0; i < gPoints.count; i++) {
         NSDictionary *pt = gPoints[i];
-        if ([pt[@"Type"] isEqualToString:@"Dir"]) continue;
+        NSString *t = pt[@"Type"];
+        if ([t isEqualToString:@"Dir"] || [t isEqualToString:@"Fps"]) continue;
         NSString *k = pt[@"Key"];
         if (![k isKindOfClass:[NSString class]] || ![k isEqualToString:key]) continue;
         BKHandlePoint(pt, i, down);
@@ -785,6 +786,8 @@ static void BKHandleButton(int b, BOOL down)
     NSString *key = [NSString stringWithFormat:@"m:%d", b];
     for (NSUInteger i = 0; i < gPoints.count; i++) {
         NSDictionary *pt = gPoints[i];
+        NSString *t = pt[@"Type"];
+        if ([t isEqualToString:@"Dir"] || [t isEqualToString:@"Fps"]) continue;
         NSString *k = pt[@"Key"];
         if (![k isKindOfClass:[NSString class]] || ![k isEqualToString:key]) continue;
         BKHandlePoint(pt, i, down);
@@ -796,6 +799,7 @@ static void BKHandleButton(int b, BOOL down)
 static void BKHandleMask(uint16_t cur)
 {
     uint16_t prev = gPrevMask;
+    if (cur == prev) return;
     for (int b = 0; b < 3; b++) {
         uint16_t bit = 1 << b;
         BOOL was = (prev & bit) != 0;
@@ -805,22 +809,34 @@ static void BKHandleMask(uint16_t cur)
     gPrevMask = cur;
 }
 
-static void BKButtonEdge(int num, BOOL down)
+// Máscara por fonte: cada dispositivo/tipo tem seu próprio slot e o resultado é o OR.
+// Assim um fluxo de eventos que não conhece o botão não derruba o estado do outro.
+static void BKSourceMask(uint64_t sender, int type, int mask)
 {
-    if (num < 0 || num > 2) return;
-    uint16_t bit = (uint16_t)(1 << num);
-    BOOL was = (gPrevMask & bit) != 0;
-    if (was == down) return;
-    if (down) gPrevMask |= bit; else gPrevMask &= ~bit;
-    BKAppend([NSString stringWithFormat:@"B m:%d d=%d", num, (int)down]);
-    if (gEnabled && gPoints.count) BKHandleButton(num, down);
+    if (!gMaskSrc) gMaskSrc = [NSMutableDictionary dictionary];
+    if (gMaskSrc.count > 48) [gMaskSrc removeAllObjects];
+    if (mask < 0) mask = 0;
+    if (mask > 7) mask &= 7;
+
+    NSString *key = [NSString stringWithFormat:@"%llu/%d", sender, type];
+    if ([gMaskSrc[key] intValue] == mask) return;
+    gMaskSrc[key] = @(mask);
+
+    uint16_t all = 0;
+    for (NSString *k in gMaskSrc) all |= (uint16_t)[gMaskSrc[k] intValue];
+    BKHandleMask(all);
 }
 
-static void BKApplyMaskSafe(int m, BOOL auth)
+// Evento com número de botão + estado: aplica só o bit daquele botão
+static void BKSourceEdge(uint64_t sender, int type, int num, BOOL down)
 {
-    if (m < 0 || m > 7) return;
-    if (!auth && gBtn2Seen) return;
-    BKHandleMask((uint16_t)m);
+    if (num < 0 || num > 2) num = 0;
+    if (!gMaskSrc) gMaskSrc = [NSMutableDictionary dictionary];
+    NSString *key = [NSString stringWithFormat:@"%llu/%d", sender, type];
+    int cur = (int)[gMaskSrc[key] intValue];
+    int bit = 1 << num;
+    if (down) cur |= bit; else cur &= ~bit;
+    BKSourceMask(sender, type, cur);
 }
 
 #pragma mark - Captura
@@ -837,7 +853,6 @@ static void BKCaptureWatch(void)
     BKAppend(@"@ arm");
 }
 
-// Retorna YES se consumiu o evento para a captura
 static BOOL BKTryCapture(int type, BKIOHIDEventRef ev)
 {
     if (!gCaptureArmed) return NO;
@@ -856,7 +871,7 @@ static BOOL BKTryCapture(int type, BKIOHIDEventRef ev)
         int st = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 1u));
         if (num < 0 || num > 2) num = 0;
         if (st) enc = [NSString stringWithFormat:@"m:%d", num];
-    } else if (type == kBKTypeBtn || type == kBKTypePointer) {
+    } else if (type == kBKTypeBtn || type == kBKTypeDigitizer) {
         int mask = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 3));
         if (mask == 0) mask = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 0));
         if (mask & 1) enc = @"m:0";
@@ -919,8 +934,10 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
     @try {
     int type = gIO.GetType(ev);
 
+    uint64_t sender = gIO.GetSender ? gIO.GetSender(ev) : 0;
+
     // ignora o que nós mesmos injetamos
-    if (gIO.GetSender && gIO.GetSender(ev) == kBKSenderID) return;
+    if (sender == kBKSenderID) return;
 
     if (gEvSeen < 40) {
         gEvSeen++;
@@ -980,7 +997,7 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
             BKCursorMove(dx, dy);
             BKFpsMove(dx, dy);
         }
-        BKApplyMaskSafe(m, NO);
+        if (m >= 0 && m <= 7) BKSourceMask(sender, type, m);
     } else if (type == kBKTypeMove) {
         double dx = gIO.GetFloat(ev, (kBKTypeMove << 16 | 0u));
         double dy = gIO.GetFloat(ev, (kBKTypeMove << 16 | 1u));
@@ -997,27 +1014,16 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
     } else if (type == kBKTypeButton) {
         int num = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 0u));
         int st = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 1u));
-        gBtn2Seen = 1;
         BKDumpEv(type, ev);
         if (gDump) BKAppend([NSString stringWithFormat:@"N2 n=%d s=%d", num, st]);
-        BKButtonEdge(num, st != 0);
+        BKSourceEdge(sender, type, num, st != 0);
     } else if (type == kBKTypeBtn) {
         int m = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 0u));
         int m2 = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 1u));
         BKDumpEv(type, ev);
         if (gDump) BKAppend([NSString stringWithFormat:@"N32 m=%x m2=%x", m, m2]);
-        if (m >= 0 && m <= 7 && !gBtn2Seen) BKHandleMask((uint16_t)m);
-        else if (m > 7) BKButtonEdge(m, m2 != 0);
-    } else if (type == kBKTypePointer) {
-        double dx = gIO.GetFloat(ev, (17u << 16 | 0u));
-        double dy = gIO.GetFloat(ev, (17u << 16 | 1u));
-        int bmask = (int)gIO.GetInt(ev, (17u << 16 | 3u));
-        BKDumpEv(type, ev);
-        if (dx != 0 || dy != 0) {
-            BKCursorMove(dx, dy);
-            BKFpsMove(dx, dy);
-        }
-        BKApplyMaskSafe(bmask, NO);
+        if (m >= 0 && m <= 7) BKSourceMask(sender, type, m);
+        else if (m > 7) BKSourceEdge(sender, type, m, m2 != 0);
     }
     } @catch (NSException *e) {
         BKAppend([NSString stringWithFormat:@"! cb %@", e.reason]);
@@ -1031,6 +1037,7 @@ static void BKEngineInit(void)
     gDown = [NSMutableDictionary dictionary];
     gGen = [NSMutableDictionary dictionary];
     gCur = [NSMutableDictionary dictionary];
+    gMaskSrc = [NSMutableDictionary dictionary];
     gSendQ = dispatch_queue_create("com.wjf.ballkey.send", DISPATCH_QUEUE_SERIAL);
     dispatch_set_target_queue(gSendQ, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0));
 

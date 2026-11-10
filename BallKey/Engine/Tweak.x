@@ -19,6 +19,7 @@ typedef struct {
     int (*GetType)(BKIOHIDEventRef);
     int64_t (*GetInt)(BKIOHIDEventRef, int32_t);
     double (*GetFloat)(BKIOHIDEventRef, int32_t);
+    uint64_t (*GetSender)(BKIOHIDEventRef);
     void (*SetInt)(BKIOHIDEventRef, int32_t, int64_t);
     void (*SetFloat)(BKIOHIDEventRef, int32_t, double);
     void (*SetSender)(BKIOHIDEventRef, uint64_t);
@@ -49,6 +50,7 @@ typedef struct {
 #define kBKFieldTouch           (11u << 16 | 9u)
 #define kBKFieldX               (11u << 16 | 0u)
 #define kBKFieldY               (11u << 16 | 1u)
+#define kBKFieldBtnMask         (11u << 16 | 3u)
 #define kBKFieldMajorR          0xb0014u
 #define kBKFieldMinorR          0xb0015u
 #define kBKFieldDisplayInt      0xb0019u
@@ -65,13 +67,12 @@ typedef struct {
 
 #define kBKTypeKeyExtra         15
 #define kBKTypePointer          17
+#define kBKTypeDigitizer        11
 #define kBKTypeMove             12
 #define kBKTypeBtn              32
 #define kBKTypeTranslation      4
 #define kBKTypeButton           2
-#define kBKPtrX                 (17u << 16 | 0u)
-#define kBKPtrY                 (17u << 16 | 1u)
-#define kBKPtrMask              (17u << 16 | 3u)
+#define kBKPtrScale             3000.0
 #define kBKMoveFactor           0.000977
 #define kBKDefaultFpsKey        224
 
@@ -132,6 +133,9 @@ static int gLastOrient = 3;
 static int gEvSeen = 0;
 static int gLastExtra = -1;
 static uint64_t gLastExtraNs = 0;
+
+static double gLastPtrX = 0, gLastPtrY = 0;
+static int gLastPtrValid = 0;
 
 static void BKSendLast(NSNumber *idx);
 static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef ev);
@@ -201,6 +205,7 @@ static BOOL BKLoadIOKit(void)
     gIO.GetType = dlsym(gIOKit, "IOHIDEventGetType");
     gIO.GetInt = dlsym(gIOKit, "IOHIDEventGetIntegerValue");
     gIO.GetFloat = dlsym(gIOKit, "IOHIDEventGetFloatValue");
+    gIO.GetSender = dlsym(gIOKit, "IOHIDEventGetSenderID");
     gIO.SetInt = dlsym(gIOKit, "IOHIDEventSetIntegerValue");
     gIO.SetFloat = dlsym(gIOKit, "IOHIDEventSetFloatValue");
     gIO.SetSender = dlsym(gIOKit, "IOHIDEventSetSenderID");
@@ -338,6 +343,7 @@ static void BKLoadConfig(void)
     gPendingDir = 0;
     gHandledUsage = -1;
     gPrevMask = 0;
+    gLastPtrValid = 0;
     gAimX = gFpsX;
     gAimY = gFpsY;
 
@@ -811,6 +817,10 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
     if (!ev) return;
     @try {
     int type = gIO.GetType(ev);
+
+    // ignora o que nós mesmos injetamos
+    if (gIO.GetSender && gIO.GetSender(ev) == kBKSenderID) return;
+
     if (gEvSeen < 40) {
         gEvSeen++;
         BKAppend([NSString stringWithFormat:@"E t=%d", type]);
@@ -848,6 +858,28 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         if (gEnabled && gPoints.count && usage >= 4 && usage <= 231) {
             BKHandleKey(usage, dir > 0);
         }
+    } else if (type == kBKTypeDigitizer) {
+        double x = gIO.GetFloat(ev, kBKFieldX);
+        double y = gIO.GetFloat(ev, kBKFieldY);
+        int m = (int)gIO.GetInt(ev, kBKFieldBtnMask);
+        double dx = 0, dy = 0;
+        if (gLastPtrValid) {
+            dx = (x - gLastPtrX) * kBKPtrScale;
+            dy = (y - gLastPtrY) * kBKPtrScale;
+        }
+        gLastPtrX = x;
+        gLastPtrY = y;
+        gLastPtrValid = 1;
+        if (gDump) BKAppend([NSString stringWithFormat:@"M11 x=%.4f y=%.4f dx=%.2f dy=%.2f m=%x",
+                             x, y, dx, dy, m]);
+        if (dx != 0.0 || dy != 0.0) {
+            BKCursorMove(dx, dy);
+            BKFpsMove(dx, dy);
+        }
+        if (m != 0 || gPrevMask != 0) {
+            if (gEnabled && gPoints.count) BKHandleMask((uint16_t)m);
+            else gPrevMask = (uint16_t)m;
+        }
     } else if (type == kBKTypeMove) {
         double dx = gIO.GetFloat(ev, (kBKTypeMove << 16 | 0u));
         double dy = gIO.GetFloat(ev, (kBKTypeMove << 16 | 1u));
@@ -855,22 +887,26 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
             dx = gIO.GetFloat(ev, (kBKTypeTranslation << 16 | 0u));
             dy = gIO.GetFloat(ev, (kBKTypeTranslation << 16 | 1u));
         }
-        if (gDump) BKAppend([NSString stringWithFormat:@"M dx=%.3f dy=%.3f", dx, dy]);
+        if (gDump) BKAppend([NSString stringWithFormat:@"M12 dx=%.3f dy=%.3f", dx, dy]);
         if (dx != 0.0 || dy != 0.0) {
             BKCursorMove(dx, dy);
             BKFpsMove(dx, dy);
         }
     } else if (type == kBKTypeBtn) {
-        int m = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 3u));
-        if (m == 0) m = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 0u));
+        int m = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 0u));
+        if (m == 0) m = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 1u));
+        if (m == 0) m = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 2u));
+        if (m == 0) m = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 3u));
         if (m == 0) m = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 0u));
-        if (gDump) BKAppend([NSString stringWithFormat:@"N m=%x", m]);
-        if (gEnabled && gPoints.count) BKHandleMask((uint16_t)m);
-        else gPrevMask = (uint16_t)m;
+        if (gDump) BKAppend([NSString stringWithFormat:@"N32 m=%x", m]);
+        if (m != 0 || gPrevMask != 0) {
+            if (gEnabled && gPoints.count) BKHandleMask((uint16_t)m);
+            else gPrevMask = (uint16_t)m;
+        }
     } else if (type == kBKTypePointer) {
-        double dx = gIO.GetFloat(ev, kBKPtrX);
-        double dy = gIO.GetFloat(ev, kBKPtrY);
-        int bmask = (int)gIO.GetInt(ev, kBKPtrMask);
+        double dx = gIO.GetFloat(ev, (17u << 16 | 0u));
+        double dy = gIO.GetFloat(ev, (17u << 16 | 1u));
+        int bmask = (int)gIO.GetInt(ev, (17u << 16 | 3u));
         if (dx != 0 || dy != 0) {
             BKCursorMove(dx, dy);
             BKFpsMove(dx, dy);

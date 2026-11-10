@@ -43,10 +43,10 @@ typedef struct {
 
 #define kBKTransducerHand       0x23
 #define kBKSenderID             0x8000000817319372ull
-#define kBKParentIndex          99
+#define kBKParentBase           99
 #define kBKParentIdentity       1
-#define kBKChildIdentity        3
-#define kBKChildIndex           1
+#define kBKChildBase            1
+#define kBKChildIdentityBase    3
 
 #define kBKFieldHandMask        (11u << 16 | 7u)
 #define kBKFieldRange           (11u << 16 | 8u)
@@ -141,6 +141,7 @@ static int gEvSeen = 0;
 static int gEvDump = 0;
 static int gLastExtra = -1;
 static uint64_t gLastExtraNs = 0;
+static int gFpsMoveLog = 0;
 
 static BOOL gCaptureArmed = NO;
 static uint64_t gCaptureArmNs = 0;
@@ -149,6 +150,14 @@ static double gLastPtrX = 0, gLastPtrY = 0;
 static int gLastPtrValid = 0;
 
 static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef ev);
+
+#pragma mark - Identidade por toque
+
+// Cada toque precisa de pai, índice e identidade próprios, senão o sistema
+// trata todos como o mesmo dedo e o segundo atropela o primeiro.
+static uint32_t BKParentIdx(NSUInteger idx) { return (uint32_t)(kBKParentBase + (idx % 60)); }
+static uint32_t BKChildIdx(NSUInteger idx)  { return (uint32_t)(kBKChildBase + (idx % 60)); }
+static uint32_t BKChildId(NSUInteger idx)   { return (uint32_t)(kBKChildIdentityBase + (idx % 60)); }
 
 #pragma mark - Tempo
 
@@ -410,7 +419,7 @@ static void BKNotifyUserActivity(void)
     }
 }
 
-static BKIOHIDEventRef BKChild(double x, double y, int phase)
+static BKIOHIDEventRef BKChild(NSUInteger idx, double x, double y, int phase)
 {
     uint32_t mask = kBKFlagRange | kBKFlagTouch;
     BOOL range = YES, touch = YES;
@@ -423,7 +432,7 @@ static BKIOHIDEventRef BKChild(double x, double y, int phase)
     }
 
     BKIOHIDEventRef child = gIO.CreateFinger(kCFAllocatorDefault, mach_absolute_time(),
-        kBKChildIndex, kBKChildIdentity, mask, x, y, 0.0, 0.0, 0.0,
+        BKChildIdx(idx), BKChildId(idx), mask, x, y, 0.0, 0.0, 0.0,
         (uint8_t)range, (uint8_t)touch, 0);
     if (child) {
         gIO.SetFloat(child, kBKFieldMajorR, 0.04);
@@ -432,13 +441,13 @@ static BKIOHIDEventRef BKChild(double x, double y, int phase)
     return child;
 }
 
-static void BKPost(double x, double y, int phase)
+static void BKPost(NSUInteger idx, double x, double y, int phase)
 {
     if (!gIO.Dispatch) return;
     @try {
 
     BKIOHIDEventRef parent = gIO.CreateDigitizer(kCFAllocatorDefault, mach_absolute_time(),
-        kBKTransducerHand, kBKParentIndex, kBKParentIdentity, 0, 0,
+        kBKTransducerHand, BKParentIdx(idx), kBKParentIdentity, 0, 0,
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0);
     if (!parent) {
         BKAppend(@"! sem parent");
@@ -448,7 +457,7 @@ static void BKPost(double x, double y, int phase)
     gIO.SetInt(parent, kBKFieldDisplayInt, 1);
     gIO.SetInt(parent, kBKFieldIsBuiltIn, 1);
 
-    BKIOHIDEventRef child = BKChild(x, y, phase);
+    BKIOHIDEventRef child = BKChild(idx, x, y, phase);
     if (child) {
         gIO.Append(parent, child, 0);
         CFRelease(child);
@@ -472,8 +481,8 @@ static void BKPost(double x, double y, int phase)
 
     BKNotifyUserActivity();
     if (gDump) {
-        BKAppend([NSString stringWithFormat:@"D ph=%d o=%d x=%.3f y=%.3f", phase,
-                  BKCurrentOrient(), x, y]);
+        BKAppend([NSString stringWithFormat:@"D i=%lu ph=%d o=%d x=%.3f y=%.3f",
+                  (unsigned long)idx, phase, BKCurrentOrient(), x, y]);
     }
 
     } @catch (NSException *e) {
@@ -485,7 +494,7 @@ static void BKSendLast(NSNumber *idx)
 {
     NSArray *a = gCur[idx];
     if (![a isKindOfClass:[NSArray class]] || a.count < 2) return;
-    BKPost([a[0] doubleValue], [a[1] doubleValue], kBKPhaseEnded);
+    BKPost([idx unsignedIntegerValue], [a[0] doubleValue], [a[1] doubleValue], kBKPhaseEnded);
 }
 
 static void BKDown(NSUInteger idx, double nx, double ny)
@@ -495,7 +504,7 @@ static void BKDown(NSUInteger idx, double nx, double ny)
     ny = BKClamp(ny);
     gDown[@(idx)] = @YES;
     gCur[@(idx)] = @[ @(nx), @(ny) ];
-    BKPost(nx, ny, kBKPhaseBegan);
+    BKPost(idx, nx, ny, kBKPhaseBegan);
 }
 
 static void BKMove(NSUInteger idx, double nx, double ny)
@@ -504,7 +513,7 @@ static void BKMove(NSUInteger idx, double nx, double ny)
     nx = BKClamp(nx);
     ny = BKClamp(ny);
     gCur[@(idx)] = @[ @(nx), @(ny) ];
-    BKPost(nx, ny, kBKPhaseMoved);
+    BKPost(idx, nx, ny, kBKPhaseMoved);
 }
 
 static void BKUp(NSUInteger idx)
@@ -669,6 +678,22 @@ static void BKFpsMove(double dx, double dy)
     double px = gAimX, py = gAimY;
     if (gRotate) BKConvInv(gAimX, gAimY, BKCurrentOrient(), &px, &py);
     BKMove(kBKIdxAim, px, py);
+
+    if (gDump && gFpsMoveLog < 30) {
+        gFpsMoveLog++;
+        BKAppend([NSString stringWithFormat:@"F move dx=%.2f dy=%.2f x=%.3f y=%.3f",
+                  dx, dy, gAimX, gAimY]);
+    }
+}
+
+// garante que o dedo da mira existe, mesmo se algo o soltou
+static void BKFpsEnsure(void)
+{
+    if (!gFps) return;
+    if ([gDown[@(kBKIdxAim)] boolValue]) return;
+    double px = gAimX, py = gAimY;
+    if (gRotate) BKConvInv(gAimX, gAimY, BKCurrentOrient(), &px, &py);
+    BKDown(kBKIdxAim, px, py);
 }
 
 static void BKFpsToggle(void)
@@ -686,6 +711,7 @@ static void BKFpsToggle(void)
     }
 
     gFps = YES;
+    gFpsMoveLog = 0;
     gAimX = gFpsX;
     gAimY = gFpsY;
     double px = gFpsX, py = gFpsY;
@@ -898,16 +924,15 @@ static BOOL BKTryCapture(int type, BKIOHIDEventRef ev)
         if ((page == 0 || page == 7) && down && usage >= 4 && usage <= 231) {
             enc = [NSString stringWithFormat:@"k:%d", usage];
         }
-    } else if (type == kBKTypeButton) {
-        int num = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 0u));
-        int st = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 1u));
-        if (num < 0 || num > 2) num = 0;
-        if (st) enc = [NSString stringWithFormat:@"m:%d", num];
-    } else if (type == kBKTypeBtn) {
-        int num = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 2u));
-        int st = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 1u));
-        if (num < 0 || num > 2) num = 0;
-        if (st) enc = [NSString stringWithFormat:@"m:%d", num];
+    } else if (type == kBKTypeButton || type == kBKTypeBtn) {
+        int f0 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 0u));
+        int f1 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 1u));
+        int f2 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 2u));
+        int num = (f0 >= 0 && f0 <= 2) ? f0 : 0;
+        if (f1 || f2) {
+            enc = [NSString stringWithFormat:@"m:%d", num];
+            BKAppend([NSString stringWithFormat:@"@ raw t=%d f=%d,%d,%d", type, f0, f1, f2]);
+        }
     } else if (type == kBKTypeDigitizer) {
         int mask = (int)gIO.GetInt(ev, kBKFieldBtnMask);
         if (mask & 1) enc = @"m:0";
@@ -1031,8 +1056,6 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
             gLastPtrX = x;
             gLastPtrY = y;
             gLastPtrValid = 1;
-            // no FPS o ponteiro absoluto congela com o botão pressionado: o
-            // movimento vem do tipo 12, aqui só o cursor livre é atendido
             if (!gFps && (dx != 0.0 || dy != 0.0)) BKCursorMove(dx, dy);
         }
 
@@ -1048,17 +1071,22 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         }
         BKDumpEv(type, ev);
         if (gDump) BKAppend([NSString stringWithFormat:@"M12 dx=%.3f dy=%.3f", dx, dy]);
-        if (gFps && (dx != 0.0 || dy != 0.0)) BKFpsMove(dx, dy);
+        if (gFps && (dx != 0.0 || dy != 0.0)) {
+            BKFpsEnsure();
+            BKFpsMove(dx, dy);
+        }
     } else if (type == kBKTypeButton) {
         int num = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 0u));
         int st = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 1u));
+        if (st == 0) st = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 2u));
         BKDumpEv(type, ev);
         if (gDump) BKAppend([NSString stringWithFormat:@"N2 n=%d s=%d", num, st]);
         BKSourceEdge(sender, type, num, st != 0);
     } else if (type == kBKTypeBtn) {
-        // campo 2 = botão, campo 1 = estado, campo 0 = 0 fixo
-        int num = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 2u));
+        // campo 0 = botão, campo 1 = estado, campo 2 = contagem de cliques
+        int num = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 0u));
         int st = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 1u));
+        if (st == 0) st = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 2u));
         BKDumpEv(type, ev);
         if (gDump) BKAppend([NSString stringWithFormat:@"N32 n=%d s=%d", num, st]);
         BKSourceEdge(sender, type, num, st != 0);

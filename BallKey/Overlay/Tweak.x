@@ -3,12 +3,12 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <notify.h>
-#import <dlfcn.h>
 #import <stdarg.h>
-#import <mach/mach_time.h>
 
 #define kBKConfigPath @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 #define kBKStatusPath @"/var/mobile/bk_status.txt"
+#define kBKCaptureReqPath @"/var/mobile/bk_capture.txt"
+#define kBKCaptureResPath @"/var/mobile/bk_capture_result.txt"
 
 static UIWindow *gBallWindow = nil;
 static UIWindow *gMenuWindow = nil;
@@ -24,22 +24,6 @@ static CGPoint gBallPos = {0.06, 0.85};
 
 static int gLastOrient = 0;
 static int gAppliedOrient = 0;
-
-static void *gIOKit = NULL;
-static void *gCapClient = NULL;
-static int gCapSeen = 0;
-static struct {
-    void *(*Create)(CFAllocatorRef);
-    void *(*CreateWithType)(CFAllocatorRef, int, void *);
-    void (*RegisterCB)(void *, void *, void *, void *);
-    void (*Schedule)(void *, CFRunLoopRef, CFStringRef);
-    void (*Unschedule)(void *, CFRunLoopRef, CFStringRef);
-    void (*Activate)(void *);
-    int (*GetType)(void *);
-    int64_t (*GetInt)(void *, int32_t);
-} gCap;
-
-static uint64_t gCapIgnoreUntil = 0;
 
 static CGRect BKSpace(void);
 static UIWindowScene *BKMainScene(void);
@@ -68,6 +52,7 @@ static NSMutableDictionary *BKReadCfg(void);
 @end
 
 static BKMarkerView *gPending = nil;
+static NSTimer *gCapTimer = nil;
 
 static void BKMark(NSString *name)
 {
@@ -116,7 +101,6 @@ static UIWindowScene *BKMainScene(void)
 
 #pragma mark - Orientação
 
-// 0 = desconhecido
 static int BKFrontMostOrientation(void)
 {
     Class sbCls = objc_getClass("SpringBoard");
@@ -124,7 +108,6 @@ static int BKFrontMostOrientation(void)
     id sb = ((id (*)(id, SEL))objc_msgSend)(sbCls, @selector(sharedApplication));
     if (!sb) return 0;
 
-    // _frontMostAppOrientation é do SpringBoard, não do app
     SEL s1 = @selector(_frontMostAppOrientation);
     if ([sb respondsToSelector:s1]) {
         int o = (int)((int (*)(id, SEL))objc_msgSend)(sb, s1);
@@ -162,7 +145,6 @@ static int BKDeviceOrientation(void)
     return 0;
 }
 
-// Cascata: override → app frontal → último válido → device → paisagem se for jogo
 static int BKReadOrient(void)
 {
     NSNumber *ov = BKReadCfg()[@"OrientOverride"];
@@ -177,7 +159,6 @@ static int BKReadOrient(void)
     return o;
 }
 
-// Base fixa do aparelho, sempre em retrato (nativeBounds é sempre retrato)
 static CGRect BKPortraitBase(void)
 {
     UIScreen *s = [UIScreen mainScreen];
@@ -305,121 +286,64 @@ static NSString *BKStatusText(void)
     return s.length ? s : @"ativo=? marcadores=? app=?";
 }
 
-#pragma mark - Captura de tecla
+#pragma mark - Captura (via Engine)
 
 static void BKStopCapture(void)
 {
+    [gCapTimer invalidate];
+    gCapTimer = nil;
     gPending = nil;
-    gBanner.hidden = YES;
-}
-
-static void BKUnscheduleCapture(void)
-{
-    gPending = nil;
-    if (!gCapClient || !gCap.Unschedule) return;
-    @try {
-        gCap.Unschedule(gCapClient, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-    } @catch (NSException *e) {
-    }
-}
-
-static void BKCapCB(void *target, void *refcon, void *queue, void *ev)
-{
-    (void)target; (void)refcon; (void)queue;
-    if (!ev) return;
-    @try {
-        int type = gCap.GetType(ev);
-        if (gCapSeen < 25) {
-            gCapSeen++;
-            BKLog(@"cap t=%d", type);
-        }
-        if (!gPending) return;
-        if (mach_absolute_time() < gCapIgnoreUntil) return;
-
-        NSString *enc = nil;
-        if (type == 3) {
-            int page = (int)gCap.GetInt(ev, (3 << 16 | 0));
-            int usage = (int)gCap.GetInt(ev, (3 << 16 | 1));
-            int down = (int)gCap.GetInt(ev, (3 << 16 | 2));
-            if ((page == 0 || page == 7) && down && usage >= 4 && usage <= 231) {
-                enc = [NSString stringWithFormat:@"k:%d", usage];
-            }
-        } else if (type == 2) {
-            int num = (int)gCap.GetInt(ev, (2 << 16 | 0));
-            int st = (int)gCap.GetInt(ev, (2 << 16 | 1));
-            if (num < 0) num = 0;
-            if (num > 2) num = 0;
-            if (st) enc = [NSString stringWithFormat:@"m:%d", num];
-        } else if (type == 17 || type == 32) {
-            int mask = (int)gCap.GetInt(ev, (type << 16 | 3));
-            if (mask == 0) mask = (int)gCap.GetInt(ev, (type << 16 | 0));
-            if (mask & 1) enc = @"m:0";
-            else if (mask & 2) enc = @"m:1";
-            else if (mask & 4) enc = @"m:2";
-        }
-        if (!enc) return;
-
-        BKMarkerView *m = gPending;
-        gPending = nil;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            m.keyEnc = enc;
-            m.label.text = [NSString stringWithFormat:@"%@\n%@",
-                            [m.label.text componentsSeparatedByString:@"\n"].firstObject, enc];
-            gBanner.hidden = YES;
-            BKLog(@"cap ok %@", enc);
-        });
-    } @catch (NSException *e) {
-        BKLog(@"cap erro: %@", e.reason);
-    }
+    if (gBanner) gBanner.hidden = YES;
+    [[NSFileManager defaultManager] removeItemAtPath:kBKCaptureReqPath error:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:kBKCaptureResPath error:nil];
 }
 
 static void BKStartCapture(BKMarkerView *m)
 {
-    if (!gIOKit) {
-        gIOKit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
-        if (gIOKit) {
-            gCap.Create = dlsym(gIOKit, "IOHIDEventSystemClientCreate");
-            gCap.CreateWithType = dlsym(gIOKit, "IOHIDEventSystemClientCreateWithType");
-            gCap.RegisterCB = dlsym(gIOKit, "IOHIDEventSystemClientRegisterEventCallback");
-            gCap.Schedule = dlsym(gIOKit, "IOHIDEventSystemClientScheduleWithRunLoop");
-            gCap.Unschedule = dlsym(gIOKit, "IOHIDEventSystemClientUnscheduleWithRunLoop");
-            gCap.Activate = dlsym(gIOKit, "IOHIDEventSystemClientActivate");
-            gCap.GetType = dlsym(gIOKit, "IOHIDEventGetType");
-            gCap.GetInt = dlsym(gIOKit, "IOHIDEventGetIntegerValue");
-        }
-    }
-    if (!gIOKit || !gCap.Create || !gCap.RegisterCB) return;
-
+    if (!m) return;
+    [gCapTimer invalidate];
+    gCapTimer = nil;
     gPending = m;
-    gBanner.hidden = NO;
-    gCapIgnoreUntil = mach_absolute_time() + 250000000ull;
+    if (gBanner) gBanner.hidden = NO;
 
-    if (gCapClient) {
-        if (gCap.Schedule) {
-            @try {
-                gCap.Schedule(gCapClient, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-            } @catch (NSException *e) {
+    [[NSFileManager defaultManager] removeItemAtPath:kBKCaptureResPath error:nil];
+    [@"1" writeToFile:kBKCaptureReqPath atomically:YES
+           encoding:NSUTF8StringEncoding error:nil];
+
+    gCapTimer = [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *t) {
+        @try {
+            if (!gPending) { [t invalidate]; return; }
+
+            NSString *r = [NSString stringWithContentsOfFile:kBKCaptureResPath
+                                                    encoding:NSUTF8StringEncoding error:nil];
+            if (r.length) {
+                r = [r stringByTrimmingCharactersInSet:
+                     [NSCharacterSet whitespaceAndNewlineCharacterSet]];
             }
-        }
-        return;
-    }
+            if (!r.length) {
+                // rearma se o pedido foi consumido sem resposta
+                if (![[NSFileManager defaultManager] fileExistsAtPath:kBKCaptureReqPath]) {
+                    [@"1" writeToFile:kBKCaptureReqPath atomically:YES
+                           encoding:NSUTF8StringEncoding error:nil];
+                }
+                return;
+            }
 
-    @try {
-        gCapClient = gCap.CreateWithType ? gCap.CreateWithType(kCFAllocatorDefault, 1, NULL)
-                                         : gCap.Create(kCFAllocatorDefault);
-        if (!gCapClient) {
-            BKLog(@"cap: cliente nulo");
-            return;
+            BKMarkerView *mm = gPending;
+            gPending = nil;
+            [t invalidate];
+            gCapTimer = nil;
+            mm.keyEnc = r;
+            mm.label.text = [NSString stringWithFormat:@"%@\n%@",
+                             [mm.label.text componentsSeparatedByString:@"\n"].firstObject, r];
+            if (gBanner) gBanner.hidden = YES;
+            [[NSFileManager defaultManager] removeItemAtPath:kBKCaptureReqPath error:nil];
+            [[NSFileManager defaultManager] removeItemAtPath:kBKCaptureResPath error:nil];
+            BKLog(@"cap ok %@", r);
+        } @catch (NSException *e) {
+            BKLog(@"cap erro: %@", e.reason);
         }
-        gCap.RegisterCB(gCapClient, BKCapCB, NULL, NULL);
-        if (gCap.Schedule) {
-            gCap.Schedule(gCapClient, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-        }
-        if (gCap.Activate) gCap.Activate(gCapClient);
-        BKLog(@"cap: cliente criado");
-    } @catch (NSException *e) {
-        BKLog(@"cap falhou: %@", e.reason);
-    }
+    }];
 }
 
 #pragma mark - Marcador
@@ -443,8 +367,12 @@ static void BKStartCapture(BKMarkerView *m)
 - (void)bkTap:(UITapGestureRecognizer *)g
 {
     (void)g;
-    if (gPending == self) return;
-    BKStartCapture(self);
+    @try {
+        if (gPending == self) return;
+        BKStartCapture(self);
+    } @catch (NSException *e) {
+        BKLog(@"tap erro: %@", e.reason);
+    }
 }
 
 - (void)bkLong:(UILongPressGestureRecognizer *)g
@@ -609,7 +537,7 @@ static void BKSaveEditor(void)
 
 static void BKCloseEditor(void)
 {
-    BKUnscheduleCapture();
+    BKStopCapture();
     [gEditWindow setHidden:YES];
     gEditWindow = nil;
     gCanvas = nil;
@@ -807,10 +735,14 @@ static void BKToggleMenu(void)
 
 - (void)bkAdd:(UIButton *)b
 {
-    NSArray *types = @[@"Tap", @"Press", @"Hold", @"Dir", @"Fps"];
-    NSInteger i = b.tag - 200;
-    if (i < 0 || i >= (NSInteger)types.count) return;
-    BKAddMarker(types[i], YES);
+    @try {
+        NSArray *types = @[@"Tap", @"Press", @"Hold", @"Dir", @"Fps"];
+        NSInteger i = b.tag - 200;
+        if (i < 0 || i >= (NSInteger)types.count) return;
+        BKAddMarker(types[i], YES);
+    } @catch (NSException *e) {
+        BKLog(@"add erro: %@", e.reason);
+    }
 }
 
 - (void)bkSave:(UIButton *)b

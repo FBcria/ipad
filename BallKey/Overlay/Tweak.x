@@ -297,6 +297,11 @@ static NSString *BKStatusText(void)
 
 #pragma mark - Captura (via Engine)
 
+static NSString *BKNewNonce(void)
+{
+    return [[NSUUID UUID] UUIDString];
+}
+
 static void BKStopCapture(void)
 {
     [gCapTimer invalidate];
@@ -315,13 +320,21 @@ static void BKStartCapture(BKMarkerView *m)
     gPending = m;
     if (gBanner) gBanner.hidden = NO;
 
+    NSString *nonce = BKNewNonce();
     [[NSFileManager defaultManager] removeItemAtPath:kBKCaptureResPath error:nil];
-    [@"1" writeToFile:kBKCaptureReqPath atomically:YES
-           encoding:NSUTF8StringEncoding error:nil];
+    [nonce writeToFile:kBKCaptureReqPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
 
-    gCapTimer = [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *t) {
+    __block int ticks = 0;
+    gCapTimer = [NSTimer scheduledTimerWithTimeInterval:0.05 repeats:YES block:^(NSTimer *t) {
         @try {
-            if (!gPending) { [t invalidate]; return; }
+            BKMarkerView *mm = gPending;
+            if (!mm) { [t invalidate]; gCapTimer = nil; return; }
+
+            if (++ticks > 400) {
+                BKLog(@"cap timeout");
+                BKStopCapture();
+                return;
+            }
 
             NSString *r = [NSString stringWithContentsOfFile:kBKCaptureResPath
                                                     encoding:NSUTF8StringEncoding error:nil];
@@ -329,25 +342,24 @@ static void BKStartCapture(BKMarkerView *m)
                 r = [r stringByTrimmingCharactersInSet:
                      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
             }
-            if (!r.length) {
-                if (![[NSFileManager defaultManager] fileExistsAtPath:kBKCaptureReqPath]) {
-                    [@"1" writeToFile:kBKCaptureReqPath atomically:YES
-                           encoding:NSUTF8StringEncoding error:nil];
-                }
-                return;
-            }
+            if (!r.length) return;
 
-            BKMarkerView *mm = gPending;
+            NSArray *parts = [r componentsSeparatedByString:@" "];
+            if (parts.count < 2) return;
+            if (![parts[0] isEqualToString:nonce]) return;
+            NSString *key = parts[1];
+            if (!key.length) return;
+
             gPending = nil;
             [t invalidate];
             gCapTimer = nil;
-            mm.keyEnc = r;
+            mm.keyEnc = key;
             mm.label.text = [NSString stringWithFormat:@"%@\n%@",
-                             [mm.label.text componentsSeparatedByString:@"\n"].firstObject, r];
+                             [mm.label.text componentsSeparatedByString:@"\n"].firstObject, key];
             if (gBanner) gBanner.hidden = YES;
             [[NSFileManager defaultManager] removeItemAtPath:kBKCaptureReqPath error:nil];
             [[NSFileManager defaultManager] removeItemAtPath:kBKCaptureResPath error:nil];
-            BKLog(@"cap ok %@", r);
+            BKLog(@"cap ok %@", key);
         } @catch (NSException *e) {
             BKLog(@"cap erro: %@", e.reason);
         }

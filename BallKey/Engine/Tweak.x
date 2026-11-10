@@ -20,7 +20,7 @@ typedef struct {
     int (*GetType)(BKIOHIDEventRef);
     int64_t (*GetInt)(BKIOHIDEventRef, int32_t);
     double (*GetFloat)(BKIOHIDEventRef, int32_t);
-    void (*SetIntOpt)(BKIOHIDEventRef, int32_t, int64_t, uint32_t);
+    void (*SetInt)(BKIOHIDEventRef, int32_t, int64_t);
     void (*SetFloat)(BKIOHIDEventRef, int32_t, double);
     void (*SetSender)(BKIOHIDEventRef, uint64_t);
     void (*Append)(BKIOHIDEventRef, BKIOHIDEventRef);
@@ -38,21 +38,23 @@ typedef struct {
 #define kBKNotifyProbe          "com.wjf.ballkey.probe"
 #define kBKNotifyClose          "com.wjf.ballkey.close"
 
-#define kBKTransducerHand       3
+#define kBKTransducerFinger     0x22
+#define kBKTransducerHand       0x23
 #define kBKFieldX               (11u << 16 | 0u)
 #define kBKFieldY               (11u << 16 | 1u)
 #define kBKFieldPressure        (11u << 16 | 10u)
+#define kBKFieldEventMask       (11u << 16 | 7u)
 #define kBKFieldIsBuiltIn       4
 #define kBKFieldDisplayInt      25
-#define kBKFieldDisplayIntAlt   34
-#define kBKSetOpt               0xF0000000u
 #define kBKSenderID             0x8000000817319372ull
+#define kBKOptAbsolute          1u
 
 #define kBKFlagRange            0x01u
 #define kBKFlagTouch            0x02u
 #define kBKFlagPosition         0x04u
-#define kBKMaskTouch            (kBKFlagRange | kBKFlagTouch | kBKFlagPosition)
-#define kBKMaskRelease          (kBKFlagRange | kBKFlagTouch)
+#define kBKMaskDown             (kBKFlagRange | kBKFlagTouch | kBKFlagPosition)
+#define kBKMaskMove             (kBKFlagPosition)
+#define kBKMaskUp               (kBKFlagRange | kBKFlagTouch)
 
 #define kBKTypeKeyExtra         15
 #define kBKTypePointer          17
@@ -67,7 +69,6 @@ typedef struct {
 #define kIOHIDEventFieldKeyboardUsage          (3u << 16 | 1u)
 #define kIOHIDEventFieldKeyboardDown           (3u << 16 | 2u)
 #define kIOHIDEventFieldKeyboardRepeat         (3u << 16 | 3u)
-#define kIOHIDEventFieldDigitizerEventMask     (11u << 16 | 7u)
 
 #define kBKIdxAim               70
 #define kBKIdxAds               71
@@ -83,6 +84,7 @@ static BKIOHIDEventSystemClientRef gListenClient = NULL;
 static BKIOHIDEventSystemClientRef gSendClient = NULL;
 static dispatch_queue_t gSendQ = NULL;
 static int gBackend = 0;
+static int gMode = 0;
 static NSArray *gPoints = nil;
 static BOOL gEnabled = NO;
 static NSString *gActiveBundle = nil;
@@ -165,9 +167,9 @@ static void BKMark(NSString *name)
 
 static void BKStatus(void)
 {
-    NSString *s = [NSString stringWithFormat:@"ativo=%d marcadores=%lu app=%@ trava=%d tecla=%d sensi=%.2f ev=%d via=%d",
+    NSString *s = [NSString stringWithFormat:@"ativo=%d marcadores=%lu app=%@ trava=%d tecla=%d sensi=%.2f ev=%d via=%d modo=%d",
                    (int)gEnabled, (unsigned long)gPoints.count, gActiveBundle ?: @"-",
-                   (int)gFps, gFpsKey, gFpsSens, gEvSeen, gBackend];
+                   (int)gFps, gFpsKey, gFpsSens, gEvSeen, gBackend, gMode];
     [s writeToFile:kBKStatusPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
@@ -193,7 +195,7 @@ static BOOL BKLoadIOKit(void)
     gIO.GetType = dlsym(gIOKit, "IOHIDEventGetType");
     gIO.GetInt = dlsym(gIOKit, "IOHIDEventGetIntegerValue");
     gIO.GetFloat = dlsym(gIOKit, "IOHIDEventGetFloatValue");
-    gIO.SetIntOpt = dlsym(gIOKit, "IOHIDEventSetIntegerValueWithOptions");
+    gIO.SetInt = dlsym(gIOKit, "IOHIDEventSetIntegerValue");
     gIO.SetFloat = dlsym(gIOKit, "IOHIDEventSetFloatValue");
     gIO.SetSender = dlsym(gIOKit, "IOHIDEventSetSenderID");
     gIO.Append = dlsym(gIOKit, "IOHIDEventAppendEvent");
@@ -201,7 +203,7 @@ static BOOL BKLoadIOKit(void)
     gIO.CreateFinger = dlsym(gIOKit, "IOHIDEventCreateDigitizerFingerEvent");
 
     if (!gIO.ClientCreate || !gIO.Dispatch || !gIO.CreateDigitizer || !gIO.CreateFinger
-        || !gIO.GetType || !gIO.GetInt || !gIO.GetFloat || !gIO.SetIntOpt) {
+        || !gIO.GetType || !gIO.GetInt || !gIO.GetFloat || !gIO.SetInt) {
         BKAppend(@"I sym=0");
         return NO;
     }
@@ -371,6 +373,13 @@ static void BKLoadConfig(void)
         BKAppend([NSString stringWithFormat:@"B via=%d", bk]);
     }
 
+    int md = [cfg[@"Mode"] isKindOfClass:[NSNumber class]] ? [cfg[@"Mode"] intValue] : 0;
+    if (md < 0 || md > 3) md = 0;
+    if (md != gMode) {
+        gMode = md;
+        BKAppend([NSString stringWithFormat:@"B modo=%d", md]);
+    }
+
     int fk = BKUsageFromKey(cfg[@"FpsKey"]);
     gFpsKey = fk > 0 ? fk : kBKDefaultFpsKey;
 
@@ -392,9 +401,9 @@ static void BKLoadConfig(void)
     if (!gEnabled) BKReleaseAll();
 
     BKStatus();
-    BKAppend([NSString stringWithFormat:@"C en=%d b=%@ n=%lu key=%d snd=%d bi=%d via=%d",
+    BKAppend([NSString stringWithFormat:@"C en=%d b=%@ n=%lu key=%d snd=%d bi=%d via=%d modo=%d",
               (int)gEnabled, gActiveBundle ?: @"-", (unsigned long)gPoints.count,
-              gFpsKey, (int)gUseSender, (int)gUseBuiltIn, gBackend]);
+              gFpsKey, (int)gUseSender, (int)gUseBuiltIn, gBackend, gMode]);
 }
 
 #pragma mark - Toque
@@ -414,6 +423,31 @@ static void BKNotifyUserActivity(void)
     }
 }
 
+static void BKPush(BKIOHIDEventRef ev)
+{
+    CFRetain(ev);
+    if (gBackend == 3) {
+        dispatch_async(gSendQ, ^{
+            @try { BKEnqueueHID(ev); } @catch (NSException *e) { }
+            CFRelease(ev);
+        });
+        return;
+    }
+    if (!gSendClient) {
+        gSendClient = BKNewSend(gBackend + 1);
+        if (!gSendClient && gListenClient) {
+            gSendClient = gListenClient;
+            BKAppend(@"I send=listen");
+        }
+    }
+    dispatch_async(gSendQ, ^{
+        @try {
+            if (gSendClient) gIO.Dispatch(gSendClient, ev);
+        } @catch (NSException *e) { }
+        CFRelease(ev);
+    });
+}
+
 static void BKSend(double nx, double ny, int phase, NSUInteger idx)
 {
     if (!gIO.Dispatch) return;
@@ -423,69 +457,62 @@ static void BKSend(double nx, double ny, int phase, NSUInteger idx)
     double ry = BKClamp(ny);
 
     BOOL touching = (phase != 2);
-    uint32_t mask = touching ? kBKMaskTouch : kBKMaskRelease;
+    uint32_t mask = (phase == 2) ? kBKMaskUp : (phase == 1 ? kBKMaskDown : kBKMaskMove);
     double press = touching ? 1.0 : 0.0;
     uint64_t ab = mach_absolute_time();
     uint32_t ident = (uint32_t)(idx + 1);
 
-    BKIOHIDEventRef hand = gIO.CreateDigitizer(kCFAllocatorDefault, ab,
-        kBKTransducerHand, 0, 0, mask, 0, rx, ry, 0.0, press, 0.0,
-        (uint8_t)touching, (uint8_t)touching, 0);
-    if (!hand) {
-        BKAppend(@"! send sem hand");
-        return;
-    }
-
-    gIO.SetIntOpt(hand, kBKFieldDisplayInt, 1, kBKSetOpt);
-    gIO.SetIntOpt(hand, kBKFieldDisplayIntAlt, 1, kBKSetOpt);
-    if (gUseBuiltIn) gIO.SetIntOpt(hand, kBKFieldIsBuiltIn, 1, kBKSetOpt);
-
     BKIOHIDEventRef finger = gIO.CreateFinger(kCFAllocatorDefault, ab,
         0, ident, mask, rx, ry, 0.0, press, 0.0,
         (uint8_t)touching, (uint8_t)touching, 0);
-    if (finger) {
-        gIO.SetIntOpt(finger, kBKFieldDisplayInt, 1, kBKSetOpt);
-        gIO.SetIntOpt(finger, kBKFieldDisplayIntAlt, 1, kBKSetOpt);
-        gIO.SetIntOpt(finger, kIOHIDEventFieldDigitizerEventMask, mask, kBKSetOpt);
-        if (gIO.SetFloat) {
-            gIO.SetFloat(finger, kBKFieldX, rx);
-            gIO.SetFloat(finger, kBKFieldY, ry);
-            gIO.SetFloat(finger, kBKFieldPressure, press);
-        }
-        if (gIO.Append) gIO.Append(hand, finger);
-        CFRelease(finger);
-    } else {
+    if (!finger) {
         BKAppend(@"! send sem finger");
+        return;
     }
+    gIO.SetInt(finger, kBKFieldDisplayInt, 1);
+    gIO.SetInt(finger, kBKFieldEventMask, mask);
+    if (gIO.SetFloat) {
+        gIO.SetFloat(finger, kBKFieldX, rx);
+        gIO.SetFloat(finger, kBKFieldY, ry);
+        gIO.SetFloat(finger, kBKFieldPressure, press);
+    }
+
+    if (gMode == 1) {
+        if (gUseSender && gIO.SetSender) gIO.SetSender(finger, kBKSenderID);
+        BKPush(finger);
+        CFRelease(finger);
+        if (gDump) BKAppend([NSString stringWithFormat:@"D ph=%d x=%.3f y=%.3f m=%x so=%d",
+                             phase, rx, ry, mask, gMode]);
+        BKNotifyUserActivity();
+        return;
+    }
+
+    uint32_t ttype = (gMode == 2) ? kBKTransducerFinger : kBKTransducerHand;
+    uint32_t opts = (gMode == 3) ? kBKOptAbsolute : 0;
+
+    BKIOHIDEventRef hand = gIO.CreateDigitizer(kCFAllocatorDefault, ab,
+        ttype, 0, 0, mask, 0, rx, ry, 0.0, press, 0.0,
+        (uint8_t)touching, (uint8_t)touching, opts);
+    if (!hand) {
+        BKAppend(@"! send sem hand");
+        CFRelease(finger);
+        return;
+    }
+
+    gIO.SetInt(hand, kBKFieldDisplayInt, 1);
+    if (gUseBuiltIn) gIO.SetInt(hand, kBKFieldIsBuiltIn, 1);
+
+    if (gIO.Append) gIO.Append(hand, finger);
+    CFRelease(finger);
 
     if (gUseSender && gIO.SetSender) gIO.SetSender(hand, kBKSenderID);
-
-    CFRetain(hand);
-    if (gBackend == 3) {
-        dispatch_async(gSendQ, ^{
-            @try { BKEnqueueHID(hand); } @catch (NSException *e) { }
-            CFRelease(hand);
-        });
-    } else {
-        if (!gSendClient) {
-            gSendClient = BKNewSend(gBackend + 1);
-            if (!gSendClient && gListenClient) {
-                gSendClient = gListenClient;
-                BKAppend(@"I send=listen");
-            }
-        }
-        dispatch_async(gSendQ, ^{
-            @try {
-                if (gSendClient) gIO.Dispatch(gSendClient, hand);
-            } @catch (NSException *e) { }
-            CFRelease(hand);
-        });
-    }
+    BKPush(hand);
+    CFRelease(hand);
 
     BKNotifyUserActivity();
     if (gDump) {
-        BKAppend([NSString stringWithFormat:@"D ph=%d o=%d x=%.3f y=%.3f m=%x v=%d", phase,
-                  BKCurrentOrient(), rx, ry, mask, gBackend]);
+        BKAppend([NSString stringWithFormat:@"D ph=%d o=%d x=%.3f y=%.3f m=%x t=%x so=%d", phase,
+                  BKCurrentOrient(), rx, ry, mask, ttype, gMode]);
     }
 
     } @catch (NSException *e) {
@@ -850,7 +877,7 @@ static void BKTestCenter(void)
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, d), dispatch_get_main_queue(), ^{
             double px = 0.5, py = 0.5;
             if (gRotate) BKConvInv(0.5, 0.5, BKCurrentOrient(), &px, &py);
-            BKAppend([NSString stringWithFormat:@"T %d pn=%.3f,%.3f v=%d", i, px, py, gBackend]);
+            BKAppend([NSString stringWithFormat:@"T %d pn=%.3f,%.3f v=%d so=%d", i, px, py, gBackend, gMode]);
             BKTap(kBKIdxCursor + 9, px, py);
         });
     }

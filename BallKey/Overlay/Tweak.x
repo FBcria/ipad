@@ -213,6 +213,12 @@ static BOOL BKGetDump(void)
     return n ? [n boolValue] : NO;
 }
 
+static int BKGetBackend(void)
+{
+    NSNumber *n = BKReadCfg()[@"Backend"];
+    return n ? [n intValue] : 0;
+}
+
 static NSString *BKStatusText(void)
 {
     NSString *s = [NSString stringWithContentsOfFile:kBKStatusPath
@@ -641,6 +647,15 @@ static double BKGetSens(void)
     return n ? [n doubleValue] : 1.0;
 }
 
+static void BKCycleBackend(void)
+{
+    NSMutableDictionary *cfg = BKReadCfg();
+    int b = (BKGetBackend() + 1) % 4;
+    cfg[@"Backend"] = @(b);
+    BKWriteCfg(cfg);
+    BKLog(@"via=%d", b);
+}
+
 static void BKToggleMenu(void)
 {
     if (gMenuWindow && !gMenuWindow.hidden) {
@@ -658,7 +673,7 @@ static void BKToggleMenu(void)
     UIView *root = gMenuWindow.rootViewController.view;
     [[root viewWithTag:77] removeFromSuperview];
 
-    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 250, 486)];
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 250, 532)];
     box.tag = 77;
     box.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.95];
     box.layer.cornerRadius = 14;
@@ -677,6 +692,7 @@ static void BKToggleMenu(void)
                         @"Sensi FPS  (+)",
                         gEnabled ? @"Desativar" : @"Ativar",
                         @"Testar centro",
+                        [NSString stringWithFormat:@"Via: %d", BKGetBackend()],
                         dump ? @"Dump: LIGADO" : @"Dump: desligado",
                         @"Reler config",
                         @"Fechar"];
@@ -686,7 +702,8 @@ static void BKToggleMenu(void)
         [b setTitle:titles[i] forState:UIControlStateNormal];
         UIColor *col = [UIColor whiteColor];
         if (i == 3 && gEnabled) col = [UIColor systemGreenColor];
-        if (i == 5 && dump) col = [UIColor systemOrangeColor];
+        if (i == 5) col = [UIColor systemCyanColor];
+        if (i == 6 && dump) col = [UIColor systemOrangeColor];
         [b setTitleColor:col forState:UIControlStateNormal];
         b.backgroundColor = [UIColor colorWithWhite:0.22 alpha:1];
         b.layer.cornerRadius = 8;
@@ -758,17 +775,19 @@ static void BKToggleMenu(void)
         });
         return;
     }
-    if (i == 7) {
+    if (i == 8) {
         gMenuWindow.hidden = YES;
         return;
     }
     if (i == 5) {
+        BKCycleBackend();
+    } else if (i == 6) {
         NSMutableDictionary *cfg = BKReadCfg();
         BOOL on = ![cfg[@"Dump"] boolValue];
         cfg[@"Dump"] = @(on);
         BKWriteCfg(cfg);
         BKLog(@"dump=%d", (int)on);
-    } else if (i == 6) {
+    } else if (i == 7) {
         BKPost("com.wjf.ballkey.reload");
     } else if (i == 1) {
         BKSetSens(BKGetSens() - 0.05);

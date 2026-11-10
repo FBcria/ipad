@@ -146,6 +146,7 @@ static UIWindow *BKMakeWindow(CGFloat level, BOOL pass)
     return w;
 }
 
+static int BKFrontMostOrientation(void) __attribute__((unused));
 static int BKFrontMostOrientation(void)
 {
     Class sbCls = objc_getClass("SpringBoard");

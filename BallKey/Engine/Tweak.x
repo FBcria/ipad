@@ -431,10 +431,10 @@ static void BKPost(double x, double y, int phase, int slot)
     if (!gIO.Dispatch) return;
     if (slot < 1) slot = 1;
     if (slot > kBKMaxFinger) slot = kBKMaxFinger;
-    uint32_t parent = (uint32_t)(kBKParentBase + slot);
+    uint32_t pIdx = (uint32_t)(kBKParentBase + slot);
     @try {
     BKIOHIDEventRef parent = gIO.CreateDigitizer(kCFAllocatorDefault, mach_absolute_time(),
-        kBKTransducerHand, parent, parent, 0, 0,
+        kBKTransducerHand, pIdx, pIdx, 0, 0,
         0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0);
     if (!parent) { BKAppend(@"! sem parent"); return; }
 

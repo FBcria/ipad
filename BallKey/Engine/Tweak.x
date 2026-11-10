@@ -12,6 +12,7 @@ typedef struct __IOHIDEventSystemClient *BKIOHIDEventSystemClientRef;
 
 typedef struct {
     BKIOHIDEventSystemClientRef (*ClientCreate)(CFAllocatorRef);
+    BKIOHIDEventSystemClientRef (*ClientCreateWithType)(CFAllocatorRef, int, void *);
     void (*RegisterCB)(BKIOHIDEventSystemClientRef, void *, void *, void *);
     void (*SetQueue)(BKIOHIDEventSystemClientRef, dispatch_queue_t);
     void (*Activate)(BKIOHIDEventSystemClientRef);
@@ -127,17 +128,18 @@ static double gDirSens = 1.0;
 
 static double gCx = 0.5, gCy = 0.5;
 static uint16_t gPrevMask = 0;
+static int gBtn2Seen = 0;
 static int gPendingDir = 0;
 static int gHandledUsage = -1;
 static int gLastOrient = 3;
 static int gEvSeen = 0;
+static int gEvDump = 0;
 static int gLastExtra = -1;
 static uint64_t gLastExtraNs = 0;
 
 static double gLastPtrX = 0, gLastPtrY = 0;
 static int gLastPtrValid = 0;
 
-static void BKSendLast(NSNumber *idx);
 static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef ev);
 
 #pragma mark - Tempo
@@ -184,6 +186,18 @@ static void BKStatus(void)
     [s writeToFile:kBKStatusPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
+// Despeja os campos crus de um evento de mouse
+static void BKDumpEv(int type, BKIOHIDEventRef ev)
+{
+    if (!gDump || gEvDump > 200) return;
+    gEvDump++;
+    int f0 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 0));
+    int f1 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 1));
+    int f2 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 2));
+    int f3 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 3));
+    BKAppend([NSString stringWithFormat:@"E t=%d f=%d,%d,%d,%d", type, f0, f1, f2, f3]);
+}
+
 #pragma mark - IOKit dinâmico
 
 static BOOL BKLoadIOKit(void)
@@ -198,6 +212,7 @@ static BOOL BKLoadIOKit(void)
     }
 
     gIO.ClientCreate = dlsym(gIOKit, "IOHIDEventSystemClientCreate");
+    gIO.ClientCreateWithType = dlsym(gIOKit, "IOHIDEventSystemClientCreateWithType");
     gIO.RegisterCB = dlsym(gIOKit, "IOHIDEventSystemClientRegisterEventCallback");
     gIO.SetQueue = dlsym(gIOKit, "IOHIDEventSystemClientSetDispatchQueue");
     gIO.Activate = dlsym(gIOKit, "IOHIDEventSystemClientActivate");
@@ -224,10 +239,12 @@ static BOOL BKLoadIOKit(void)
     return YES;
 }
 
-// Listener: registra ANTES de fila e ativação
+// Listener: registra ANTES de fila e ativação. Tipo monitor para receber mouse.
 static BKIOHIDEventSystemClientRef BKNewListen(void)
 {
-    BKIOHIDEventSystemClientRef c = gIO.ClientCreate(kCFAllocatorDefault);
+    BKIOHIDEventSystemClientRef c = NULL;
+    if (gIO.ClientCreateWithType) c = gIO.ClientCreateWithType(kCFAllocatorDefault, 1, NULL);
+    if (!c) c = gIO.ClientCreate(kCFAllocatorDefault);
     if (!c) return NULL;
     if (gIO.RegisterCB) gIO.RegisterCB(c, BKListenCB, NULL, NULL);
     if (gIO.SetQueue) gIO.SetQueue(c, dispatch_get_main_queue());
@@ -243,13 +260,26 @@ static int BKFrontMostOrientation(void)
     if (!sbCls) return 0;
     id sb = ((id (*)(id, SEL))objc_msgSend)(sbCls, @selector(sharedApplication));
     if (!sb) return 0;
-    SEL sel = @selector(_accessibilityFrontMostApplication);
-    if (![sb respondsToSelector:sel]) return 0;
-    id app = ((id (*)(id, SEL))objc_msgSend)(sb, sel);
+
+    SEL s1 = @selector(_frontMostAppOrientation);
+    if ([sb respondsToSelector:s1]) {
+        int o = (int)((int (*)(id, SEL))objc_msgSend)(sb, s1);
+        if (o >= 1 && o <= 4) return o;
+    }
+
+    id app = nil;
+    SEL sa = @selector(_accessibilityFrontMostApplication);
+    SEL sb2 = @selector(_frontMostApplication);
+    if ([sb respondsToSelector:sa]) app = ((id (*)(id, SEL))objc_msgSend)(sb, sa);
+    if (!app && [sb respondsToSelector:sb2]) app = ((id (*)(id, SEL))objc_msgSend)(sb, sb2);
     if (!app) return 0;
+
     SEL s2 = @selector(_frontMostAppOrientation);
-    if (![app respondsToSelector:s2]) return 0;
-    return (int)((int (*)(id, SEL))objc_msgSend)(app, s2);
+    if ([app respondsToSelector:s2]) {
+        int o = (int)((int (*)(id, SEL))objc_msgSend)(app, s2);
+        if (o >= 1 && o <= 4) return o;
+    }
+    return 0;
 }
 
 static int BKDeviceOrientation(void)
@@ -261,14 +291,16 @@ static int BKDeviceOrientation(void)
     return (int)((int (*)(id, SEL))objc_msgSend)(d, @selector(orientation));
 }
 
+// Último valor válido tem precedência sobre o device (que volta 0 deitado no chão)
 static int BKCurrentOrient(void)
 {
     if (gOrientOverride) return gOrientOverride;
     int o = BKFrontMostOrientation();
     if (o) { gLastOrient = o; return o; }
+    if (gLastOrient >= 1 && gLastOrient <= 4) return gLastOrient;
     int d = BKDeviceOrientation();
     if (d >= 1 && d <= 4) { gLastOrient = d; return d; }
-    return gLastOrient ? gLastOrient : 1;
+    return 3;
 }
 
 static double BKClamp(double v)
@@ -770,6 +802,26 @@ static void BKHandleMask(uint16_t cur)
     gPrevMask = cur;
 }
 
+// Borda de botão individual (número + estado), independente de campo de máscara
+static void BKButtonEdge(int num, BOOL down)
+{
+    if (num < 0 || num > 2) return;
+    uint16_t bit = (uint16_t)(1 << num);
+    BOOL was = (gPrevMask & bit) != 0;
+    if (was == down) return;
+    if (down) gPrevMask |= bit; else gPrevMask &= ~bit;
+    BKAppend([NSString stringWithFormat:@"B m:%d d=%d", num, (int)down]);
+    if (gEnabled && gPoints.count) BKHandleButton(num, down);
+}
+
+// Máscara vinda de evento não autoritativo: só vale se não houver eventos tipo 2
+static void BKApplyMaskSafe(int m, BOOL auth)
+{
+    if (m < 0 || m > 7) return;
+    if (!auth && gBtn2Seen) return;
+    BKHandleMask((uint16_t)m);
+}
+
 #pragma mark - Testes
 
 static const double kBKProbe[10][2] = {
@@ -870,16 +922,14 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         gLastPtrX = x;
         gLastPtrY = y;
         gLastPtrValid = 1;
+        BKDumpEv(type, ev);
         if (gDump) BKAppend([NSString stringWithFormat:@"M11 x=%.4f y=%.4f dx=%.2f dy=%.2f m=%x",
                              x, y, dx, dy, m]);
         if (dx != 0.0 || dy != 0.0) {
             BKCursorMove(dx, dy);
             BKFpsMove(dx, dy);
         }
-        if (m != 0 || gPrevMask != 0) {
-            if (gEnabled && gPoints.count) BKHandleMask((uint16_t)m);
-            else gPrevMask = (uint16_t)m;
-        }
+        BKApplyMaskSafe(m, NO);
     } else if (type == kBKTypeMove) {
         double dx = gIO.GetFloat(ev, (kBKTypeMove << 16 | 0u));
         double dy = gIO.GetFloat(ev, (kBKTypeMove << 16 | 1u));
@@ -887,32 +937,36 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
             dx = gIO.GetFloat(ev, (kBKTypeTranslation << 16 | 0u));
             dy = gIO.GetFloat(ev, (kBKTypeTranslation << 16 | 1u));
         }
+        BKDumpEv(type, ev);
         if (gDump) BKAppend([NSString stringWithFormat:@"M12 dx=%.3f dy=%.3f", dx, dy]);
         if (dx != 0.0 || dy != 0.0) {
             BKCursorMove(dx, dy);
             BKFpsMove(dx, dy);
         }
+    } else if (type == kBKTypeButton) {
+        int num = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 0u));
+        int st = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 1u));
+        gBtn2Seen = 1;
+        BKDumpEv(type, ev);
+        if (gDump) BKAppend([NSString stringWithFormat:@"N2 n=%d s=%d", num, st]);
+        BKButtonEdge(num, st != 0);
     } else if (type == kBKTypeBtn) {
         int m = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 0u));
-        if (m == 0) m = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 1u));
-        if (m == 0) m = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 2u));
-        if (m == 0) m = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 3u));
-        if (m == 0) m = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 0u));
-        if (gDump) BKAppend([NSString stringWithFormat:@"N32 m=%x", m]);
-        if (m != 0 || gPrevMask != 0) {
-            if (gEnabled && gPoints.count) BKHandleMask((uint16_t)m);
-            else gPrevMask = (uint16_t)m;
-        }
+        int m2 = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 1u));
+        BKDumpEv(type, ev);
+        if (gDump) BKAppend([NSString stringWithFormat:@"N32 m=%x m2=%x", m, m2]);
+        if (m >= 0 && m <= 7 && !gBtn2Seen) BKHandleMask((uint16_t)m);
+        else if (m > 7) BKButtonEdge(m, m2 != 0);
     } else if (type == kBKTypePointer) {
         double dx = gIO.GetFloat(ev, (17u << 16 | 0u));
         double dy = gIO.GetFloat(ev, (17u << 16 | 1u));
         int bmask = (int)gIO.GetInt(ev, (17u << 16 | 3u));
+        BKDumpEv(type, ev);
         if (dx != 0 || dy != 0) {
             BKCursorMove(dx, dy);
             BKFpsMove(dx, dy);
         }
-        if (gEnabled && gPoints.count) BKHandleMask((uint16_t)bmask);
-        else gPrevMask = (uint16_t)bmask;
+        BKApplyMaskSafe(bmask, NO);
     }
     } @catch (NSException *e) {
         BKAppend([NSString stringWithFormat:@"! cb %@", e.reason]);

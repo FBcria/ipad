@@ -54,6 +54,13 @@ static NSMutableDictionary *BKReadCfg(void);
 static BKMarkerView *gPending = nil;
 static NSTimer *gCapTimer = nil;
 
+static double BKClamp01(double v)
+{
+    if (v < 0.02) return 0.02;
+    if (v > 0.98) return 0.98;
+    return v;
+}
+
 static void BKMark(NSString *name)
 {
     [name writeToFile:[@"/var/mobile/bk_" stringByAppendingString:name]
@@ -220,6 +227,8 @@ static void BKPlaceMarker(BKMarkerView *m)
     if (!gCanvas || !m) return;
     CGSize sz = gCanvas.bounds.size;
     if (sz.width < 1.0 || sz.height < 1.0) return;
+    m.nx = BKClamp01(m.nx);
+    m.ny = BKClamp01(m.ny);
     CGFloat side = 56;
     m.frame = CGRectMake(m.nx * sz.width - side / 2, m.ny * sz.height - side / 2, side, side);
 }
@@ -413,8 +422,8 @@ static BKMarkerView *BKMakeMarker(NSString *type, double nx, double ny, NSString
     m.layer.borderWidth = 2;
     m.type = type;
     m.keyEnc = enc;
-    m.nx = nx;
-    m.ny = ny;
+    m.nx = BKClamp01(nx);
+    m.ny = BKClamp01(ny);
     m.radius = 0.09;
 
     UILabel *l = [[UILabel alloc] initWithFrame:m.bounds];
@@ -508,7 +517,6 @@ static void BKSaveEditor(void)
         } else {
             d[@"Key"] = m.keyEnc ?: @"";
             if ([m.type isEqualToString:@"Hold"]) d[@"HoldMs"] = @(400);
-            // um Pressionar de m:0 / m:1 define onde o modo FPS atira e mira
             if ([m.keyEnc isEqualToString:@"m:0"]) {
                 cfg[@"FireX"] = d[@"X"];
                 cfg[@"FireY"] = d[@"Y"];

@@ -65,6 +65,10 @@ typedef struct {
 
 #define kBKTypeKeyExtra         15
 #define kBKTypePointer          17
+#define kBKTypeMove             12
+#define kBKTypeBtn              32
+#define kBKTypeTranslation      4
+#define kBKTypeButton           2
 #define kBKPtrX                 (17u << 16 | 0u)
 #define kBKPtrY                 (17u << 16 | 1u)
 #define kBKPtrMask              (17u << 16 | 3u)
@@ -383,7 +387,6 @@ static BKIOHIDEventRef BKChild(double x, double y, int phase)
     return child;
 }
 
-// Monta e despacha UM evento de toque com a fase pedida
 static void BKPost(double x, double y, int phase)
 {
     if (!gIO.Dispatch) return;
@@ -845,6 +848,25 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         if (gEnabled && gPoints.count && usage >= 4 && usage <= 231) {
             BKHandleKey(usage, dir > 0);
         }
+    } else if (type == kBKTypeMove) {
+        double dx = gIO.GetFloat(ev, (kBKTypeMove << 16 | 0u));
+        double dy = gIO.GetFloat(ev, (kBKTypeMove << 16 | 1u));
+        if (dx == 0.0 && dy == 0.0) {
+            dx = gIO.GetFloat(ev, (kBKTypeTranslation << 16 | 0u));
+            dy = gIO.GetFloat(ev, (kBKTypeTranslation << 16 | 1u));
+        }
+        if (gDump) BKAppend([NSString stringWithFormat:@"M dx=%.3f dy=%.3f", dx, dy]);
+        if (dx != 0.0 || dy != 0.0) {
+            BKCursorMove(dx, dy);
+            BKFpsMove(dx, dy);
+        }
+    } else if (type == kBKTypeBtn) {
+        int m = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 3u));
+        if (m == 0) m = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 0u));
+        if (m == 0) m = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 0u));
+        if (gDump) BKAppend([NSString stringWithFormat:@"N m=%x", m]);
+        if (gEnabled && gPoints.count) BKHandleMask((uint16_t)m);
+        else gPrevMask = (uint16_t)m;
     } else if (type == kBKTypePointer) {
         double dx = gIO.GetFloat(ev, kBKPtrX);
         double dy = gIO.GetFloat(ev, kBKPtrY);

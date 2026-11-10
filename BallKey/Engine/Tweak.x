@@ -78,6 +78,8 @@ typedef struct {
 #define kBKPtrScale             3000.0
 #define kBKMoveFactor           0.0014
 #define kBKDefaultFpsKey        224
+#define kBKCtrlLeft             224
+#define kBKCtrlRight            225
 #define kBKRecenter             0.38
 
 #define kIOHIDEventTypeKeyboard                3
@@ -124,6 +126,7 @@ static BOOL gFireSet = NO;
 static BOOL gAdsSet = NO;
 static double gAimX = 0.5, gAimY = 0.5;
 static BOOL gAdsDown = NO;
+static int gFpsRepor = 0;
 
 static BOOL gDirActive = NO;
 static double gDirCX = 0, gDirCY = 0;
@@ -654,6 +657,20 @@ static void BKHandleDir(NSDictionary *pt, int dir, BOOL down)
 
 #pragma mark - Modo 360
 
+// garante que o dedo da mira existe, mesmo se algo o soltou
+static void BKFpsEnsure(void)
+{
+    if (!gFps) return;
+    if ([gDown[@(kBKIdxAim)] boolValue]) return;
+    double px = gAimX, py = gAimY;
+    if (gRotate) BKConvInv(gAimX, gAimY, BKCurrentOrient(), &px, &py);
+    BKDown(kBKIdxAim, px, py);
+    if (gFpsRepor < 40) {
+        gFpsRepor++;
+        BKAppend(@"F repor");
+    }
+}
+
 static void BKFpsMove(double dx, double dy)
 {
     if (!gFps || (dx == 0 && dy == 0)) return;
@@ -686,16 +703,6 @@ static void BKFpsMove(double dx, double dy)
     }
 }
 
-// garante que o dedo da mira existe, mesmo se algo o soltou
-static void BKFpsEnsure(void)
-{
-    if (!gFps) return;
-    if ([gDown[@(kBKIdxAim)] boolValue]) return;
-    double px = gAimX, py = gAimY;
-    if (gRotate) BKConvInv(gAimX, gAimY, BKCurrentOrient(), &px, &py);
-    BKDown(kBKIdxAim, px, py);
-}
-
 static void BKFpsToggle(void)
 {
     if (gFps) {
@@ -712,6 +719,7 @@ static void BKFpsToggle(void)
 
     gFps = YES;
     gFpsMoveLog = 0;
+    gFpsRepor = 0;
     gAimX = gFpsX;
     gAimY = gFpsY;
     double px = gFpsX, py = gFpsY;
@@ -855,6 +863,7 @@ static void BKHandleButton(int b, BOOL down)
         BKAppend([NSString stringWithFormat:@"B %@ hit=1", key]);
         return;
     }
+    BKAppend([NSString stringWithFormat:@"B %@ hit=0", key]);
 }
 
 static void BKHandleMask(uint16_t cur)
@@ -894,6 +903,7 @@ static void BKSourceEdge(uint64_t sender, int type, int num, BOOL down)
     int cur = (int)[gMaskSrc[key] intValue];
     int bit = 1 << num;
     if (down) cur |= bit; else cur &= ~bit;
+    BKAppend([NSString stringWithFormat:@"B m:%d d=%d", num, (int)down]);
     BKSourceMask(sender, type, cur);
 }
 
@@ -924,14 +934,16 @@ static BOOL BKTryCapture(int type, BKIOHIDEventRef ev)
         if ((page == 0 || page == 7) && down && usage >= 4 && usage <= 231) {
             enc = [NSString stringWithFormat:@"k:%d", usage];
         }
-    } else if (type == kBKTypeButton || type == kBKTypeBtn) {
+    } else if (type == kBKTypeButton || type == kBKTypeBtn || type == kBKTypePointer) {
+        // qualquer campo não nulo conta como aperto; o número sai do campo 0
         int f0 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 0u));
         int f1 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 1u));
         int f2 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 2u));
+        int f3 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 3u));
         int num = (f0 >= 0 && f0 <= 2) ? f0 : 0;
-        if (f1 || f2) {
+        if (f0 || f1 || f2 || f3) {
             enc = [NSString stringWithFormat:@"m:%d", num];
-            BKAppend([NSString stringWithFormat:@"@ raw t=%d f=%d,%d,%d", type, f0, f1, f2]);
+            BKAppend([NSString stringWithFormat:@"@ raw t=%d f=%d,%d,%d,%d", type, f0, f1, f2, f3]);
         }
     } else if (type == kBKTypeDigitizer) {
         int mask = (int)gIO.GetInt(ev, kBKFieldBtnMask);
@@ -1016,8 +1028,12 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         if (gDump) BKAppend([NSString stringWithFormat:@"K %d pg=%d d=%d", usage, page, down]);
         if ((page == 0 || page == 7) && usage >= 4 && usage <= 231) {
             gHandledUsage = usage;
-            if (usage == gFpsKey) {
-                if (down) BKFpsToggle();
+            // os dois códigos de Ctrl valem como trava
+            if (usage == gFpsKey || usage == kBKCtrlLeft || usage == kBKCtrlRight) {
+                if (down) {
+                    BKAppend([NSString stringWithFormat:@"F tecla %d", usage]);
+                    BKFpsToggle();
+                }
                 return;
             }
             if (gEnabled && gPoints.count) BKHandleKey(usage, down != 0);
@@ -1078,15 +1094,13 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
     } else if (type == kBKTypeButton) {
         int num = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 0u));
         int st = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 1u));
-        if (st == 0) st = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 2u));
         BKDumpEv(type, ev);
         if (gDump) BKAppend([NSString stringWithFormat:@"N2 n=%d s=%d", num, st]);
         BKSourceEdge(sender, type, num, st != 0);
     } else if (type == kBKTypeBtn) {
-        // campo 0 = botão, campo 1 = estado, campo 2 = contagem de cliques
+        // campo 0 = botão, campo 1 = estado
         int num = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 0u));
         int st = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 1u));
-        if (st == 0) st = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 2u));
         BKDumpEv(type, ev);
         if (gDump) BKAppend([NSString stringWithFormat:@"N32 n=%d s=%d", num, st]);
         BKSourceEdge(sender, type, num, st != 0);
@@ -1146,6 +1160,15 @@ static void BKEngineInit(void)
         (void)t;
         @try {
             BKCaptureWatch();
+        } @catch (NSException *e) {
+        }
+    }];
+
+    // vigia: mantém o dedo da mira vivo enquanto a trava estiver ligada
+    [NSTimer scheduledTimerWithTimeInterval:0.15 repeats:YES block:^(NSTimer *t) {
+        (void)t;
+        @try {
+            BKFpsEnsure();
         } @catch (NSException *e) {
         }
     }];

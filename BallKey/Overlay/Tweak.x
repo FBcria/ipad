@@ -312,13 +312,9 @@ static void BKStopCapture(void)
     [[NSFileManager defaultManager] removeItemAtPath:kBKCaptureResPath error:nil];
 }
 
-static void BKStartCapture(BKMarkerView *m)
+static void BKArmCapture(BKMarkerView *m)
 {
-    if (!m) return;
-    [gCapTimer invalidate];
-    gCapTimer = nil;
-    gPending = m;
-    if (gBanner) gBanner.hidden = NO;
+    if (!m || gPending != m) return;
 
     NSString *nonce = BKNewNonce();
     [[NSFileManager defaultManager] removeItemAtPath:kBKCaptureResPath error:nil];
@@ -364,6 +360,23 @@ static void BKStartCapture(BKMarkerView *m)
             BKLog(@"cap erro: %@", e.reason);
         }
     }];
+}
+
+// A escuta só começa depois que o clique que armou já terminou, senão esse
+// próprio clique entra como m:0 e o marcador fica com o botão errado.
+static void BKStartCapture(BKMarkerView *m)
+{
+    if (!m) return;
+    [gCapTimer invalidate];
+    gCapTimer = nil;
+    gPending = m;
+    if (gBanner) gBanner.hidden = NO;
+
+    __block BKMarkerView *alvo = m;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(450 * NSEC_PER_MSEC)),
+                   dispatch_get_main_queue(), ^{
+        BKArmCapture(alvo);
+    });
 }
 
 #pragma mark - Marcador
@@ -444,7 +457,7 @@ static BKMarkerView *BKMakeMarker(NSString *type, double nx, double ny, NSString
     l.textColor = UIColor.whiteColor;
     l.numberOfLines = 2;
     l.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    l.text = [NSString stringWithFormat:@"%@\n%@", BKTypeName(type), enc ?: @"?"];
+    l.text = [NSString stringWithFormat:@"%@\n%@", BKTypeName(type), enc ?: @"…"];
     [m addSubview:l];
     m.label = l;
 

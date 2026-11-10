@@ -34,6 +34,8 @@ typedef struct {
 #define kBKConfigPath           @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 #define kBKStatusPath           @"/var/mobile/bk_status.txt"
 #define kBKLogPath              @"/var/mobile/bk_debug.log"
+#define kBKCaptureReqPath       @"/var/mobile/bk_capture.txt"
+#define kBKCaptureResPath       @"/var/mobile/bk_capture_result.txt"
 #define kBKNotifyReload         "com.wjf.ballkey.reload"
 #define kBKNotifyTest           "com.wjf.ballkey.test"
 #define kBKNotifyProbe          "com.wjf.ballkey.probe"
@@ -137,6 +139,9 @@ static int gEvDump = 0;
 static int gLastExtra = -1;
 static uint64_t gLastExtraNs = 0;
 
+static BOOL gCaptureArmed = NO;
+static uint64_t gCaptureArmNs = 0;
+
 static double gLastPtrX = 0, gLastPtrY = 0;
 static int gLastPtrValid = 0;
 
@@ -186,7 +191,6 @@ static void BKStatus(void)
     [s writeToFile:kBKStatusPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
-// Despeja os campos crus de um evento de mouse
 static void BKDumpEv(int type, BKIOHIDEventRef ev)
 {
     if (!gDump || gEvDump > 200) return;
@@ -291,7 +295,6 @@ static int BKDeviceOrientation(void)
     return (int)((int (*)(id, SEL))objc_msgSend)(d, @selector(orientation));
 }
 
-// Último valor válido tem precedência sobre o device (que volta 0 deitado no chão)
 static int BKCurrentOrient(void)
 {
     if (gOrientOverride) return gOrientOverride;
@@ -802,7 +805,6 @@ static void BKHandleMask(uint16_t cur)
     gPrevMask = cur;
 }
 
-// Borda de botão individual (número + estado), independente de campo de máscara
 static void BKButtonEdge(int num, BOOL down)
 {
     if (num < 0 || num > 2) return;
@@ -814,12 +816,59 @@ static void BKButtonEdge(int num, BOOL down)
     if (gEnabled && gPoints.count) BKHandleButton(num, down);
 }
 
-// Máscara vinda de evento não autoritativo: só vale se não houver eventos tipo 2
 static void BKApplyMaskSafe(int m, BOOL auth)
 {
     if (m < 0 || m > 7) return;
     if (!auth && gBtn2Seen) return;
     BKHandleMask((uint16_t)m);
+}
+
+#pragma mark - Captura
+
+static void BKCaptureWatch(void)
+{
+    NSString *req = [NSString stringWithContentsOfFile:kBKCaptureReqPath
+                                              encoding:NSUTF8StringEncoding error:nil];
+    if (!req.length || gCaptureArmed) return;
+    [[NSFileManager defaultManager] removeItemAtPath:kBKCaptureReqPath error:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:kBKCaptureResPath error:nil];
+    gCaptureArmed = YES;
+    gCaptureArmNs = BKNowNs();
+    BKAppend(@"@ arm");
+}
+
+// Retorna YES se consumiu o evento para a captura
+static BOOL BKTryCapture(int type, BKIOHIDEventRef ev)
+{
+    if (!gCaptureArmed) return NO;
+    if (BKNowNs() < gCaptureArmNs + 200000000ull) return NO;
+
+    NSString *enc = nil;
+    if (type == kIOHIDEventTypeKeyboard) {
+        int page = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardUsagePage);
+        int usage = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardUsage);
+        int down = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardDown);
+        if ((page == 0 || page == 7) && down && usage >= 4 && usage <= 231) {
+            enc = [NSString stringWithFormat:@"k:%d", usage];
+        }
+    } else if (type == kBKTypeButton) {
+        int num = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 0u));
+        int st = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 1u));
+        if (num < 0 || num > 2) num = 0;
+        if (st) enc = [NSString stringWithFormat:@"m:%d", num];
+    } else if (type == kBKTypeBtn || type == kBKTypePointer) {
+        int mask = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 3));
+        if (mask == 0) mask = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 0));
+        if (mask & 1) enc = @"m:0";
+        else if (mask & 2) enc = @"m:1";
+        else if (mask & 4) enc = @"m:2";
+    }
+
+    if (!enc) return NO;
+    [enc writeToFile:kBKCaptureResPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    gCaptureArmed = NO;
+    BKAppend([NSString stringWithFormat:@"@ cap %@", enc]);
+    return YES;
 }
 
 #pragma mark - Testes
@@ -877,6 +926,8 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         gEvSeen++;
         BKAppend([NSString stringWithFormat:@"E t=%d", type]);
     }
+
+    if (BKTryCapture(type, ev)) return;
 
     if (type == kIOHIDEventTypeKeyboard) {
         int page = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardUsagePage);
@@ -1017,6 +1068,14 @@ static void BKEngineInit(void)
         BKProbe();
     });
     BKAppend(@"I notify=1");
+
+    [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *t) {
+        (void)t;
+        @try {
+            BKCaptureWatch();
+        } @catch (NSException *e) {
+        }
+    }];
 
     BKLoadConfig();
 

@@ -403,7 +403,7 @@ static void BKNotifyUserActivity(void)
     if ([timer respondsToSelector:s1]) {
         ((void (*)(id, SEL))objc_msgSend)(timer, s1);
     } else if ([timer respondsToSelector:s2]) {
-        ((void (*)(id, SEL))objc_msgSend)(timer, s2, nil);
+        ((void (*)(id, SEL, id))objc_msgSend)(timer, s2, nil);
     }
 }
 

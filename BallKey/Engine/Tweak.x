@@ -92,7 +92,7 @@ typedef struct {
 #define kBKMoveDead             0.4
 #define kBKMoveDedupNs          4000000ull
 #define kBKEdge                 0.05
-#define kBKRecenter             0.30
+#define kBKRecenter             0.34
 #define kBKPtrScale             3000.0
 
 // tempos
@@ -330,13 +330,16 @@ static double BKClamp(double v)
     return v;
 }
 
+// Paisagem esquerda e paisagem direita são 180° uma da outra: a segunda inverte
+// os dois eixos. Estavam trocadas, e por isso mira, teclas e captura saíam
+// espelhados.
 static void BKConvInv(double vx, double vy, int orient, double *ox, double *oy)
 {
     double rx = vx, ry = vy;
     switch (orient) {
         case 2: rx = 1.0 - vx; ry = 1.0 - vy; break;
-        case 3: rx = 1.0 - vy; ry = vx;       break;
-        case 4: rx = vy;       ry = 1.0 - vx; break;
+        case 3: rx = vy;       ry = 1.0 - vx; break;
+        case 4: rx = 1.0 - vy; ry = vx;       break;
         default: break;
     }
     *ox = BKClamp(rx);
@@ -348,8 +351,8 @@ static void BKConv(double rx, double ry, int orient, double *ox, double *oy)
     double vx = rx, vy = ry;
     switch (orient) {
         case 2: vx = 1.0 - rx; vy = 1.0 - ry; break;
-        case 3: vx = ry;       vy = 1.0 - rx; break;
-        case 4: vx = 1.0 - ry; vy = rx;       break;
+        case 3: vx = 1.0 - ry; vy = rx;       break;
+        case 4: vx = ry;       vy = 1.0 - rx; break;
         default: break;
     }
     *ox = BKClamp(vx);
@@ -372,10 +375,11 @@ static void BKLoadConfig(void)
     BOOL enabled = [cfg[@"Enabled"] boolValue];
     NSString *active = cfg[@"ActiveBundle"];
     NSArray *pts = nil;
+    BOOL hasProfile = NO;
     NSDictionary *profiles = cfg[@"Profiles"];
     if ([profiles isKindOfClass:[NSDictionary class]] && [active isKindOfClass:[NSString class]]) {
         id p = profiles[active];
-        if ([p isKindOfClass:[NSArray class]]) pts = p;
+        if ([p isKindOfClass:[NSArray class]]) { pts = p; hasProfile = YES; }
     }
 
     if ([cfg[@"Rotate"] isKindOfClass:[NSNumber class]]) gRotate = [cfg[@"Rotate"] boolValue];
@@ -394,7 +398,8 @@ static void BKLoadConfig(void)
     int fk = BKUsageFromKey(cfg[@"FpsKey"]);
     gFpsKey = fk > 0 ? fk : kBKDefaultFpsKey;
 
-    if (pts.count > 0) {
+    // perfil vazio é perfil vazio: não volta a lista antiga depois de "Limpar tudo"
+    if (hasProfile) {
         gPoints = pts;
         gActiveBundle = active;
     } else if (gPoints.count == 0) {
@@ -651,6 +656,9 @@ static void BKHandleDir(NSDictionary *pt, int dir, BOOL down)
     if (!gDirActive) return;
     gDirHeld[dir] = NO;
     for (int i = 0; i < 4; i++) {
+        if (gDirHeld[i]) {
+            double tx = (gDirPX[i]
+for (int i = 0; i < 4; i++) {
         if (gDirHeld[i]) {
             double tx = (gDirPX[i] - gDirCX) * gDirSens + gDirCX;
             double ty = (gDirPY[i] - gDirCY) * gDirSens + gDirCY;

@@ -645,6 +645,44 @@ static void BKOpenEditor(void)
     BKLayoutEditor();
 }
 
+#pragma mark - Limpeza
+
+static void BKLimpar(BOOL tudo)
+{
+    NSMutableDictionary *cfg = BKReadCfg();
+    NSString *bundle = gFrontBundle ?: cfg[@"ActiveBundle"];
+    if (![bundle isKindOfClass:[NSString class]] || !bundle.length) {
+        BKLog(@"limpar: bundle ausente");
+        return;
+    }
+
+    NSMutableDictionary *profiles = [cfg[@"Profiles"] isKindOfClass:[NSDictionary class]]
+        ? [cfg[@"Profiles"] mutableCopy] : [NSMutableDictionary dictionary];
+
+    NSArray *pts = profiles[bundle];
+    if (![pts isKindOfClass:[NSArray class]]) {
+        BKLog(@"limpar: perfil vazio");
+        return;
+    }
+
+    if (tudo) {
+        profiles[bundle] = @[];
+        BKLog(@"limpar: tudo");
+    } else {
+        NSMutableArray *keep = [NSMutableArray array];
+        NSUInteger n = 0;
+        for (NSDictionary *d in pts) {
+            if ([d[@"Type"] isEqualToString:@"Dir"]) { n++; continue; }
+            [keep addObject:d];
+        }
+        profiles[bundle] = keep;
+        BKLog(@"limpar: %lu direcao, sobrou %lu", (unsigned long)n, (unsigned long)keep.count);
+    }
+
+    cfg[@"Profiles"] = profiles;
+    BKWriteCfg(cfg);
+}
+
 #pragma mark - Menu
 
 static void BKSetEnabled(BOOL on)
@@ -688,7 +726,7 @@ static void BKToggleMenu(void)
     UIView *root = gMenuWindow.rootViewController.view;
     [[root viewWithTag:77] removeFromSuperview];
 
-    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 250, 404)];
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 250, 484)];
     box.tag = 77;
     box.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.95];
     box.layer.cornerRadius = 14;
@@ -709,6 +747,8 @@ static void BKToggleMenu(void)
                         @"Testar centro",
                         dump ? @"Dump: LIGADO" : @"Dump: desligado",
                         @"Reler config",
+                        @"Limpar direção",
+                        @"Limpar tudo",
                         @"Fechar"];
     for (NSUInteger i = 0; i < titles.count; i++) {
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -717,6 +757,7 @@ static void BKToggleMenu(void)
         UIColor *col = [UIColor whiteColor];
         if (i == 3 && gEnabled) col = [UIColor systemGreenColor];
         if (i == 5 && dump) col = [UIColor systemOrangeColor];
+        if (i == 7 || i == 8) col = [UIColor systemPinkColor];
         [b setTitleColor:col forState:UIControlStateNormal];
         b.backgroundColor = [UIColor colorWithWhite:0.22 alpha:1];
         b.layer.cornerRadius = 8;
@@ -792,7 +833,7 @@ static void BKToggleMenu(void)
         });
         return;
     }
-    if (i == 7) {
+    if (i == 9) {
         gMenuWindow.hidden = YES;
         return;
     }
@@ -810,6 +851,10 @@ static void BKToggleMenu(void)
         BKSetSens(BKGetSens() + 0.05);
     } else if (i == 3) {
         BKSetEnabled(!gEnabled);
+    } else if (i == 7) {
+        BKLimpar(NO);
+    } else if (i == 8) {
+        BKLimpar(YES);
     }
     dispatch_async(dispatch_get_main_queue(), ^{
         BKToggleMenu();

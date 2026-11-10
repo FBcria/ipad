@@ -120,6 +120,8 @@ static int gFpsKey = kBKDefaultFpsKey;
 static double gFpsX = 0.5, gFpsY = 0.5;
 static double gFireX = 0.83, gFireY = 0.66;
 static double gAdsX = 0.95, gAdsY = 0.53;
+static BOOL gFireSet = NO;
+static BOOL gAdsSet = NO;
 static double gAimX = 0.5, gAimY = 0.5;
 static BOOL gAdsDown = NO;
 
@@ -359,10 +361,10 @@ static void BKLoadConfig(void)
     if ([cfg[@"FpsSens"] isKindOfClass:[NSNumber class]]) gFpsSens = [cfg[@"FpsSens"] doubleValue];
     if ([cfg[@"FpsX"] isKindOfClass:[NSNumber class]]) gFpsX = [cfg[@"FpsX"] doubleValue];
     if ([cfg[@"FpsY"] isKindOfClass:[NSNumber class]]) gFpsY = [cfg[@"FpsY"] doubleValue];
-    if ([cfg[@"FireX"] isKindOfClass:[NSNumber class]]) gFireX = [cfg[@"FireX"] doubleValue];
-    if ([cfg[@"FireY"] isKindOfClass:[NSNumber class]]) gFireY = [cfg[@"FireY"] doubleValue];
-    if ([cfg[@"AdsX"] isKindOfClass:[NSNumber class]]) gAdsX = [cfg[@"AdsX"] doubleValue];
-    if ([cfg[@"AdsY"] isKindOfClass:[NSNumber class]]) gAdsY = [cfg[@"AdsY"] doubleValue];
+    if ([cfg[@"FireX"] isKindOfClass:[NSNumber class]]) { gFireX = [cfg[@"FireX"] doubleValue]; gFireSet = YES; }
+    if ([cfg[@"FireY"] isKindOfClass:[NSNumber class]]) { gFireY = [cfg[@"FireY"] doubleValue]; gFireSet = YES; }
+    if ([cfg[@"AdsX"] isKindOfClass:[NSNumber class]]) { gAdsX = [cfg[@"AdsX"] doubleValue]; gAdsSet = YES; }
+    if ([cfg[@"AdsY"] isKindOfClass:[NSNumber class]]) { gAdsY = [cfg[@"AdsY"] doubleValue]; gAdsSet = YES; }
 
     int fk = BKUsageFromKey(cfg[@"FpsKey"]);
     gFpsKey = fk > 0 ? fk : kBKDefaultFpsKey;
@@ -386,8 +388,9 @@ static void BKLoadConfig(void)
     if (!gEnabled) BKReleaseAll();
 
     BKStatus();
-    BKAppend([NSString stringWithFormat:@"C en=%d b=%@ n=%lu key=%d",
-              (int)gEnabled, gActiveBundle ?: @"-", (unsigned long)gPoints.count, gFpsKey]);
+    BKAppend([NSString stringWithFormat:@"C en=%d b=%@ n=%lu key=%d fogo=%d mirar=%d",
+              (int)gEnabled, gActiveBundle ?: @"-", (unsigned long)gPoints.count, gFpsKey,
+              (int)gFireSet, (int)gAdsSet]);
 }
 
 #pragma mark - Toque
@@ -588,7 +591,6 @@ static void BKPar(NSDictionary *pt, NSString *k, double *ox, double *oy)
     *oy = ny;
 }
 
-// Marcador com coordenada fora de 0..1 é considerado inválido
 static BOOL BKPontoValido(NSDictionary *pt)
 {
     double nx = [pt[@"X"] doubleValue];
@@ -689,24 +691,37 @@ static void BKFpsToggle(void)
     double px = gFpsX, py = gFpsY;
     if (gRotate) BKConvInv(gFpsX, gFpsY, BKCurrentOrient(), &px, &py);
     BKDown(kBKIdxAim, px, py);
-    BKAppend(@"F on");
+    BKAppend([NSString stringWithFormat:@"F on ponto=%.3f,%.3f fogo=%.3f,%.3f(%d) mirar=%.3f,%.3f(%d)",
+              gFpsX, gFpsY, gFireX, gFireY, (int)gFireSet, gAdsX, gAdsY, (int)gAdsSet]);
     BKStatus();
 }
 
 static void BKFpsFire(void)
 {
-    double px = gFireX, py = gFireY;
-    if (gRotate) BKConvInv(gFireX, gFireY, BKCurrentOrient(), &px, &py);
+    double fx = gFireX, fy = gFireY;
+    if (!gFireSet) {
+        fx = BKClamp(gFpsX + 0.12);
+        fy = BKClamp(gFpsY + 0.30);
+    }
+    double px = fx, py = fy;
+    if (gRotate) BKConvInv(fx, fy, BKCurrentOrient(), &px, &py);
+    BKAppend([NSString stringWithFormat:@"F fire %.3f,%.3f", fx, fy]);
     BKTap(kBKIdxCursor + 1, px, py);
 }
 
 static void BKFpsAds(BOOL down)
 {
-    double px = gAdsX, py = gAdsY;
-    if (gRotate) BKConvInv(gAdsX, gAdsY, BKCurrentOrient(), &px, &py);
+    double ax = gAdsX, ay = gAdsY;
+    if (!gAdsSet) {
+        ax = BKClamp(gFpsX - 0.12);
+        ay = BKClamp(gFpsY + 0.30);
+    }
+    double px = ax, py = ay;
+    if (gRotate) BKConvInv(ax, ay, BKCurrentOrient(), &px, &py);
     if (down) {
         if (gAdsDown) return;
         gAdsDown = YES;
+        BKAppend([NSString stringWithFormat:@"F mirar %.3f,%.3f", ax, ay]);
         BKDown(kBKIdxAds, px, py);
     } else {
         if (!gAdsDown) return;
@@ -1016,23 +1031,24 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
             gLastPtrX = x;
             gLastPtrY = y;
             gLastPtrValid = 1;
-            if (dx != 0.0 || dy != 0.0) {
-                BKCursorMove(dx, dy);
-                BKFpsMove(dx, dy);
-            }
+            // no FPS o ponteiro absoluto congela com o botão pressionado: o
+            // movimento vem do tipo 12, aqui só o cursor livre é atendido
+            if (!gFps && (dx != 0.0 || dy != 0.0)) BKCursorMove(dx, dy);
         }
 
         BKDumpEv(type, ev);
         if (gDump) BKAppend([NSString stringWithFormat:@"M11 x=%.4f y=%.4f m=%x", x, y, m]);
         if (m >= 0 && m <= 7) BKSourceMask(sender, type, m);
     } else if (type == kBKTypeMove) {
-        // tipo 12 repete valor mesmo com o ponteiro parado: só registra
-        BKDumpEv(type, ev);
-        if (gDump) {
-            BKAppend([NSString stringWithFormat:@"M12 dx=%.3f dy=%.3f",
-                      gIO.GetFloat(ev, (kBKTypeMove << 16 | 0u)),
-                      gIO.GetFloat(ev, (kBKTypeMove << 16 | 1u))]);
+        double dx = gIO.GetFloat(ev, (kBKTypeMove << 16 | 0u));
+        double dy = gIO.GetFloat(ev, (kBKTypeMove << 16 | 1u));
+        if (dx == 0.0 && dy == 0.0) {
+            dx = gIO.GetFloat(ev, (kBKTypeTranslation << 16 | 0u));
+            dy = gIO.GetFloat(ev, (kBKTypeTranslation << 16 | 1u));
         }
+        BKDumpEv(type, ev);
+        if (gDump) BKAppend([NSString stringWithFormat:@"M12 dx=%.3f dy=%.3f", dx, dy]);
+        if (gFps && (dx != 0.0 || dy != 0.0)) BKFpsMove(dx, dy);
     } else if (type == kBKTypeButton) {
         int num = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 0u));
         int st = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 1u));

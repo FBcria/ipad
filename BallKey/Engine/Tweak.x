@@ -41,14 +41,12 @@ typedef struct {
 #define kBKNotifyTest           "com.wjf.ballkey.test"
 #define kBKNotifyProbe          "com.wjf.ballkey.probe"
 #define kBKNotifyClose          "com.wjf.ballkey.close"
-
 #define kBKTransducerHand       0x23
 #define kBKSenderID             0x8000000817319372ull
 #define kBKParentBase           100
 #define kBKChildIdentity        3
 #define kBKChildIndex           1
 #define kBKMaxFinger            10
-
 #define kBKFieldHandMask        (11u << 16 | 7u)
 #define kBKFieldRange           (11u << 16 | 8u)
 #define kBKFieldTouch           (11u << 16 | 9u)
@@ -59,29 +57,24 @@ typedef struct {
 #define kBKFieldMinorR          0xb0015u
 #define kBKFieldDisplayInt      0xb0019u
 #define kBKFieldIsBuiltIn       0x4u
-
 #define kBKPhaseBegan           1
 #define kBKPhaseMoved           2
 #define kBKPhaseEnded           3
 #define kBKPhaseDelayUs         8000
-
 #define kBKFlagRange            0x01u
 #define kBKFlagTouch            0x02u
 #define kBKFlagPosition         0x04u
-
 #define kBKTypeKeyExtra         15
 #define kBKTypePointer          17
 #define kBKTypeDigitizer        11
 #define kBKTypeMove             12
 #define kBKTypeBtn              32
 #define kBKTypeButton           2
-
 #define kBKDefaultFpsKey        224
 #define kBKCtrlRight            228
 #define kBKPageBtn              12
 #define kBKUsageBtnBase         64
 #define kBKMaxBtn               3
-
 #define kBKMoveFactor           0.0015
 #define kBKMoveDead             0.4
 #define kBKMoveDedupNs          4000000ull
@@ -89,20 +82,17 @@ typedef struct {
 #define kBKEdge                 0.05
 #define kBKRecenter             0.34
 #define kBKPtrScale             3000.0
-
 #define kBKKey3GraceNs          80000000ull
 #define kBKTravaGuardNs         250000000ull
 #define kBKBtnWatchNs           1500000000ull
 #define kBKBtnLockNs            100000000ull
 #define kBKNumGraceNs           250000000ull
-#define kBKCapIgnoreNs          150000000ull
-
+#define kBKCapIgnoreNs          80000000ull
 #define kIOHIDEventTypeKeyboard                3
 #define kIOHIDEventFieldKeyboardUsagePage      (3u << 16 | 0u)
 #define kIOHIDEventFieldKeyboardUsage          (3u << 16 | 1u)
 #define kIOHIDEventFieldKeyboardDown           (3u << 16 | 2u)
 #define kIOHIDEventFieldKeyboardRepeat         (3u << 16 | 3u)
-
 #define kBKIdxAim               70
 #define kBKIdxAds               71
 #define kBKIdxDir               72
@@ -330,7 +320,6 @@ static void BKLoadConfig(void)
         id p = profiles[active];
         if ([p isKindOfClass:[NSArray class]]) { pts = p; hasProfile = YES; }
     }
-
     if ([cfg[@"Rotate"] isKindOfClass:[NSNumber class]]) gRotate = [cfg[@"Rotate"] boolValue];
     if ([cfg[@"FollowCursor"] isKindOfClass:[NSNumber class]]) gFollowCursor = [cfg[@"FollowCursor"] boolValue];
     if ([cfg[@"FollowSens"] isKindOfClass:[NSNumber class]]) gFollowSens = [cfg[@"FollowSens"] doubleValue];
@@ -343,14 +332,11 @@ static void BKLoadConfig(void)
     if ([cfg[@"FireY"] isKindOfClass:[NSNumber class]]) { gFireY = [cfg[@"FireY"] doubleValue]; gFireSet = YES; }
     if ([cfg[@"AdsX"] isKindOfClass:[NSNumber class]]) { gAdsX = [cfg[@"AdsX"] doubleValue]; gAdsSet = YES; }
     if ([cfg[@"AdsY"] isKindOfClass:[NSNumber class]]) { gAdsY = [cfg[@"AdsY"] doubleValue]; gAdsSet = YES; }
-
     int fk = BKUsageFromKey(cfg[@"FpsKey"]);
     gFpsKey = fk > 0 ? fk : kBKDefaultFpsKey;
-
     // perfil vazio é perfil vazio: não volta a lista antiga depois de "Limpar tudo"
     if (hasProfile) { gPoints = pts; gActiveBundle = active; }
     else if (gPoints.count == 0) { gActiveBundle = active; gPoints = pts; }
-
     gEnabled = enabled && gPoints.count > 0;
     gFps = NO;
     gFogoDown = NO;
@@ -363,9 +349,7 @@ static void BKLoadConfig(void)
     gFpsToggleNs = 0;
     gAimX = gFpsX;
     gAimY = gFpsY;
-
     if (!gEnabled) BKReleaseAll();
-
     BKStatus();
     BKAppend([NSString stringWithFormat:@"C en=%d b=%@ n=%lu key=%d fogo=%d mirar=%d",
               (int)gEnabled, gActiveBundle ?: @"-", (unsigned long)gPoints.count, gFpsKey,
@@ -416,7 +400,6 @@ static BKIOHIDEventRef BKChild(double x, double y, int phase)
     BOOL range = YES, touch = YES;
     if (phase == kBKPhaseMoved) mask = kBKFlagPosition;
     else if (phase == kBKPhaseEnded) { mask = kBKFlagTouch; range = NO; touch = NO; }
-
     BKIOHIDEventRef child = gIO.CreateFinger(kCFAllocatorDefault, mach_absolute_time(),
         kBKChildIndex, kBKChildIdentity, mask, x, y, 0.0, 0.0, 0.0,
         (uint8_t)range, (uint8_t)touch, 0);
@@ -438,26 +421,21 @@ static void BKPost(double x, double y, int phase, int slot)
         kBKTransducerHand, pIdx, pIdx, 0, 0,
         0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0);
     if (!parent) { BKAppend(@"! sem parent"); return; }
-
     gIO.SetInt(parent, kBKFieldDisplayInt, 1);
     gIO.SetInt(parent, kBKFieldIsBuiltIn, 1);
-
     BKIOHIDEventRef child = BKChild(x, y, phase);
     if (child) { gIO.Append(parent, child, 0); CFRelease(child); }
     else { BKAppend(@"! sem child"); }
-
     gIO.SetInt(parent, kBKFieldHandMask, 0x23);
     gIO.SetInt(parent, kBKFieldRange, 1);
     gIO.SetInt(parent, kBKFieldTouch, 1);
     gIO.SetSender(parent, kBKSenderID);
-
     CFRetain(parent);
     dispatch_async(gSendQ, ^{
         @try { if (gSendClient) gIO.Dispatch(gSendClient, parent); }
         @catch (NSException *e) { }
         CFRelease(parent);
     });
-
     BKNotifyUserActivity();
     BKAppend([NSString stringWithFormat:@"D ph=%d o=%d x=%.3f y=%.3f s=%d", phase,
               BKCurrentOrient(), x, y, slot]);
@@ -612,19 +590,15 @@ static void BKFpsMove(double dx, double dy)
 {
     if (!gFps || (dx == 0 && dy == 0)) return;
     if (fabs(dx) < kBKMoveDead && fabs(dy) < kBKMoveDead) return;
-
     uint64_t now = BKNowNs();
     if (dx == gLastMdx && dy == gLastMdy && (now - gLastMNs) < kBKMoveDedupNs) return;
     gLastMdx = dx; gLastMdy = dy; gLastMNs = now;
-
     double nx = gAimX + dx * gFpsSens * kBKMoveFactor;
     double ny = gAimY + dy * gFpsSens * kBKMoveFactor;
-
     int o = BKCurrentOrient();
     double px, py;
     if (gRotate) BKConvInv(nx, ny, o, &px, &py);
     else { px = BKClamp(nx); py = BKClamp(ny); }
-
     if (px < kBKEdge || px > 1.0 - kBKEdge || py < kBKEdge || py > 1.0 - kBKEdge) {
         BKUp(kBKIdxAim);
         double rx = px, ry = py;
@@ -641,7 +615,6 @@ static void BKFpsMove(double dx, double dy)
         BKAppend([NSString stringWithFormat:@"F recuo x=%.3f y=%.3f", bx, by]);
         return;
     }
-
     gAimX = nx; gAimY = ny;
     BKMove(kBKIdxAim, px, py);
     if (gFpsMoveLog < 40) {
@@ -817,7 +790,6 @@ static void BKButtonEvent(int num, BOOL down, int src)
     uint64_t now = BKNowNs();
     gLastBtnNum = num;
     gLastBtnNs = now;
-
     if (down) {
         if (gBtnOwner[num]) { gBtnOwnerNs[num] = now; return; }
         gBtnOwner[num] = src ? src : 1;
@@ -860,7 +832,6 @@ static void BKHandleButton(int b, BOOL down)
         if (b == 1) { if (down) BKFpsAdsToggle(); return; }
     }
     if (b == 0 && gFollowCursor && down) { BKCursorTap(); return; }
-
     NSString *key = [NSString stringWithFormat:@"m:%d", b];
     for (NSUInteger i = 0; i < gPoints.count; i++) {
         NSDictionary *pt = gPoints[i];
@@ -913,7 +884,6 @@ static BOOL BKTryCapture(int type, BKIOHIDEventRef ev)
 {
     if (!gCaptureArmed) return NO;
     if (BKNowNs() < gCaptureArmNs + kBKCapIgnoreNs) return NO;
-
     if (type == kIOHIDEventTypeKeyboard) {
         int page = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardUsagePage);
         int usage = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardUsage);
@@ -960,7 +930,6 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
     @try {
     int type = gIO.GetType(ev);
     if (gIO.GetSender && gIO.GetSender(ev) == kBKSenderID) return;
-
     if (gEvSeen < 40) {
         gEvSeen++;
         BKAppend([NSString stringWithFormat:@"E t=%d", type]);
@@ -975,7 +944,6 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         if (repeat) return;
         if (gDump) BKAppend([NSString stringWithFormat:@"K %d pg=%d d=%d", usage, page, down]);
         if (usage <= 0) return;
-
         if (page == kBKPageBtn) {
             if (usage >= kBKUsageBtnBase && usage < kBKUsageBtnBase + kBKMaxBtn) {
                 BKButtonEvent(usage - kBKUsageBtnBase, down != 0, 17);
@@ -1124,13 +1092,10 @@ static void BKEngineInit(void)
     gKeyLast3 = [NSMutableDictionary dictionary];
     gSendQ = dispatch_queue_create("com.wjf.ballkey.send", DISPATCH_QUEUE_SERIAL);
     dispatch_set_target_queue(gSendQ, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0));
-
     BKAppend(@"I init");
     if (!BKLoadIOKit()) return;
-
     gSendClient = gIO.ClientCreate(kCFAllocatorDefault);
     BKAppend(gSendClient ? @"I send=1" : @"I send=0");
-
     @try {
         gListenClient = BKNewListen();
         if (!gListenClient) { BKAppend(@"I client=0"); return; }
@@ -1139,16 +1104,13 @@ static void BKEngineInit(void)
         BKAppend([NSString stringWithFormat:@"! init %@", e.reason]);
         return;
     }
-
     dispatch_queue_t q = dispatch_get_main_queue();
     int t1 = 0, t2 = 0, t3 = 0;
     notify_register_dispatch(kBKNotifyReload, &t1, q, ^(int t) { (void)t; BKLoadConfig(); });
     notify_register_dispatch(kBKNotifyTest, &t2, q, ^(int t) { (void)t; BKTestCenter(); });
     notify_register_dispatch(kBKNotifyProbe, &t3, q, ^(int t) { (void)t; BKProbe(); });
     BKAppend(@"I notify=1");
-
     BKLoadConfig();
-
     dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
     if (src) {
         dispatch_source_set_timer(src, dispatch_time(DISPATCH_TIME_NOW, 100ull * NSEC_PER_MSEC),
@@ -1159,7 +1121,6 @@ static void BKEngineInit(void)
         });
         dispatch_resume(src);
     }
-
     BKAppend(@"I ready");
     BKMark(@"engine_loaded.txt");
 }

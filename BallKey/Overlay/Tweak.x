@@ -19,7 +19,6 @@ static UIView *gBanner = nil;
 static NSMutableArray *gMarkers = nil;
 static NSString *gFrontBundle = nil;
 static BOOL gEnabled = NO;
-static int gOrientOverride = 0;
 static int gCloseTok = 0;
 static CGPoint gBallPos = {0.06, 0.85};
 
@@ -111,16 +110,18 @@ static UIWindowScene *BKMainScene(void)
     return fallback;
 }
 
-// Sempre pela cena: UIScreen.bounds é retrato fixo e quebra tudo em paisagem
+// fixedCoordinateSpace: mesma referência usada pelas coordenadas do toque injetado
 static CGRect BKSpace(void)
 {
+    UIScreen *s = [UIScreen mainScreen];
+    CGRect r = s.fixedCoordinateSpace.bounds;
+    if (r.size.width > 1.0 && r.size.height > 1.0) return r;
     UIWindowScene *sc = BKMainScene();
     if (sc) {
-        CGRect r = sc.coordinateSpace.bounds;
+        r = sc.coordinateSpace.bounds;
         if (r.size.width > 1.0 && r.size.height > 1.0) return r;
     }
-    UIScreen *s = [UIScreen mainScreen];
-    CGRect r = s.coordinateSpace.bounds;
+    r = s.coordinateSpace.bounds;
     if (r.size.width > 1.0 && r.size.height > 1.0) return r;
     return s.bounds;
 }
@@ -211,18 +212,6 @@ static BOOL BKGetDump(void)
 {
     NSNumber *n = BKReadCfg()[@"Dump"];
     return n ? [n boolValue] : NO;
-}
-
-static int BKGetBackend(void)
-{
-    NSNumber *n = BKReadCfg()[@"Backend"];
-    return n ? [n intValue] : 0;
-}
-
-static int BKGetMode(void)
-{
-    NSNumber *n = BKReadCfg()[@"Mode"];
-    return n ? [n intValue] : 0;
 }
 
 static NSString *BKStatusText(void)
@@ -653,24 +642,6 @@ static double BKGetSens(void)
     return n ? [n doubleValue] : 1.0;
 }
 
-static void BKCycleBackend(void)
-{
-    NSMutableDictionary *cfg = BKReadCfg();
-    int b = (BKGetBackend() + 1) % 4;
-    cfg[@"Backend"] = @(b);
-    BKWriteCfg(cfg);
-    BKLog(@"via=%d", b);
-}
-
-static void BKCycleMode(void)
-{
-    NSMutableDictionary *cfg = BKReadCfg();
-    int m = (BKGetMode() + 1) % 4;
-    cfg[@"Mode"] = @(m);
-    BKWriteCfg(cfg);
-    BKLog(@"modo=%d", m);
-}
-
 static void BKToggleMenu(void)
 {
     if (gMenuWindow && !gMenuWindow.hidden) {
@@ -707,24 +678,19 @@ static void BKToggleMenu(void)
                         @"Sensi FPS  (+)",
                         gEnabled ? @"Desativar" : @"Ativar",
                         @"Testar centro",
-                        [NSString stringWithFormat:@"Via: %d", BKGetBackend()],
-                        [NSString stringWithFormat:@"Modo: %d", BKGetMode()],
                         dump ? @"Dump: LIGADO" : @"Dump: desligado",
                         @"Reler config",
                         @"Fechar"];
     for (NSUInteger i = 0; i < titles.count; i++) {
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-        b.frame = CGRectMake(12, 32 + (CGFloat)i * 36, 226, 32);
+        b.frame = CGRectMake(12, 32 + (CGFloat)i * 40, 226, 34);
         [b setTitle:titles[i] forState:UIControlStateNormal];
         UIColor *col = [UIColor whiteColor];
         if (i == 3 && gEnabled) col = [UIColor systemGreenColor];
-        if (i == 5) col = [UIColor systemCyanColor];
-        if (i == 6) col = [UIColor systemTealColor];
-        if (i == 7 && dump) col = [UIColor systemOrangeColor];
+        if (i == 5 && dump) col = [UIColor systemOrangeColor];
         [b setTitleColor:col forState:UIControlStateNormal];
         b.backgroundColor = [UIColor colorWithWhite:0.22 alpha:1];
         b.layer.cornerRadius = 8;
-        b.titleLabel.font = [UIFont systemFontOfSize:13];
         b.tag = 100 + (NSInteger)i;
         [b addTarget:gMenuWindow.rootViewController
               action:@selector(bkMenuTap:)
@@ -787,27 +753,23 @@ static void BKToggleMenu(void)
                        dispatch_get_main_queue(), ^{
             BKPost("com.wjf.ballkey.test");
         });
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2600 * NSEC_PER_MSEC),
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3400 * NSEC_PER_MSEC),
                        dispatch_get_main_queue(), ^{
             if (!gMenuWindow || gMenuWindow.hidden) BKToggleMenu();
         });
         return;
     }
-    if (i == 9) {
+    if (i == 7) {
         gMenuWindow.hidden = YES;
         return;
     }
     if (i == 5) {
-        BKCycleBackend();
-    } else if (i == 6) {
-        BKCycleMode();
-    } else if (i == 7) {
         NSMutableDictionary *cfg = BKReadCfg();
         BOOL on = ![cfg[@"Dump"] boolValue];
         cfg[@"Dump"] = @(on);
         BKWriteCfg(cfg);
         BKLog(@"dump=%d", (int)on);
-    } else if (i == 8) {
+    } else if (i == 6) {
         BKPost("com.wjf.ballkey.reload");
     } else if (i == 1) {
         BKSetSens(BKGetSens() - 0.05);
@@ -902,7 +864,6 @@ static void BKOverlayInit(void)
     NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:kBKConfigPath];
     gEnabled = [cfg[@"Enabled"] boolValue];
     gFrontBundle = cfg[@"ActiveBundle"];
-    gOrientOverride = cfg[@"OrientOverride"] ? [cfg[@"OrientOverride"] intValue] : 0;
     BKMark(@"overlay_loaded.txt");
 
     notify_register_dispatch("com.wjf.ballkey.close", &gCloseTok, dispatch_get_main_queue(), ^(int t) {
@@ -933,6 +894,6 @@ static void BKOverlayInit(void)
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             BKOverlayInit();
-        });
+          });
     }
 }

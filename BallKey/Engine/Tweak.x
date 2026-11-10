@@ -174,6 +174,7 @@ static double gLastPtrX = 0, gLastPtrY = 0;
 static int gLastPtrValid = 0;
 
 static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef ev);
+static void BKHandleButton(int b, BOOL down);
 
 #pragma mark - Identidade por toque
 
@@ -882,8 +883,6 @@ static BOOL BKKeyEdge(int usage, int downHint, BOOL *outDown)
 
     uint64_t last3 = [gKeyLast3[k] unsignedLongLongValue];
     if (last3 && (now - last3) < kBKKey3GraceNs) return NO;
-    uint64_t last = [gKeyLast3[k] unsignedLongLongValue];
-    (void)last;
 
     BOOL cur = [gKeyDown[k] boolValue];
     BOOL nd = !cur;
@@ -1176,7 +1175,6 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
     } else if (type == kBKTypePointer) {
         int f0 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 0u));
         int f1 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 1u));
-        int f2 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 2u));
         int f3 = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 3u));
         BKDumpEv(type, ev);
         if (f3 == 1 || f3 == 2) {

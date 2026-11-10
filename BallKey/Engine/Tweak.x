@@ -76,8 +76,9 @@ typedef struct {
 #define kBKTypeTranslation      4
 #define kBKTypeButton           2
 #define kBKPtrScale             3000.0
-#define kBKMoveFactor           0.000977
+#define kBKMoveFactor           0.0014
 #define kBKDefaultFpsKey        224
+#define kBKRecenter             0.38
 
 #define kIOHIDEventTypeKeyboard                3
 #define kIOHIDEventFieldKeyboardUsagePage      (3u << 16 | 0u)
@@ -402,7 +403,7 @@ static void BKNotifyUserActivity(void)
     if ([timer respondsToSelector:s1]) {
         ((void (*)(id, SEL))objc_msgSend)(timer, s1);
     } else if ([timer respondsToSelector:s2]) {
-        ((void (*)(id, SEL, id))objc_msgSend)(timer, s2, nil);
+        ((void (*)(id, SEL))objc_msgSend)(timer, s2, nil);
     }
 }
 
@@ -562,8 +563,8 @@ static void BKReleaseAll(void)
 
 static void BKPonto(NSDictionary *pt, double *ox, double *oy)
 {
-    double nx = [pt[@"X"] doubleValue];
-    double ny = [pt[@"Y"] doubleValue];
+    double nx = BKClamp([pt[@"X"] doubleValue]);
+    double ny = BKClamp([pt[@"Y"] doubleValue]);
     if (gRotate) BKConvInv(nx, ny, BKCurrentOrient(), &nx, &ny);
     *ox = nx;
     *oy = ny;
@@ -580,9 +581,21 @@ static void BKPar(NSDictionary *pt, NSString *k, double *ox, double *oy)
             ny = [p[1] doubleValue];
         }
     }
+    nx = BKClamp(nx);
+    ny = BKClamp(ny);
     if (gRotate) BKConvInv(nx, ny, BKCurrentOrient(), &nx, &ny);
     *ox = nx;
     *oy = ny;
+}
+
+// Marcador com coordenada fora de 0..1 é considerado inválido
+static BOOL BKPontoValido(NSDictionary *pt)
+{
+    double nx = [pt[@"X"] doubleValue];
+    double ny = [pt[@"Y"] doubleValue];
+    if (nx < 0.0 || nx > 1.0) return NO;
+    if (ny < 0.0 || ny > 1.0) return NO;
+    return YES;
 }
 
 #pragma mark - Analógico
@@ -633,18 +646,24 @@ static void BKHandleDir(NSDictionary *pt, int dir, BOOL down)
 static void BKFpsMove(double dx, double dy)
 {
     if (!gFps || (dx == 0 && dy == 0)) return;
-    gAimX += dx * gFpsSens * kBKMoveFactor;
-    gAimY += dy * gFpsSens * kBKMoveFactor;
 
-    if (fabs(gAimX - gFpsX) > 0.33 || fabs(gAimY - gFpsY) > 0.33) {
+    double nx = gAimX + dx * gFpsSens * kBKMoveFactor;
+    double ny = gAimY + dy * gFpsSens * kBKMoveFactor;
+
+    // saiu da caixa: solta e repressa na mesma coordenada, sem salto para o jogo
+    if (fabs(nx - gFpsX) > kBKRecenter || fabs(ny - gFpsY) > kBKRecenter) {
+        double rx = BKClamp(nx), ry = BKClamp(ny);
         BKUp(kBKIdxAim);
-        double cxp = gFpsX, cyp = gFpsY;
-        if (gRotate) BKConvInv(gFpsX, gFpsY, BKCurrentOrient(), &cxp, &cyp);
-        BKDown(kBKIdxAim, cxp, cyp);
-        gAimX = BKClamp(gFpsX + dx * gFpsSens * kBKMoveFactor);
-        gAimY = BKClamp(gFpsY + dy * gFpsSens * kBKMoveFactor);
+        gAimX = rx;
+        gAimY = ry;
+        double px = rx, py = ry;
+        if (gRotate) BKConvInv(rx, ry, BKCurrentOrient(), &px, &py);
+        BKDown(kBKIdxAim, px, py);
+        return;
     }
 
+    gAimX = nx;
+    gAimY = ny;
     double px = gAimX, py = gAimY;
     if (gRotate) BKConvInv(gAimX, gAimY, BKCurrentOrient(), &px, &py);
     BKMove(kBKIdxAim, px, py);
@@ -746,6 +765,7 @@ static void BKHandleKey(int usage, BOOL down)
         for (NSUInteger i = 0; i < gPoints.count; i++) {
             NSDictionary *pt = gPoints[i];
             if (![pt[@"Type"] isEqualToString:@"Dir"]) continue;
+            if (!BKPontoValido(pt)) continue;
             BKHandleDir(pt, d, down);
             BKAppend([NSString stringWithFormat:@"B %@ dir=%d d=%d", key, d, (int)down]);
             return;
@@ -809,8 +829,6 @@ static void BKHandleMask(uint16_t cur)
     gPrevMask = cur;
 }
 
-// Máscara por fonte: cada dispositivo/tipo tem seu próprio slot e o resultado é o OR.
-// Assim um fluxo de eventos que não conhece o botão não derruba o estado do outro.
 static void BKSourceMask(uint64_t sender, int type, int mask)
 {
     if (!gMaskSrc) gMaskSrc = [NSMutableDictionary dictionary];
@@ -827,7 +845,6 @@ static void BKSourceMask(uint64_t sender, int type, int mask)
     BKHandleMask(all);
 }
 
-// Evento com número de botão + estado: aplica só o bit daquele botão
 static void BKSourceEdge(uint64_t sender, int type, int num, BOOL down)
 {
     if (num < 0 || num > 2) num = 0;
@@ -871,9 +888,13 @@ static BOOL BKTryCapture(int type, BKIOHIDEventRef ev)
         int st = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 1u));
         if (num < 0 || num > 2) num = 0;
         if (st) enc = [NSString stringWithFormat:@"m:%d", num];
-    } else if (type == kBKTypeBtn || type == kBKTypeDigitizer) {
-        int mask = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 3));
-        if (mask == 0) mask = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 0));
+    } else if (type == kBKTypeBtn) {
+        int num = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 2u));
+        int st = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 1u));
+        if (num < 0 || num > 2) num = 0;
+        if (st) enc = [NSString stringWithFormat:@"m:%d", num];
+    } else if (type == kBKTypeDigitizer) {
+        int mask = (int)gIO.GetInt(ev, kBKFieldBtnMask);
         if (mask & 1) enc = @"m:0";
         else if (mask & 2) enc = @"m:1";
         else if (mask & 4) enc = @"m:2";
@@ -936,7 +957,6 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
 
     uint64_t sender = gIO.GetSender ? gIO.GetSender(ev) : 0;
 
-    // ignora o que nós mesmos injetamos
     if (sender == kBKSenderID) return;
 
     if (gEvSeen < 40) {
@@ -982,34 +1002,36 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         double x = gIO.GetFloat(ev, kBKFieldX);
         double y = gIO.GetFloat(ev, kBKFieldY);
         int m = (int)gIO.GetInt(ev, kBKFieldBtnMask);
-        double dx = 0, dy = 0;
-        if (gLastPtrValid) {
-            dx = (x - gLastPtrX) * kBKPtrScale;
-            dy = (y - gLastPtrY) * kBKPtrScale;
+
+        // 0/0 = ponteiro fora: não gera delta, só reinicia a referência
+        if (x == 0.0 && y == 0.0) {
+            gLastPtrValid = 0;
+        } else {
+            double dx = 0, dy = 0;
+            if (gLastPtrValid) {
+                dx = (x - gLastPtrX) * kBKPtrScale;
+                dy = (y - gLastPtrY) * kBKPtrScale;
+                if (fabs(dx) > 900.0 || fabs(dy) > 900.0) { dx = 0; dy = 0; }
+            }
+            gLastPtrX = x;
+            gLastPtrY = y;
+            gLastPtrValid = 1;
+            if (dx != 0.0 || dy != 0.0) {
+                BKCursorMove(dx, dy);
+                BKFpsMove(dx, dy);
+            }
         }
-        gLastPtrX = x;
-        gLastPtrY = y;
-        gLastPtrValid = 1;
+
         BKDumpEv(type, ev);
-        if (gDump) BKAppend([NSString stringWithFormat:@"M11 x=%.4f y=%.4f dx=%.2f dy=%.2f m=%x",
-                             x, y, dx, dy, m]);
-        if (dx != 0.0 || dy != 0.0) {
-            BKCursorMove(dx, dy);
-            BKFpsMove(dx, dy);
-        }
+        if (gDump) BKAppend([NSString stringWithFormat:@"M11 x=%.4f y=%.4f m=%x", x, y, m]);
         if (m >= 0 && m <= 7) BKSourceMask(sender, type, m);
     } else if (type == kBKTypeMove) {
-        double dx = gIO.GetFloat(ev, (kBKTypeMove << 16 | 0u));
-        double dy = gIO.GetFloat(ev, (kBKTypeMove << 16 | 1u));
-        if (dx == 0.0 && dy == 0.0) {
-            dx = gIO.GetFloat(ev, (kBKTypeTranslation << 16 | 0u));
-            dy = gIO.GetFloat(ev, (kBKTypeTranslation << 16 | 1u));
-        }
+        // tipo 12 repete valor mesmo com o ponteiro parado: só registra
         BKDumpEv(type, ev);
-        if (gDump) BKAppend([NSString stringWithFormat:@"M12 dx=%.3f dy=%.3f", dx, dy]);
-        if (dx != 0.0 || dy != 0.0) {
-            BKCursorMove(dx, dy);
-            BKFpsMove(dx, dy);
+        if (gDump) {
+            BKAppend([NSString stringWithFormat:@"M12 dx=%.3f dy=%.3f",
+                      gIO.GetFloat(ev, (kBKTypeMove << 16 | 0u)),
+                      gIO.GetFloat(ev, (kBKTypeMove << 16 | 1u))]);
         }
     } else if (type == kBKTypeButton) {
         int num = (int)gIO.GetInt(ev, (kBKTypeButton << 16 | 0u));
@@ -1018,12 +1040,12 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         if (gDump) BKAppend([NSString stringWithFormat:@"N2 n=%d s=%d", num, st]);
         BKSourceEdge(sender, type, num, st != 0);
     } else if (type == kBKTypeBtn) {
-        int m = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 0u));
-        int m2 = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 1u));
+        // campo 2 = botão, campo 1 = estado, campo 0 = 0 fixo
+        int num = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 2u));
+        int st = (int)gIO.GetInt(ev, (kBKTypeBtn << 16 | 1u));
         BKDumpEv(type, ev);
-        if (gDump) BKAppend([NSString stringWithFormat:@"N32 m=%x m2=%x", m, m2]);
-        if (m >= 0 && m <= 7) BKSourceMask(sender, type, m);
-        else if (m > 7) BKSourceEdge(sender, type, m, m2 != 0);
+        if (gDump) BKAppend([NSString stringWithFormat:@"N32 n=%d s=%d", num, st]);
+        BKSourceEdge(sender, type, num, st != 0);
     }
     } @catch (NSException *e) {
         BKAppend([NSString stringWithFormat:@"! cb %@", e.reason]);

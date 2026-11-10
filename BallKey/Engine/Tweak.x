@@ -85,6 +85,7 @@ typedef struct {
 #define kBKMoveFactor           0.0015
 #define kBKMoveDead             0.4
 #define kBKMoveDedupNs          4000000ull
+#define kBKJumpMax              200.0
 #define kBKEdge                 0.05
 #define kBKRecenter             0.34
 #define kBKPtrScale             3000.0
@@ -94,7 +95,7 @@ typedef struct {
 #define kBKBtnWatchNs           1500000000ull
 #define kBKBtnLockNs            100000000ull
 #define kBKNumGraceNs           250000000ull
-#define kBKCapIgnoreNs          120000000ull
+#define kBKCapIgnoreNs          150000000ull
 
 #define kIOHIDEventTypeKeyboard                3
 #define kIOHIDEventFieldKeyboardUsagePage      (3u << 16 | 0u)
@@ -156,6 +157,7 @@ static int gLastExtra = -1;
 static uint64_t gLastExtraNs = 0;
 static double gLastPtrX = 0, gLastPtrY = 0;
 static int gLastPtrValid = 0;
+static BOOL gSawPtr = NO;
 static double gLastMdx = 0, gLastMdy = 0;
 static uint64_t gLastMNs = 0;
 static int gFpsMoveLog = 0;
@@ -163,7 +165,6 @@ static int gFpsRepor = 0;
 static int gM11Zero = 0;
 static BOOL gCaptureArmed = NO;
 static uint64_t gCaptureArmNs = 0;
-static int gCapKey = -1;
 static NSString *gCapReq = nil;
 
 static void BKSendLast(NSNumber *idx);
@@ -871,9 +872,10 @@ static void BKHandleButton(int b, BOOL down)
     }
 }
 
-// Protocolo de captura por nonce: a requisição só é consumida uma vez e o
-// resultado carrega o mesmo nonce. Antes o vigia apagava o resultado antes de o
-// overlay ler, e a tecla nunca chegava no marcador.
+// Captura por nonce. O pedido só é consumido uma vez e o resultado carrega o
+// mesmo nonce. A tecla é gravada no instante do "down": antes o motor esperava
+// um evento de digitador com botão solto para gravar, e sem mexer o mouse nada
+// era salvo.
 static void BKCaptureWatch(void)
 {
     NSString *req = [NSString stringWithContentsOfFile:kBKCaptureReqPath
@@ -884,17 +886,14 @@ static void BKCaptureWatch(void)
     gCapReq = req;
     gCaptureArmed = YES;
     gCaptureArmNs = BKNowNs();
-    gCapKey = -1;
     BKAppend([NSString stringWithFormat:@"@ arm %@", req]);
 }
 
-static void BKCaptureSave(int usage, double x, double y)
+static void BKCaptureSave(int usage)
 {
-    double nx = x, ny = y;
-    if (gRotate) BKConv(x, y, BKCurrentOrient(), &nx, &ny);
     NSString *key = usage >= 300 ? [NSString stringWithFormat:@"m:%d", usage - 300]
                                  : [NSString stringWithFormat:@"k:%d", usage];
-    NSString *out = [NSString stringWithFormat:@"%@ %@ %.4f %.4f\n", gCapReq ?: @"-", key, nx, ny];
+    NSString *out = [NSString stringWithFormat:@"%@ %@\n", gCapReq ?: @"-", key];
     NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:kBKCaptureResPath];
     if (!fh) {
         [out writeToFile:kBKCaptureResPath atomically:YES
@@ -906,7 +905,8 @@ static void BKCaptureSave(int usage, double x, double y)
             [fh closeFile];
         } @catch (NSException *e) { }
     }
-    BKAppend([NSString stringWithFormat:@"ov cap ok %@", key]);
+    gCaptureArmed = NO;
+    BKAppend([NSString stringWithFormat:@"@ cap %@", key]);
 }
 
 static BOOL BKTryCapture(int type, BKIOHIDEventRef ev)
@@ -918,39 +918,26 @@ static BOOL BKTryCapture(int type, BKIOHIDEventRef ev)
         int page = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardUsagePage);
         int usage = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardUsage);
         int down = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardDown);
-        if ((page == 0 || page == 7) && down && usage >= 4 && usage <= 231) {
-            gCapKey = usage;
-            BKAppend([NSString stringWithFormat:@"@ cap k:%d", usage]);
-            return YES;
-        }
-        return NO;
+        if (page == kBKPageBtn) return NO;
+        if (!down || usage < 4 || usage > 231) return NO;
+        BKCaptureSave(usage);
+        return YES;
     }
-    if (type == kBKTypeButton || type == kBKTypeBtn || type == kBKTypePointer) {
+    if (type == kBKTypePointer) {
+        int st = (int)gIO.GetInt(ev, (17u << 16 | 3u));
+        if (st != 1) return NO;
+        BKCaptureSave(300);
+        return YES;
+    }
+    if (type == kBKTypeButton || type == kBKTypeBtn) {
         int num = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 0));
         int st = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 1));
-        if (type == kBKTypePointer) {
-            int f3 = (int)gIO.GetInt(ev, (17u << 16 | 3u));
-            st = (f3 == 1);
-            num = 0;
+        if (num <= 0 && gLastBtnNum >= 0 && (BKNowNs() - gLastBtnNs) < kBKNumGraceNs) {
+            num = gLastBtnNum;
         }
         if (num < 0 || num > 2) num = 0;
-        if (st) {
-            gCapKey = 300 + num;
-            BKAppend([NSString stringWithFormat:@"@ cap m:%d", num]);
-            return YES;
-        }
-        return NO;
-    }
-    if (type == kBKTypeDigitizer) {
-        if (gCapKey < 0) return NO;
-        int m = (int)gIO.GetInt(ev, kBKFieldBtnMask);
-        if (m != 0) return NO;
-        double x = gIO.GetFloat(ev, kBKFieldX);
-        double y = gIO.GetFloat(ev, kBKFieldY);
-        if (x <= 0.0 && y <= 0.0) return NO;
-        BKCaptureSave(gCapKey, x, y);
-        gCapKey = -1;
-        gCaptureArmed = NO;
+        if (!st) return NO;
+        BKCaptureSave(300 + num);
         return YES;
     }
     return NO;
@@ -1046,8 +1033,15 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         gLastPtrX = x;
         gLastPtrY = y;
         gLastPtrValid = 1;
-        if (!gFps) {
+        // Com mouse de verdade quem manda no cursor é o evento de ponteiro.
+        // O digitador reemite posição com valor instável e fazia o cursor pular
+        // junto com teclas.
+        if (!gFps && !gSawPtr) {
+            if (fabs(dx) > kBKJumpMax) dx = 0;
+            if (fabs(dy) > kBKJumpMax) dy = 0;
             if (dx != 0.0 || dy != 0.0) BKCursorMove(dx, dy);
+        }
+        if (!gFps) {
             gM11Zero++;
             if (gM11Zero >= 20) {
                 gM11Zero = 0;
@@ -1064,11 +1058,15 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         double dx = gIO.GetFloat(ev, (17u << 16 | 0u));
         double dy = gIO.GetFloat(ev, (17u << 16 | 1u));
         int st = (int)gIO.GetInt(ev, (17u << 16 | 3u));
+        gSawPtr = YES;
         if (gDump) BKAppend([NSString stringWithFormat:@"M17 dx=%d dy=%d s=%d",
                              (int)dx, (int)dy, st]);
         if (st == 1) { BKButtonEvent(0, YES, 17); return; }
         if (st == 2) { BKButtonEvent(0, NO, 17); return; }
-        if (dx != 0 || dy != 0) BKFpsMove(dx, dy);
+        if (dx != 0 || dy != 0) {
+            if (gFps) BKFpsMove(dx, dy);
+            else BKCursorMove(dx, dy);
+        }
     } else if (type == kBKTypeButton || type == kBKTypeBtn) {
         int num = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 0));
         int st = (int)gIO.GetInt(ev, (uint32_t)(type << 16 | 1));

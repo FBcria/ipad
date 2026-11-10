@@ -41,6 +41,7 @@ static uint64_t gCapIgnoreUntil = 0;
 
 static CGRect BKSpace(void);
 static UIWindowScene *BKMainScene(void);
+static void BKLayoutEditor(void);
 
 @interface BKPassWindow : UIWindow
 @end
@@ -57,6 +58,8 @@ static UIWindowScene *BKMainScene(void);
 @interface BKMarkerView : UIView
 @property (nonatomic, copy) NSString *type;
 @property (nonatomic, copy) NSString *keyEnc;
+@property (nonatomic, assign) double nx;
+@property (nonatomic, assign) double ny;
 @property (nonatomic, assign) CGFloat radius;
 @property (nonatomic, strong) UILabel *label;
 @end
@@ -108,6 +111,20 @@ static UIWindowScene *BKMainScene(void)
     return fallback;
 }
 
+// Sempre pela cena: UIScreen.bounds é retrato fixo e quebra tudo em paisagem
+static CGRect BKSpace(void)
+{
+    UIWindowScene *sc = BKMainScene();
+    if (sc) {
+        CGRect r = sc.coordinateSpace.bounds;
+        if (r.size.width > 1.0 && r.size.height > 1.0) return r;
+    }
+    UIScreen *s = [UIScreen mainScreen];
+    CGRect r = s.coordinateSpace.bounds;
+    if (r.size.width > 1.0 && r.size.height > 1.0) return r;
+    return s.bounds;
+}
+
 static UIWindow *BKMakeWindow(CGFloat level, BOOL pass)
 {
     UIWindowScene *scene = BKMainScene();
@@ -144,12 +161,13 @@ static int BKFrontMostOrientation(void)
     return (int)((int (*)(id, SEL))objc_msgSend)(app, s2);
 }
 
-static CGRect BKSpace(void)
+static void BKPlaceMarker(BKMarkerView *m)
 {
-    UIScreen *s = [UIScreen mainScreen];
-    int o = gOrientOverride ? gOrientOverride : BKFrontMostOrientation();
-    if (o == 3 || o == 4) return s.coordinateSpace.bounds;
-    return s.bounds;
+    if (!gCanvas || !m) return;
+    CGSize sz = gCanvas.bounds.size;
+    if (sz.width < 1.0 || sz.height < 1.0) return;
+    CGFloat side = 56;
+    m.frame = CGRectMake(m.nx * sz.width - side / 2, m.ny * sz.height - side / 2, side, side);
 }
 
 static void BKRelayout(void)
@@ -159,11 +177,16 @@ static void BKRelayout(void)
     if (sp.size.width < 1.0 || sp.size.height < 1.0) return;
     gBallWindow.frame = sp;
     if (gMenuWindow) gMenuWindow.frame = sp;
-    if (!gBall) return;
-    CGFloat side = 44.0;
-    gBall.frame = CGRectMake(gBallPos.x * sp.size.width - side / 2,
-                             gBallPos.y * sp.size.height - side / 2, side, side);
-    gBall.layer.cornerRadius = side / 2;
+    if (gBall) {
+        CGFloat side = 44.0;
+        gBall.frame = CGRectMake(gBallPos.x * sp.size.width - side / 2,
+                                 gBallPos.y * sp.size.height - side / 2, side, side);
+        gBall.layer.cornerRadius = side / 2;
+    }
+    if (gEditWindow) {
+        gEditWindow.frame = sp;
+        BKLayoutEditor();
+    }
 }
 
 static void BKPost(const char *name)
@@ -312,12 +335,16 @@ static void BKStartCapture(BKMarkerView *m)
 
 - (void)bkPan:(UIPanGestureRecognizer *)g
 {
-    CGPoint t = [g translationInView:self.superview];
+    if (!gCanvas) return;
+    CGPoint t = [g translationInView:gCanvas];
     CGPoint c = CGPointMake(self.center.x + t.x, self.center.y + t.y);
-    c.x = MAX(20, MIN(self.superview.bounds.size.width - 20, c.x));
-    c.y = MAX(20, MIN(self.superview.bounds.size.height - 20, c.y));
+    CGSize sz = gCanvas.bounds.size;
+    c.x = MAX(20, MIN(sz.width - 20, c.x));
+    c.y = MAX(20, MIN(sz.height - 20, c.y));
     self.center = c;
-    [g setTranslation:CGPointZero inView:self.superview];
+    self.nx = c.x / sz.width;
+    self.ny = c.y / sz.height;
+    [g setTranslation:CGPointZero inView:gCanvas];
 }
 
 - (void)bkTap:(UITapGestureRecognizer *)g
@@ -355,11 +382,10 @@ static UIColor *BKTypeColor(NSString *t)
     return [UIColor systemRedColor];
 }
 
-static BKMarkerView *BKMakeMarker(NSString *type, CGPoint c, NSString *enc)
+static BKMarkerView *BKMakeMarker(NSString *type, double nx, double ny, NSString *enc)
 {
     CGFloat side = 56;
-    BKMarkerView *m = [[BKMarkerView alloc] initWithFrame:
-        CGRectMake(c.x - side / 2, c.y - side / 2, side, side)];
+    BKMarkerView *m = [[BKMarkerView alloc] initWithFrame:CGRectMake(0, 0, side, side)];
     UIColor *col = BKTypeColor(type);
     m.backgroundColor = [col colorWithAlphaComponent:0.45];
     m.layer.cornerRadius = side / 2;
@@ -367,6 +393,8 @@ static BKMarkerView *BKMakeMarker(NSString *type, CGPoint c, NSString *enc)
     m.layer.borderWidth = 2;
     m.type = type;
     m.keyEnc = enc;
+    m.nx = nx;
+    m.ny = ny;
     m.radius = 0.09;
 
     UILabel *l = [[UILabel alloc] initWithFrame:m.bounds];
@@ -387,27 +415,55 @@ static BKMarkerView *BKMakeMarker(NSString *type, CGPoint c, NSString *enc)
 
 #pragma mark - Editor
 
+static void BKLayoutEditor(void)
+{
+    if (!gEditWindow || !gCanvas) return;
+    CGRect b = gEditWindow.bounds;
+    if (b.size.width < 1.0 || b.size.height < 1.0) return;
+
+    gCanvas.frame = b;
+    UIView *root = gEditWindow.rootViewController.view;
+    UIView *bar = [root viewWithTag:88];
+    if (bar) {
+        bar.frame = CGRectMake(0, 0, b.size.width, 92);
+        CGFloat gap = 6;
+        CGFloat x = 8;
+        CGFloat bw = (b.size.width - 16 - gap * 4) / 5.0;
+        if (bw < 40) bw = 40;
+        for (int i = 0; i < 5; i++) {
+            UIView *v = [bar viewWithTag:200 + i];
+            v.frame = CGRectMake(x, 8, bw, 34);
+            x += bw + gap;
+        }
+        UIView *sv = [bar viewWithTag:210];
+        sv.frame = CGRectMake(b.size.width - 158, 50, 70, 34);
+        UIView *ex = [bar viewWithTag:211];
+        ex.frame = CGRectMake(b.size.width - 82, 50, 74, 34);
+    }
+    if (gBanner) {
+        gBanner.frame = CGRectMake(b.size.width / 2 - 155, b.size.height - 54, 310, 34);
+    }
+    for (BKMarkerView *m in gMarkers) BKPlaceMarker(m);
+}
+
 static void BKAddMarker(NSString *type, BOOL capture)
 {
     if (!gCanvas) return;
-    CGPoint c = CGPointMake(gCanvas.bounds.size.width / 2, gCanvas.bounds.size.height / 2);
-    BKMarkerView *m = BKMakeMarker(type, c, nil);
+    BKMarkerView *m = BKMakeMarker(type, 0.5, 0.5, nil);
     [gCanvas addSubview:m];
     [gMarkers addObject:m];
+    BKPlaceMarker(m);
     if (capture) BKStartCapture(m);
 }
 
 static void BKSaveEditor(void)
 {
     NSMutableArray *pts = [NSMutableArray array];
-    CGSize sz = gCanvas.bounds.size;
 
     for (BKMarkerView *m in gMarkers) {
-        double x = m.center.x / sz.width;
-        double y = m.center.y / sz.height;
         NSMutableDictionary *d = [NSMutableDictionary dictionary];
-        d[@"X"] = @(x);
-        d[@"Y"] = @(y);
+        d[@"X"] = @(m.nx);
+        d[@"Y"] = @(m.ny);
         d[@"Type"] = m.type;
         if ([m.type isEqualToString:@"Fps"]) {
             d[@"Key"] = m.keyEnc ?: @"k:224";
@@ -418,11 +474,11 @@ static void BKSaveEditor(void)
             d[@"Key"] = m.keyEnc ?: @"m:0";
             d[@"Radius"] = @(r);
             d[@"Sens"] = @(1.0);
-            d[@"Center"] = [NSString stringWithFormat:@"%.5f,%.5f", x, y];
-            d[@"Up"] = [NSString stringWithFormat:@"%.5f,%.5f", x, y - r];
-            d[@"Down"] = [NSString stringWithFormat:@"%.5f,%.5f", x, y + r];
-            d[@"Left"] = [NSString stringWithFormat:@"%.5f,%.5f", x - r, y];
-            d[@"Right"] = [NSString stringWithFormat:@"%.5f,%.5f", x + r, y];
+            d[@"Center"] = [NSString stringWithFormat:@"%.5f,%.5f", m.nx, m.ny];
+            d[@"Up"] = [NSString stringWithFormat:@"%.5f,%.5f", m.nx, m.ny - r];
+            d[@"Down"] = [NSString stringWithFormat:@"%.5f,%.5f", m.nx, m.ny + r];
+            d[@"Left"] = [NSString stringWithFormat:@"%.5f,%.5f", m.nx - r, m.ny];
+            d[@"Right"] = [NSString stringWithFormat:@"%.5f,%.5f", m.nx + r, m.ny];
         } else {
             d[@"Key"] = m.keyEnc ?: @"";
             if ([m.type isEqualToString:@"Hold"]) d[@"HoldMs"] = @(400);
@@ -484,68 +540,71 @@ static void BKOpenEditor(void)
     gCanvas.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [root addSubview:gCanvas];
 
+    UIView *bar = [[UIView alloc] initWithFrame:CGRectZero];
+    bar.tag = 88;
+    bar.backgroundColor = [UIColor clearColor];
+    [root addSubview:bar];
+
     NSArray *row1 = @[@[@"+ Toque", @"Tap"], @[@"+ Pressionar", @"Press"],
                       @[@"+ Segurar", @"Hold"], @[@"+ Direção", @"Dir"], @[@"+ Trava", @"Fps"]];
-    CGFloat bx = 8;
-    for (NSArray *pair in row1) {
+    for (NSUInteger i = 0; i < row1.count; i++) {
+        NSArray *pair = row1[i];
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-        b.frame = CGRectMake(bx, 8, 76, 34);
         [b setTitle:pair[0] forState:UIControlStateNormal];
         [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
         b.backgroundColor = [BKTypeColor(pair[1]) colorWithAlphaComponent:0.85];
         b.layer.cornerRadius = 8;
         b.titleLabel.font = [UIFont boldSystemFontOfSize:11];
+        b.titleLabel.adjustsFontSizeToFitWidth = YES;
         [b addTarget:gEditWindow.rootViewController
               action:@selector(bkAdd:)
     forControlEvents:UIControlEventTouchUpInside];
-        b.tag = 200 + [row1 indexOfObject:pair];
-        [root addSubview:b];
-        bx += 82;
+        b.tag = 200 + (NSInteger)i;
+        [bar addSubview:b];
     }
 
     UIButton *save = [UIButton buttonWithType:UIButtonTypeSystem];
-    save.frame = CGRectMake(root.bounds.size.width - 158, 8, 70, 34);
     [save setTitle:@"Salvar" forState:UIControlStateNormal];
     [save setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     save.backgroundColor = [UIColor systemGreenColor];
     save.layer.cornerRadius = 8;
+    save.tag = 210;
     [save addTarget:gEditWindow.rootViewController
              action:@selector(bkSave:)
    forControlEvents:UIControlEventTouchUpInside];
-    [root addSubview:save];
+    [bar addSubview:save];
 
     UIButton *sair = [UIButton buttonWithType:UIButtonTypeSystem];
-    sair.frame = CGRectMake(root.bounds.size.width - 82, 8, 74, 34);
     [sair setTitle:@"Sair" forState:UIControlStateNormal];
     [sair setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     sair.backgroundColor = [UIColor systemGrayColor];
     sair.layer.cornerRadius = 8;
+    sair.tag = 211;
     [sair addTarget:gEditWindow.rootViewController
              action:@selector(bkClose:)
    forControlEvents:UIControlEventTouchUpInside];
-    [root addSubview:sair];
+    [bar addSubview:sair];
 
-    gBanner = [[UIView alloc] initWithFrame:CGRectMake(root.bounds.size.width / 2 - 155,
-                                                      root.bounds.size.height - 54, 310, 34)];
+    gBanner = [[UIView alloc] initWithFrame:CGRectZero];
     gBanner.backgroundColor = [UIColor colorWithWhite:0 alpha:0.85];
     gBanner.layer.cornerRadius = 8;
     gBanner.hidden = YES;
-    UILabel *bl = [[UILabel alloc] initWithFrame:gBanner.bounds];
+    UILabel *bl = [[UILabel alloc] initWithFrame:CGRectZero];
+    bl.tag = 1;
     bl.textAlignment = NSTextAlignmentCenter;
     bl.textColor = UIColor.whiteColor;
     bl.font = [UIFont systemFontOfSize:12];
     bl.text = @"Aperte a tecla ou o botão do mouse…";
+    bl.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [gBanner addSubview:bl];
     [root addSubview:gBanner];
 
     NSString *bundle = gFrontBundle ?: BKReadCfg()[@"ActiveBundle"];
     NSArray *pts = BKReadCfg()[@"Profiles"][bundle ?: @""];
-    CGSize sz = gCanvas.bounds.size;
     if ([pts isKindOfClass:[NSArray class]]) {
         for (NSDictionary *d in pts) {
-            CGPoint c = CGPointMake([d[@"X"] doubleValue] * sz.width,
-                                    [d[@"Y"] doubleValue] * sz.height);
-            BKMarkerView *m = BKMakeMarker(d[@"Type"] ?: @"Tap", c, d[@"Key"]);
+            BKMarkerView *m = BKMakeMarker(d[@"Type"] ?: @"Tap",
+                                           [d[@"X"] doubleValue], [d[@"Y"] doubleValue], d[@"Key"]);
             if (d[@"Radius"]) m.radius = [d[@"Radius"] doubleValue];
             [gCanvas addSubview:m];
             [gMarkers addObject:m];
@@ -553,6 +612,7 @@ static void BKOpenEditor(void)
     }
 
     [gEditWindow setHidden:NO];
+    BKLayoutEditor();
 }
 
 #pragma mark - Menu

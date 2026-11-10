@@ -321,7 +321,6 @@ static void BKStartCapture(BKMarkerView *m)
                      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
             }
             if (!r.length) {
-                // rearma se o pedido foi consumido sem resposta
                 if (![[NSFileManager defaultManager] fileExistsAtPath:kBKCaptureReqPath]) {
                     [@"1" writeToFile:kBKCaptureReqPath atomically:YES
                            encoding:NSUTF8StringEncoding error:nil];
@@ -481,6 +480,7 @@ static void BKAddMarker(NSString *type, BOOL capture)
 static void BKSaveEditor(void)
 {
     NSMutableArray *pts = [NSMutableArray array];
+    NSMutableDictionary *cfg = BKReadCfg();
 
     for (BKMarkerView *m in gMarkers) {
         NSMutableDictionary *d = [NSMutableDictionary dictionary];
@@ -489,6 +489,10 @@ static void BKSaveEditor(void)
         d[@"Type"] = m.type;
         if ([m.type isEqualToString:@"Fps"]) {
             d[@"Key"] = m.keyEnc ?: @"k:224";
+            cfg[@"FpsX"] = d[@"X"];
+            cfg[@"FpsY"] = d[@"Y"];
+            cfg[@"FpsKey"] = d[@"Key"];
+            [pts addObject:d];
             continue;
         }
         if ([m.type isEqualToString:@"Dir"]) {
@@ -504,11 +508,18 @@ static void BKSaveEditor(void)
         } else {
             d[@"Key"] = m.keyEnc ?: @"";
             if ([m.type isEqualToString:@"Hold"]) d[@"HoldMs"] = @(400);
+            // um Pressionar de m:0 / m:1 define onde o modo FPS atira e mira
+            if ([m.keyEnc isEqualToString:@"m:0"]) {
+                cfg[@"FireX"] = d[@"X"];
+                cfg[@"FireY"] = d[@"Y"];
+            } else if ([m.keyEnc isEqualToString:@"m:1"]) {
+                cfg[@"AdsX"] = d[@"X"];
+                cfg[@"AdsY"] = d[@"Y"];
+            }
         }
         [pts addObject:d];
     }
 
-    NSMutableDictionary *cfg = BKReadCfg();
     NSString *bundle = gFrontBundle ?: cfg[@"ActiveBundle"];
     if (![bundle isKindOfClass:[NSString class]] || !bundle.length) {
         BKLog(@"save: bundle ausente");
@@ -517,22 +528,11 @@ static void BKSaveEditor(void)
 
     NSMutableDictionary *profiles = [cfg[@"Profiles"] isKindOfClass:[NSDictionary class]]
         ? [cfg[@"Profiles"] mutableCopy] : [NSMutableDictionary dictionary];
-
-    NSMutableArray *keep = [NSMutableArray array];
-    for (NSDictionary *d in pts) {
-        if ([d[@"Type"] isEqualToString:@"Fps"]) {
-            cfg[@"FpsX"] = d[@"X"];
-            cfg[@"FpsY"] = d[@"Y"];
-            cfg[@"FpsKey"] = d[@"Key"];
-        } else {
-            [keep addObject:d];
-        }
-    }
-    profiles[bundle] = keep;
+    profiles[bundle] = pts;
     cfg[@"Profiles"] = profiles;
     cfg[@"ActiveBundle"] = bundle;
     BKWriteCfg(cfg);
-    BKLog(@"save: %lu marcadores em %@", (unsigned long)keep.count, bundle);
+    BKLog(@"save: %lu marcadores em %@", (unsigned long)pts.count, bundle);
 }
 
 static void BKCloseEditor(void)

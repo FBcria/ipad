@@ -219,6 +219,12 @@ static int BKGetBackend(void)
     return n ? [n intValue] : 0;
 }
 
+static int BKGetMode(void)
+{
+    NSNumber *n = BKReadCfg()[@"Mode"];
+    return n ? [n intValue] : 0;
+}
+
 static NSString *BKStatusText(void)
 {
     NSString *s = [NSString stringWithContentsOfFile:kBKStatusPath
@@ -656,6 +662,15 @@ static void BKCycleBackend(void)
     BKLog(@"via=%d", b);
 }
 
+static void BKCycleMode(void)
+{
+    NSMutableDictionary *cfg = BKReadCfg();
+    int m = (BKGetMode() + 1) % 4;
+    cfg[@"Mode"] = @(m);
+    BKWriteCfg(cfg);
+    BKLog(@"modo=%d", m);
+}
+
 static void BKToggleMenu(void)
 {
     if (gMenuWindow && !gMenuWindow.hidden) {
@@ -673,14 +688,14 @@ static void BKToggleMenu(void)
     UIView *root = gMenuWindow.rootViewController.view;
     [[root viewWithTag:77] removeFromSuperview];
 
-    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 250, 532)];
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 250, 404)];
     box.tag = 77;
     box.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.95];
     box.layer.cornerRadius = 14;
     box.center = CGPointMake(gMenuWindow.bounds.size.width / 2,
                              gMenuWindow.bounds.size.height / 2);
 
-    UILabel *st = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, 226, 26)];
+    UILabel *st = [[UILabel alloc] initWithFrame:CGRectMake(12, 4, 226, 22)];
     st.font = [UIFont monospacedSystemFontOfSize:9 weight:UIFontWeightRegular];
     st.textColor = [UIColor systemYellowColor];
     st.text = BKStatusText();
@@ -693,20 +708,23 @@ static void BKToggleMenu(void)
                         gEnabled ? @"Desativar" : @"Ativar",
                         @"Testar centro",
                         [NSString stringWithFormat:@"Via: %d", BKGetBackend()],
+                        [NSString stringWithFormat:@"Modo: %d", BKGetMode()],
                         dump ? @"Dump: LIGADO" : @"Dump: desligado",
                         @"Reler config",
                         @"Fechar"];
     for (NSUInteger i = 0; i < titles.count; i++) {
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-        b.frame = CGRectMake(12, 40 + (CGFloat)i * 46, 226, 40);
+        b.frame = CGRectMake(12, 32 + (CGFloat)i * 36, 226, 32);
         [b setTitle:titles[i] forState:UIControlStateNormal];
         UIColor *col = [UIColor whiteColor];
         if (i == 3 && gEnabled) col = [UIColor systemGreenColor];
         if (i == 5) col = [UIColor systemCyanColor];
-        if (i == 6 && dump) col = [UIColor systemOrangeColor];
+        if (i == 6) col = [UIColor systemTealColor];
+        if (i == 7 && dump) col = [UIColor systemOrangeColor];
         [b setTitleColor:col forState:UIControlStateNormal];
         b.backgroundColor = [UIColor colorWithWhite:0.22 alpha:1];
         b.layer.cornerRadius = 8;
+        b.titleLabel.font = [UIFont systemFontOfSize:13];
         b.tag = 100 + (NSInteger)i;
         [b addTarget:gMenuWindow.rootViewController
               action:@selector(bkMenuTap:)
@@ -775,19 +793,21 @@ static void BKToggleMenu(void)
         });
         return;
     }
-    if (i == 8) {
+    if (i == 9) {
         gMenuWindow.hidden = YES;
         return;
     }
     if (i == 5) {
         BKCycleBackend();
     } else if (i == 6) {
+        BKCycleMode();
+    } else if (i == 7) {
         NSMutableDictionary *cfg = BKReadCfg();
         BOOL on = ![cfg[@"Dump"] boolValue];
         cfg[@"Dump"] = @(on);
         BKWriteCfg(cfg);
         BKLog(@"dump=%d", (int)on);
-    } else if (i == 7) {
+    } else if (i == 8) {
         BKPost("com.wjf.ballkey.reload");
     } else if (i == 1) {
         BKSetSens(BKGetSens() - 0.05);

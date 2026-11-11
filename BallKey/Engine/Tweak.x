@@ -66,6 +66,7 @@ typedef struct {
 #define kBKFlagPosition         0x04u
 #define kBKFlagIdentity         0x20u
 
+#define kBKTypeKeyboard         3
 #define kBKTypeKeyExtra         15
 #define kBKTypePointer          17
 #define kBKTypeDigitizer        11
@@ -82,7 +83,7 @@ typedef struct {
 #define kBKMoveDead             0.35
 #define kBKMoveDedupNs          3000000ull
 #define kBKEdge                 0.06
-#define kBKPressNs              (60ull * NSEC_PER_MSEC)   // Apple usa 50 ms
+#define kBKPressNs              (60ull * NSEC_PER_MSEC)
 #define kBKPtrScale             3000.0
 #define kBKPtrWriteNs           8000000ull
 
@@ -161,6 +162,10 @@ static NSMutableSet *gEnding = nil;
 static int gPending = 0;
 static int gSched = 0;
 
+// declarações antecipadas: BKTap usa BKMove e BKLoadConfig usa BKStatus
+static void BKMove(NSUInteger idx, double nx, double ny);
+static void BKStatus(void);
+
 static uint64_t BKNow(void) { return mach_absolute_time() / 1000000ull; }
 
 static void BKAppend(NSString *s)
@@ -235,11 +240,13 @@ static void BKConvInv(double vx, double vy, int orient, double *ox, double *oy)
     *ox = BKClamp(rx); *oy = BKClamp(ry);
 }
 
+// Dedos 9 e 10 são reservados para a troca atômica da mira.
 static int BKSlotFor(NSUInteger idx)
 {
     NSNumber *n = gSlotOf[@(idx)];
     if (n) return [n intValue];
     for (int s = 1; s <= kBKMaxFinger; s++) {
+        if (s >= kBKMaxFinger - 1) continue;
         if (gAct[s].on || gSlotOwner[s]) continue;
         gSlotOwner[s] = (int)idx + 1;
         gSlotOf[@(idx)] = @(s);
@@ -304,6 +311,7 @@ static void BKFlushNow(void)
         @try { gIO.Dispatch(gSendClient, hand); } @catch (NSException *e) { }
         CFRelease(hand);
     });
+    BKNotifyUserActivity();
     } @catch (NSException *e) { BKAppend(@"! flush"); }
 }
 
@@ -476,10 +484,11 @@ static void BKAimRecenter(int fromSlot, double cx, double cy)
 {
     int toSlot = gAimB ? (kBKMaxFinger - 1) : kBKMaxFinger;
     gAimB = !gAimB;
-    if (fromSlot == toSlot) return;
-    BKSlotUp(fromSlot);
-    gSlotOwner[toSlot] = 0;
-    [gSlotOf removeObjectForKey:@(kBKIdxAim)];
+    if (fromSlot == toSlot) { BKSlotMove(fromSlot, cx, cy); return; }
+    if (fromSlot > 0) {
+        BKSlotUp(fromSlot);
+        gSlotOwner[fromSlot] = 0;   // o flush não pode apagar o mapa novo
+    }
     gAct[toSlot].on = 1;
     gAct[toSlot].x = BKClamp(cx);
     gAct[toSlot].y = BKClamp(cy);
@@ -510,8 +519,7 @@ static void BKFpsMove(double dx, double dy)
     BKSlotMove(gAimSlot, px, py);
 
     if (px < kBKEdge || px > 1.0 - kBKEdge || py < kBKEdge || py > 1.0 - kBKEdge) {
-        double rx = 0.5, ry = 0.5;
-        BKAimRecenter(gAimSlot, rx, ry);
+        BKAimRecenter(gAimSlot, 0.5, 0.5);
         gAimX = 0.5; gAimY = 0.5;
         gAimSlot = [gSlotOf[@(kBKIdxAim)] intValue];
         BKAppendD([NSString stringWithFormat:@"F borda->centro dedo=%d", gAimSlot]);
@@ -522,9 +530,8 @@ static void BKFpsEnsure(void)
 {
     if (!gFps) return;
     if (gAimSlot && gAct[gAimSlot].on) return;
-    double px = 0.5, py = 0.5;
     gAimX = 0.5; gAimY = 0.5;
-    BKDown(kBKIdxAim, px, py);
+    BKDown(kBKIdxAim, 0.5, 0.5);
     gAimSlot = [gSlotOf[@(kBKIdxAim)] intValue];
     BKAppendD(@"F repor");
 }

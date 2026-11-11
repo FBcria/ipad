@@ -247,25 +247,40 @@ static UIWindow *BKMakeWindow(CGFloat level, BOOL pass)
 
 #pragma mark - Cursor
 
+// Converte coordenada nativa (retrato) para o espaco da orientacao atual.
+static void BKNativeToSpace(double nx, double ny, int orient, double *ox, double *oy)
+{
+    double rx = nx, ry = ny;
+    switch (orient) {
+        case 2: rx = 1.0 - nx; ry = 1.0 - ny; break;
+        case 3: rx = 1.0 - ny; ry = nx;       break;
+        case 4: rx = ny;       ry = 1.0 - nx; break;
+        default: break;
+    }
+    if (rx < 0) rx = 0; if (rx > 1) rx = 1;
+    if (ry < 0) ry = 0; if (ry > 1) ry = 1;
+    *ox = rx; *oy = ry;
+}
+
 static void BKPtrPlace(CGPoint pt)
 {
     if (!gCursorView) return;
-    gCursorView.center = pt;
+    gCursorView.layer.position = pt;
 }
 
 static void BKMakeCursor(UIView *v)
 {
     v.backgroundColor = [UIColor clearColor];
     v.userInteractionEnabled = NO;
-    CGFloat w = 22.0, h = 30.0;
+    CGFloat w = 14.0, h = 19.0;
     UIBezierPath *p = [UIBezierPath bezierPath];
-    [p moveToPoint:CGPointMake(0.7, 0.7)];
-    [p addLineToPoint:CGPointMake(0.7, h - 2.0)];
-    [p addLineToPoint:CGPointMake(7.2, h - 7.8)];
-    [p addLineToPoint:CGPointMake(11.6, h - 0.6)];
-    [p addLineToPoint:CGPointMake(14.8, h - 2.4)];
-    [p addLineToPoint:CGPointMake(10.4, h - 9.6)];
-    [p addLineToPoint:CGPointMake(w - 1.4, h - 9.6)];
+    [p moveToPoint:CGPointMake(0.4, 0.4)];
+    [p addLineToPoint:CGPointMake(0.4, 18.0)];
+    [p addLineToPoint:CGPointMake(4.6, 14.2)];
+    [p addLineToPoint:CGPointMake(7.4, 18.8)];
+    [p addLineToPoint:CGPointMake(9.5, 17.7)];
+    [p addLineToPoint:CGPointMake(6.7, 13.0)];
+    [p addLineToPoint:CGPointMake(13.2, 13.0)];
     [p closePath];
 
     CAShapeLayer *l = [CAShapeLayer layer];
@@ -273,13 +288,13 @@ static void BKMakeCursor(UIView *v)
     l.path = p.CGPath;
     l.fillColor = [UIColor whiteColor].CGColor;
     l.strokeColor = [UIColor blackColor].CGColor;
-    l.lineWidth = 1.4;
+    l.lineWidth = 1.0;
     l.lineJoin = kCALineJoinRound;
     l.lineCap = kCALineCapRound;
     l.shadowColor = [UIColor blackColor].CGColor;
     l.shadowOpacity = 0.45;
-    l.shadowRadius = 1.6;
-    l.shadowOffset = CGSizeMake(0.6, 0.9);
+    l.shadowRadius = 1.0;
+    l.shadowOffset = CGSizeMake(0.4, 0.6);
     [v.layer addSublayer:l];
 
     v.layer.anchorPoint = CGPointMake(0.0, 0.0);
@@ -293,10 +308,25 @@ static void BKPtrPoll(void)
                                             encoding:NSUTF8StringEncoding error:nil];
     if (!s.length) return;
     NSArray *a = [s componentsSeparatedByString:@" "];
-    if (a.count < 2) return;
-    double nx = [a[0] doubleValue];
-    double ny = [a[1] doubleValue];
-    if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
+    if (a.count < 3) return;
+
+    NSString *tag = a[0];
+    double nx = 0.0, ny = 0.0;
+
+    if ([tag isEqualToString:@"A"]) {
+        if (a.count < 5) return;
+        double rx = [a[1] doubleValue];
+        double ry = [a[2] doubleValue];
+        double spanX = [a[3] doubleValue];
+        double spanY = [a[4] doubleValue];
+        if (spanX < 1.0 || spanY < 1.0) return;
+        BKNativeToSpace(rx / spanX, ry / spanY, BKReadOrient(), &nx, &ny);
+    } else if ([tag isEqualToString:@"R"]) {
+        BKNativeToSpace([a[1] doubleValue], [a[2] doubleValue], BKReadOrient(), &nx, &ny);
+    } else {
+        return;
+    }
+
     CGSize sz = gCursorWindow.bounds.size;
     if (sz.width < 1.0 || sz.height < 1.0) return;
     BKPtrPlace(CGPointMake(nx * sz.width, ny * sz.height));
@@ -308,7 +338,7 @@ static void BKPtrShow(BOOL on)
         if (!gCursorWindow) {
             gCursorWindow = BKMakeWindow(UIWindowLevelAlert + 999, YES);
             if (!gCursorWindow) return;
-            gCursorView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 22, 30)];
+            gCursorView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 14, 19)];
             BKMakeCursor(gCursorView);
             [gCursorWindow.rootViewController.view addSubview:gCursorView];
             gCursorWindow.hidden = NO;

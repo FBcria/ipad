@@ -34,6 +34,7 @@ static BOOL gFpsNow = NO;
 static CGRect BKSpace(void);
 static UIWindowScene *BKMainScene(void);
 static void BKLayoutEditor(void);
+static void BKMenuLayout(void);
 static NSMutableDictionary *BKReadCfg(void);
 static void BKToggleMenu(void);
 static void BKSetEnabled(BOOL on);
@@ -375,11 +376,11 @@ static NSString *BKTypeName(NSString *t)
 
 static UIColor *BKTypeColor(NSString *t)
 {
-    if ([t isEqualToString:@"Tap"]) return [UIColor systemBlueColor];
-    if ([t isEqualToString:@"Press"]) return [UIColor systemGreenColor];
-    if ([t isEqualToString:@"Hold"]) return [UIColor systemOrangeColor];
-    if ([t isEqualToString:@"Dir"]) return [UIColor systemPurpleColor];
-    return [UIColor systemRedColor];
+    if ([t isEqualToString:@"Tap"]) return [UIColor colorWithRed:0.00 green:0.70 blue:1.00 alpha:1];
+    if ([t isEqualToString:@"Press"]) return [UIColor colorWithRed:0.00 green:0.90 blue:0.45 alpha:1];
+    if ([t isEqualToString:@"Hold"]) return [UIColor colorWithRed:1.00 green:0.62 blue:0.00 alpha:1];
+    if ([t isEqualToString:@"Dir"]) return [UIColor colorWithRed:0.72 green:0.20 blue:1.00 alpha:1];
+    return [UIColor colorWithRed:1.00 green:0.18 blue:0.30 alpha:1];
 }
 
 static void BKPlaceMarker(BKMarkerView *m)
@@ -476,10 +477,14 @@ static BKMarkerView *BKMakeMarker(NSString *type, double nx, double ny, NSString
     CGFloat side = 56;
     BKMarkerView *m = [[BKMarkerView alloc] initWithFrame:CGRectMake(0, 0, side, side)];
     UIColor *col = BKTypeColor(type);
-    m.backgroundColor = [col colorWithAlphaComponent:0.45];
+    m.backgroundColor = [col colorWithAlphaComponent:0.28];
     m.layer.cornerRadius = side / 2;
     m.layer.borderColor = col.CGColor;
-    m.layer.borderWidth = 2;
+    m.layer.borderWidth = 2.2;
+    m.layer.shadowColor = col.CGColor;
+    m.layer.shadowOpacity = 0.85;
+    m.layer.shadowRadius = 6;
+    m.layer.shadowOffset = CGSizeZero;
     m.type = type;
     m.keyEnc = enc;
     m.nx = BKClamp01(nx);
@@ -488,7 +493,7 @@ static BKMarkerView *BKMakeMarker(NSString *type, double nx, double ny, NSString
 
     UILabel *l = [[UILabel alloc] initWithFrame:m.bounds];
     l.textAlignment = NSTextAlignmentCenter;
-    l.font = [UIFont boldSystemFontOfSize:10];
+    l.font = [UIFont boldSystemFontOfSize:10.5];
     l.textColor = UIColor.whiteColor;
     l.numberOfLines = 2;
     l.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -612,22 +617,38 @@ static void BKLayoutEditor(void)
     UIView *bar = [root viewWithTag:88];
     if (bar) {
         bar.frame = CGRectMake(0, 0, b.size.width, 96);
-        CGFloat gap = 6;
-        CGFloat x = 8;
-        CGFloat bw = (b.size.width - 16 - gap * 4) / 5.0;
-        if (bw < 40) bw = 40;
+        CGFloat gap = 8;
+        CGFloat x = 10;
+        CGFloat bw = (b.size.width - 20 - gap * 4) / 5.0;
+        if (bw < 44) bw = 44;
         for (int i = 0; i < 5; i++) {
             UIView *v = [bar viewWithTag:200 + i];
-            v.frame = CGRectMake(x, 8, bw, 34);
+            v.frame = CGRectMake(x, 10, bw, 38);
             x += bw + gap;
         }
         UIView *sv = [bar viewWithTag:210];
-        sv.frame = CGRectMake(b.size.width - 158, 50, 70, 34);
+        sv.frame = CGRectMake(b.size.width - 170, 54, 74, 36);
         UIView *ex = [bar viewWithTag:211];
-        ex.frame = CGRectMake(b.size.width - 82, 50, 74, 34);
+        ex.frame = CGRectMake(b.size.width - 88, 54, 78, 36);
     }
-    if (gBanner) gBanner.frame = CGRectMake(b.size.width / 2 - 155, b.size.height - 54, 310, 34);
+    if (gBanner) gBanner.frame = CGRectMake(b.size.width / 2 - 160, b.size.height - 58, 320, 36);
     for (BKMarkerView *m in gMarkers) BKPlaceMarker(m);
+}
+
+static void BKStyleButton(UIButton *b, UIColor *col, CGFloat size)
+{
+    b.titleLabel.font = [UIFont boldSystemFontOfSize:size];
+    b.titleLabel.adjustsFontSizeToFitWidth = YES;
+    b.titleLabel.minimumScaleFactor = 0.7;
+    [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    b.backgroundColor = [UIColor colorWithWhite:0.06 alpha:0.72];
+    b.layer.cornerRadius = 10;
+    b.layer.borderWidth = 1.4;
+    b.layer.borderColor = col.CGColor;
+    b.layer.shadowColor = col.CGColor;
+    b.layer.shadowOpacity = 0.75;
+    b.layer.shadowRadius = 5;
+    b.layer.shadowOffset = CGSizeZero;
 }
 
 static void BKOpenEditor(void)
@@ -641,7 +662,7 @@ static void BKOpenEditor(void)
     gMarkers = [NSMutableArray array];
 
     UIView *root = gEditWindow.rootViewController.view;
-    root.backgroundColor = [UIColor colorWithWhite:0 alpha:0.30];
+    root.backgroundColor = [UIColor colorWithWhite:0 alpha:0.34];
 
     gCanvas = [[UIView alloc] initWithFrame:root.bounds];
     gCanvas.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -649,7 +670,9 @@ static void BKOpenEditor(void)
 
     UIView *bar = [[UIView alloc] initWithFrame:CGRectZero];
     bar.tag = 88;
-    bar.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.92];
+    bar.backgroundColor = [UIColor colorWithWhite:0.04 alpha:0.94];
+    bar.layer.borderWidth = 1;
+    bar.layer.borderColor = [UIColor colorWithRed:0 green:0.9 blue:1 alpha:0.55].CGColor;
     [root addSubview:bar];
 
     NSArray *row1 = @[@[@"+ Toque", @"Tap"], @[@"+ Pressionar", @"Press"],
@@ -659,12 +682,7 @@ static void BKOpenEditor(void)
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
         b.tag = 200 + (NSInteger)i;
         [b setTitle:pair[0] forState:UIControlStateNormal];
-        b.titleLabel.font = [UIFont boldSystemFontOfSize:11];
-        b.titleLabel.adjustsFontSizeToFitWidth = YES;
-        b.backgroundColor = [BKTypeColor(pair[1]) colorWithAlphaComponent:0.30];
-        b.layer.cornerRadius = 8;
-        b.layer.borderWidth = 1;
-        b.layer.borderColor = BKTypeColor(pair[1]).CGColor;
+        BKStyleButton(b, BKTypeColor(pair[1]), 12.5);
         [b addTarget:gEditWindow.rootViewController
               action:@selector(bkAdd:)
     forControlEvents:UIControlEventTouchUpInside];
@@ -674,9 +692,7 @@ static void BKOpenEditor(void)
     UIButton *sv = [UIButton buttonWithType:UIButtonTypeSystem];
     sv.tag = 210;
     [sv setTitle:@"Salvar" forState:UIControlStateNormal];
-    sv.titleLabel.font = [UIFont boldSystemFontOfSize:12];
-    sv.backgroundColor = [UIColor systemGreenColor];
-    sv.layer.cornerRadius = 8;
+    BKStyleButton(sv, [UIColor colorWithRed:0 green:0.95 blue:0.5 alpha:1], 13);
     [sv addTarget:gEditWindow.rootViewController
           action:@selector(bkSave:)
 forControlEvents:UIControlEventTouchUpInside];
@@ -685,20 +701,20 @@ forControlEvents:UIControlEventTouchUpInside];
     UIButton *ex = [UIButton buttonWithType:UIButtonTypeSystem];
     ex.tag = 211;
     [ex setTitle:@"Fechar" forState:UIControlStateNormal];
-    ex.titleLabel.font = [UIFont boldSystemFontOfSize:12];
-    ex.backgroundColor = [UIColor systemRedColor];
-    ex.layer.cornerRadius = 8;
+    BKStyleButton(ex, [UIColor colorWithRed:1 green:0.2 blue:0.25 alpha:1], 13);
     [ex addTarget:gEditWindow.rootViewController
           action:@selector(bkClose:)
 forControlEvents:UIControlEventTouchUpInside];
     [bar addSubview:ex];
 
     gBanner = [[UILabel alloc] initWithFrame:CGRectZero];
-    gBanner.backgroundColor = [UIColor colorWithWhite:0 alpha:0.75];
+    gBanner.backgroundColor = [UIColor colorWithWhite:0 alpha:0.82];
     gBanner.textColor = UIColor.whiteColor;
-    gBanner.font = [UIFont boldSystemFontOfSize:11];
+    gBanner.font = [UIFont boldSystemFontOfSize:12];
     gBanner.textAlignment = NSTextAlignmentCenter;
-    gBanner.layer.cornerRadius = 8;
+    gBanner.layer.cornerRadius = 10;
+    gBanner.layer.borderWidth = 1.2;
+    gBanner.layer.borderColor = [UIColor colorWithRed:0 green:0.95 blue:1 alpha:0.9].CGColor;
     gBanner.clipsToBounds = YES;
     gBanner.text = @"Aperte a tecla ou o botão do mouse agora";
     gBanner.hidden = YES;
@@ -877,23 +893,85 @@ static void BKLimpar(BOOL tudo)
     BKWriteCfg(cfg);
 }
 
-static UIButton *BKMenuButton(UIView *box, NSString *title, NSInteger idx, UIColor *col)
+static UIColor *BKNeon(NSInteger i)
 {
+    switch (i) {
+        case 0:  return [UIColor colorWithRed:0.00 green:0.95 blue:1.00 alpha:1];
+        case 1:  return [UIColor colorWithRed:0.20 green:0.55 blue:1.00 alpha:1];
+        case 2:  return [UIColor colorWithRed:0.55 green:0.30 blue:1.00 alpha:1];
+        case 3:  return [UIColor colorWithRed:0.00 green:0.95 blue:0.50 alpha:1];
+        case 4:  return [UIColor colorWithRed:0.90 green:0.20 blue:1.00 alpha:1];
+        case 5:  return [UIColor colorWithRed:0.65 green:0.70 blue:0.78 alpha:1];
+        case 6:  return [UIColor colorWithRed:0.00 green:0.72 blue:1.00 alpha:1];
+        case 7:  return [UIColor colorWithRed:1.00 green:0.70 blue:0.00 alpha:1];
+        case 8:  return [UIColor colorWithRed:1.00 green:0.15 blue:0.30 alpha:1];
+        case 9:  return [UIColor colorWithRed:0.10 green:1.00 blue:0.85 alpha:1];
+        default: return [UIColor colorWithRed:1.00 green:0.35 blue:0.10 alpha:1];
+    }
+}
+
+static UIButton *BKMenuButton(UIView *box, NSString *title, NSInteger idx)
+{
+    UIColor *col = BKNeon(idx);
     UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
     [b setTitle:title forState:UIControlStateNormal];
-    b.titleLabel.font = [UIFont boldSystemFontOfSize:11];
-    b.titleLabel.adjustsFontSizeToFitWidth = YES;
-    [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-    b.backgroundColor = [col colorWithAlphaComponent:0.22];
-    b.layer.cornerRadius = 7;
-    b.layer.borderWidth = 1;
-    b.layer.borderColor = [col colorWithAlphaComponent:0.75].CGColor;
+    BKStyleButton(b, col, 13.5);
     b.tag = 100 + idx;
     [b addTarget:gMenuWindow.rootViewController
           action:@selector(bkMenuTap:)
 forControlEvents:UIControlEventTouchUpInside];
     [box addSubview:b];
     return b;
+}
+
+static void BKMenuLayout(void)
+{
+    if (!gMenuWindow || gMenuWindow.hidden) return;
+    UIView *root = gMenuWindow.rootViewController.view;
+    UIVisualEffectView *box = (UIVisualEffectView *)[root viewWithTag:77];
+    if (!box) return;
+
+    CGSize sz = root.bounds.size;
+    if (sz.width < 1.0 || sz.height < 1.0) return;
+
+    BOOL duas = (sz.height < 580.0);
+    CGFloat bw = duas ? MIN(540.0, sz.width * 0.76) : MIN(320.0, sz.width * 0.74);
+    CGFloat headerH = 78.0;
+    CGFloat rowH = duas ? 38.0 : 42.0;
+    CGFloat gap = 10.0;
+    int linhas = duas ? 6 : 11;
+    CGFloat bh = headerH + 16.0 + linhas * (rowH + gap) + 6.0;
+    if (bh > sz.height - 16.0) bh = sz.height - 16.0;
+
+    box.frame = CGRectMake((sz.width - bw) / 2.0, (sz.height - bh) / 2.0, bw, bh);
+
+    CAGradientLayer *g = (CAGradientLayer *)[box.contentView.layer valueForKey:@"bkGrad"];
+    if (!g) {
+        g = [CAGradientLayer layer];
+        g.name = @"bkGrad";
+        g.colors = @[(id)[UIColor colorWithRed:0 green:0.95 blue:1 alpha:1].CGColor,
+                     (id)[UIColor colorWithRed:0.85 green:0.15 blue:1 alpha:1].CGColor];
+        g.startPoint = CGPointMake(0, 0);
+        g.endPoint = CGPointMake(1, 1);
+        g.opacity = 0.16;
+        [box.contentView.layer insertSublayer:g atIndex:0];
+        [box.contentView.layer setValue:g forKey:@"bkGrad"];
+    }
+    g.frame = box.contentView.bounds;
+
+    UIView *head = [box.contentView viewWithTag:78];
+    if (head) head.frame = CGRectMake(12, 10, bw - 24, headerH - 8);
+
+    int cols = duas ? 2 : 1;
+    CGFloat pad = 12.0;
+    CGFloat colW = (bw - pad * 2.0 - gap * (cols - 1)) / cols;
+    CGFloat y = headerH + 10.0;
+    for (int i = 0; i < 11; i++) {
+        UIView *b = [box.contentView viewWithTag:100 + i];
+        if (!b) continue;
+        int c = i % cols, r = i / cols;
+        b.frame = CGRectMake(pad + c * (colW + gap), y + r * (rowH + gap), colW, rowH);
+    }
 }
 
 static void BKToggleMenu(void)
@@ -915,49 +993,67 @@ static void BKToggleMenu(void)
     [[root viewWithTag:77] removeFromSuperview];
 
     UIVisualEffectView *box = [[UIVisualEffectView alloc]
-        initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialDark]];
+        initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterialDark]];
     box.tag = 77;
-    box.frame = CGRectMake(0, 0, 200, 372);
-    box.layer.cornerRadius = 14;
-    box.clipsToBounds = YES;
-    box.center = CGPointMake(gMenuWindow.bounds.size.width / 2,
-                             gMenuWindow.bounds.size.height / 2);
+    box.layer.cornerRadius = 18;
+    box.layer.borderWidth = 1.6;
+    box.layer.borderColor = [UIColor colorWithRed:0 green:0.95 blue:1 alpha:0.85].CGColor;
+    box.layer.shadowColor = [UIColor colorWithRed:0.55 green:0.1 blue:1 alpha:1].CGColor;
+    box.layer.shadowOpacity = 0.9;
+    box.layer.shadowRadius = 14;
+    box.layer.shadowOffset = CGSizeZero;
+    box.clipsToBounds = NO;
 
     UIView *host = box.contentView;
+    host.clipsToBounds = YES;
+    host.layer.cornerRadius = 18;
 
-    UILabel *st = [[UILabel alloc] initWithFrame:CGRectMake(10, 4, 180, 34)];
-    st.font = [UIFont monospacedSystemFontOfSize:8 weight:UIFontWeightRegular];
-    st.textColor = [UIColor systemYellowColor];
-    st.numberOfLines = 3;
+    UIView *head = [[UIView alloc] initWithFrame:CGRectZero];
+    head.tag = 78;
+    head.backgroundColor = [UIColor clearColor];
+    [host addSubview:head];
+
+    UILabel *tt = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 300, 18)];
+    tt.font = [UIFont boldSystemFontOfSize:13];
+    tt.textColor = [UIColor colorWithRed:0.25 green:1 blue:1 alpha:1];
+    tt.text = @"TECLADO E MOUSE MAPEADOR";
+    tt.adjustsFontSizeToFitWidth = YES;
+    tt.minimumScaleFactor = 0.6;
+    tt.textAlignment = NSTextAlignmentCenter;
+    tt.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [head addSubview:tt];
+
+    UILabel *st = [[UILabel alloc] initWithFrame:CGRectMake(0, 22, 300, 40)];
+    st.font = [UIFont monospacedSystemFontOfSize:10.5 weight:UIFontWeightSemibold];
+    st.textColor = UIColor.whiteColor;
+    st.numberOfLines = 2;
+    st.textAlignment = NSTextAlignmentCenter;
+    st.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
+    st.layer.cornerRadius = 8;
+    st.clipsToBounds = YES;
+    st.adjustsFontSizeToFitWidth = YES;
+    st.minimumScaleFactor = 0.55;
+    st.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     st.text = BKStatusText();
-    [host addSubview:st];
+    [head addSubview:st];
 
-    NSArray *titles = @[@"Editor", @"Sens -", @"Sens +", @"Ligar/Desligar", @"Testar",
+    NSArray *titles = @[@"Editor", @"Sens -", @"Sens +", @"Ligar", @"Testar",
                         @"Dump", @"Recarregar", @"Limpar teclas", @"Limpar tudo",
-                        @"Cursor", @"Fechar"];
-    NSArray *cols = @[[UIColor systemTealColor], [UIColor systemBlueColor],
-                      [UIColor systemBlueColor], [UIColor systemGreenColor],
-                      [UIColor systemPurpleColor], [UIColor systemGrayColor],
-                      [UIColor systemGrayColor], [UIColor systemOrangeColor],
-                      [UIColor systemRedColor], [UIColor systemIndigoColor],
-                      [UIColor systemRedColor]];
+                        @"Cursor: OFF", @"Fechar"];
 
-    CGFloat y = 42;
     for (NSInteger i = 0; i < (NSInteger)titles.count; i++) {
         NSString *t = titles[i];
-        UIColor *c = cols[i];
         if (i == 3) t = gEnabled ? @"Desligar" : @"Ligar";
         if (i == 5 && BKGetDump()) t = @"Dump: ON";
         if (i == 9) t = [BKReadCfg()[@"CursorOn"] boolValue] ? @"Cursor: ON" : @"Cursor: OFF";
-        if (i == 1) t = [NSString stringWithFormat:@"Sens -  (%.2f)", BKGetSens()];
-        if (i == 2) t = [NSString stringWithFormat:@"Sens +  (%.2f)", BKGetSens()];
-        UIButton *b = BKMenuButton(host, t, i, c);
-        b.frame = CGRectMake(10, y, 180, 26);
-        y += 30;
+        if (i == 1) t = [NSString stringWithFormat:@"Sens -  %.2f", BKGetSens()];
+        if (i == 2) t = [NSString stringWithFormat:@"Sens +  %.2f", BKGetSens()];
+        BKMenuButton(host, t, i);
     }
 
     [root addSubview:box];
     gMenuWindow.hidden = NO;
+    BKMenuLayout();
 }
 
 #pragma mark - Bolinha
@@ -973,10 +1069,14 @@ static void BKSetupBall(void)
     }
 
     gBall = [[UIView alloc] initWithFrame:CGRectZero];
-    gBall.backgroundColor = [UIColor colorWithRed:0.10 green:0.10 blue:0.12 alpha:0.62];
+    gBall.backgroundColor = [UIColor colorWithRed:0.04 green:0.05 blue:0.09 alpha:0.80];
     gBall.layer.cornerRadius = 22;
-    gBall.layer.borderWidth = 1.5;
-    gBall.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.55].CGColor;
+    gBall.layer.borderWidth = 1.6;
+    gBall.layer.borderColor = [UIColor colorWithRed:0 green:0.95 blue:1 alpha:0.95].CGColor;
+    gBall.layer.shadowColor = [UIColor colorWithRed:0 green:0.95 blue:1 alpha:1].CGColor;
+    gBall.layer.shadowOpacity = 0.8;
+    gBall.layer.shadowRadius = 8;
+    gBall.layer.shadowOffset = CGSizeZero;
     gBall.userInteractionEnabled = YES;
 
     CAShapeLayer *kb = [CAShapeLayer layer];
@@ -1095,8 +1195,7 @@ static void BKRelayout(void)
     }
     if (gMenuWindow) {
         if (!CGRectEqualToRect(gMenuWindow.frame, sp)) gMenuWindow.frame = sp;
-        UIView *box = [gMenuWindow.rootViewController.view viewWithTag:77];
-        if (box) box.center = CGPointMake(sp.size.width / 2, sp.size.height / 2);
+        BKMenuLayout();
     }
     if (gBall) {
         CGFloat side = 44.0;

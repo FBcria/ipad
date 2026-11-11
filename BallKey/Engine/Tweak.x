@@ -83,9 +83,10 @@ typedef struct {
 #define kBKKey3GraceNs          80000000ull
 #define kBKTravaGuardNs         250000000ull
 #define kBKBtnWatchNs           1500000000ull
-#define kBKBtnLockNs            100000000ull
 #define kBKNumGraceNs           250000000ull
 #define kBKCapIgnoreNs          80000000ull
+#define kBKActivityNs           100000000ull
+#define kBKLogMax               4000
 #define kIOHIDEventTypeKeyboard                3
 #define kIOHIDEventFieldKeyboardUsagePage      (3u << 16 | 0u)
 #define kIOHIDEventFieldKeyboardUsage          (3u << 16 | 1u)
@@ -110,6 +111,8 @@ static NSMutableDictionary *gGen = nil;
 static NSMutableDictionary *gCur = nil;
 static NSMutableDictionary *gSlotOf = nil;
 static int gSlotOwner[kBKMaxFinger + 1];
+static uint64_t gIdentity = 1;
+static NSMutableString *gLogBuf = nil;
 static BOOL gRotate = YES;
 static BOOL gFollowCursor = NO;
 static double gFollowSens = 1.0;
@@ -159,6 +162,7 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
 static void BKReleaseAll(void);
 static void BKHandleButton(int b, BOOL down);
 static void BKLoadConfig(void);
+static void BKLogFlush(void);
 static uint64_t BKNowNs(void)
 {
     static mach_timebase_info_data_t tb;
@@ -168,13 +172,23 @@ static uint64_t BKNowNs(void)
     if (tb.denom == 0) return t;
     return t * tb.numer / tb.denom;
 }
-static void BKAppend(NSString *line)
+static void BKLogFlush(void)
 {
-    NSData *d = [[line stringByAppendingString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding];
+    if (!gLogBuf.length) return;
+    NSData *d = [gLogBuf dataUsingEncoding:NSUTF8StringEncoding];
+    [gLogBuf setString:@""];
     NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:kBKLogPath];
     if (!fh) { [d writeToFile:kBKLogPath atomically:YES]; return; }
     @try { [fh seekToEndOfFile]; [fh writeData:d]; [fh closeFile]; } @catch (NSException *e) { }
 }
+static void BKAppend(NSString *line)
+{
+    if (!gLogBuf) gLogBuf = [NSMutableString new];
+    [gLogBuf appendString:line];
+    [gLogBuf appendString:@"\n"];
+    if (gLogBuf.length > kBKLogMax) BKLogFlush();
+}
+static void BKAppendD(NSString *line) { if (gDump) BKAppend(line); }
 static void BKMark(NSString *name)
 {
     [name writeToFile:[@"/var/mobile/bk_" stringByAppendingString:name]
@@ -336,6 +350,10 @@ static void BKLoadConfig(void)
 }
 static void BKNotifyUserActivity(void)
 {
+    static uint64_t last = 0;
+    uint64_t now = BKNowNs();
+    if (last && (now - last) < kBKActivityNs) return;
+    last = now;
     Class cls = objc_getClass("BKUserEventTimer");
     if (!cls) return;
     id timer = ((id (*)(id, SEL))objc_msgSend)(cls, @selector(sharedInstance));
@@ -385,15 +403,19 @@ static BKIOHIDEventRef BKChild(double x, double y, int phase)
     }
     return child;
 }
+// Identidade nova a cada "down": o jogo vê um toque novo, não o mesmo dedo
+// teleportando. É o que evita a câmera pular no recentro.
 static void BKPost(double x, double y, int phase, int slot)
 {
     if (!gIO.Dispatch) return;
     if (slot < 1) slot = 1;
     if (slot > kBKMaxFinger) slot = kBKMaxFinger;
     uint32_t pIdx = (uint32_t)(kBKParentBase + slot);
+    uint32_t ident = (uint32_t)(gIdentity++);
+    if (phase == kBKPhaseBegan) ident = (uint32_t)(gIdentity++);
     @try {
     BKIOHIDEventRef parent = gIO.CreateDigitizer(kCFAllocatorDefault, mach_absolute_time(),
-        kBKTransducerHand, pIdx, pIdx, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0);
+        kBKTransducerHand, pIdx, ident, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0);
     if (!parent) { BKAppend(@"! sem parent"); return; }
     gIO.SetInt(parent, kBKFieldDisplayInt, 1);
     gIO.SetInt(parent, kBKFieldIsBuiltIn, 1);
@@ -411,8 +433,8 @@ static void BKPost(double x, double y, int phase, int slot)
         CFRelease(parent);
     });
     BKNotifyUserActivity();
-    BKAppend([NSString stringWithFormat:@"D ph=%d o=%d x=%.3f y=%.3f s=%d", phase,
-              BKCurrentOrient(), x, y, slot]);
+    BKAppendD([NSString stringWithFormat:@"D ph=%d o=%d x=%.3f y=%.3f s=%d id=%u",
+               phase, BKCurrentOrient(), x, y, slot, ident]);
     } @catch (NSException *e) { BKAppend([NSString stringWithFormat:@"! send %@", e.reason]); }
 }
 static void BKSendLast(NSNumber *idx)
@@ -546,8 +568,8 @@ static void BKHandleDir(NSDictionary *pt, int dir, BOOL down)
     gDirActive = NO;
 }
 // O dedo da mira vive dentro de um quadradinho. Ao encostar na borda ele salta
-// para o centro e o arrasto continua: a câmera segue girando no mesmo sentido,
-// 360° sem fim, sem voltar para a posição anterior.
+// para o centro com identidade nova e o arrasto continua: a câmera segue girando
+// no mesmo sentido, 360° sem fim, sem voltar.
 static void BKFpsMove(double dx, double dy)
 {
     if (!gFps || (dx == 0 && dy == 0)) return;
@@ -564,16 +586,13 @@ static void BKFpsMove(double dx, double dy)
         gAimX = gSqX;
         gAimY = gSqY;
         BKDown(kBKIdxAim, gSqX, gSqY, 1);
-        if (gFpsMoveLog < 40) { gFpsMoveLog++; BKAppend(@"F pulo"); }
+        BKAppendD(@"F pulo");
         return;
     }
     gAimX = BKClamp(px);
     gAimY = BKClamp(py);
     BKMove(kBKIdxAim, gAimX, gAimY);
-    if (gFpsMoveLog < 40) {
-        gFpsMoveLog++;
-        BKAppend([NSString stringWithFormat:@"F move dx=%.2f dy=%.2f x=%.3f y=%.3f", dx, dy, gAimX, gAimY]);
-    }
+    BKAppendD([NSString stringWithFormat:@"F move dx=%.2f dy=%.2f x=%.3f y=%.3f", dx, dy, gAimX, gAimY]);
 }
 static void BKFpsEnsure(void)
 {
@@ -582,7 +601,7 @@ static void BKFpsEnsure(void)
     gAimX = gSqX;
     gAimY = gSqY;
     BKDown(kBKIdxAim, gSqX, gSqY, 1);
-    if (gFpsRepor < 30) { gFpsRepor++; BKAppend(@"F repor"); }
+    BKAppendD(@"F repor");
 }
 static void BKFpsOn(void)
 {
@@ -715,6 +734,7 @@ static BOOL BKKeyEdge(int usage, int downHint, BOOL *outDown)
     *outDown = nd;
     return YES;
 }
+// Só a fonte que apertou solta na hora; fonte diferente respeita a trava curta.
 static void BKButtonEvent(int num, BOOL down, int src)
 {
     if (num < 0) num = 0;
@@ -722,9 +742,10 @@ static void BKButtonEvent(int num, BOOL down, int src)
     uint64_t now = BKNowNs();
     gLastBtnNum = num;
     gLastBtnNs = now;
+    int own = src ? src : 1;
     if (down) {
         if (gBtnOwner[num]) { gBtnOwnerNs[num] = now; return; }
-        gBtnOwner[num] = src ? src : 1;
+        gBtnOwner[num] = own;
         gBtnOwnerNs[num] = now;
         BKAppend([NSString stringWithFormat:@"B m:%d d=1 s=%d", num, src]);
         if (gEnabled && gPoints.count) BKHandleButton(num, YES);
@@ -735,7 +756,7 @@ static void BKButtonEvent(int num, BOOL down, int src)
         if (gEnabled && gPoints.count) BKHandleButton(num, NO);
         return;
     }
-    if ((now - gBtnOwnerNs[num]) < kBKBtnLockNs) return;
+    if (gBtnOwner[num] != own) return;
     gBtnOwner[num] = 0;
     gBtnOwnerNs[num] = 0;
     BKAppend([NSString stringWithFormat:@"B m:%d d=0 s=%d", num, src]);
@@ -872,7 +893,7 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         int down = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardDown);
         int repeat = (int)gIO.GetInt(ev, kIOHIDEventFieldKeyboardRepeat);
         if (repeat) return;
-        if (gDump) BKAppend([NSString stringWithFormat:@"K %d pg=%d d=%d", usage, page, down]);
+        BKAppendD([NSString stringWithFormat:@"K %d pg=%d d=%d", usage, page, down]);
         if (usage <= 0) return;
         if (page == kBKPageBtn) {
             if (usage >= kBKUsageBtnBase && usage < kBKUsageBtnBase + kBKMaxBtn) {
@@ -906,7 +927,7 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         if (usage == gLastExtra && (now - gLastExtraNs) < kBKKey3GraceNs) return;
         gLastExtra = usage;
         gLastExtraNs = now;
-        if (gDump) BKAppend([NSString stringWithFormat:@"K %d (x)", usage]);
+        BKAppendD([NSString stringWithFormat:@"K %d (x)", usage]);
         if (usage == gFpsKey || (gFpsKey == kBKDefaultFpsKey &&
                                  (usage == kBKDefaultFpsKey || usage == kBKCtrlRight))) {
             if (gFpsToggleNs && (now - gFpsToggleNs) < kBKTravaGuardNs) return;
@@ -943,10 +964,10 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
                 double px = gCx, py = gCy;
                 if (gRotate) BKConvInv(gCx, gCy, BKCurrentOrient(), &px, &py);
                 if ([gDown[@(kBKIdxCursor)] boolValue]) BKMove(kBKIdxCursor, px, py);
-                BKAppend([NSString stringWithFormat:@"M11 zero m=0 (%d)", gEvSeen]);
+                BKAppendD([NSString stringWithFormat:@"M11 zero m=0 (%d)", gEvSeen]);
             }
         }
-        if (gDump) BKAppend([NSString stringWithFormat:@"M11 x=%.4f y=%.4f m=%x", x, y, m]);
+        BKAppendD([NSString stringWithFormat:@"M11 x=%.4f y=%.4f m=%x", x, y, m]);
     } else if (type == kBKTypeMove) {
         BKDumpEv(type, ev);
     } else if (type == kBKTypePointer) {
@@ -954,7 +975,7 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         double dy = gIO.GetFloat(ev, (17u << 16 | 1u));
         int st = (int)gIO.GetInt(ev, (17u << 16 | 3u));
         gSawPtr = YES;
-        if (gDump) BKAppend([NSString stringWithFormat:@"M17 dx=%d dy=%d s=%d", (int)dx, (int)dy, st]);
+        BKAppendD([NSString stringWithFormat:@"M17 dx=%d dy=%d s=%d", (int)dx, (int)dy, st]);
         if (st == 1) { BKButtonEvent(0, YES, 17); return; }
         if (st == 2) { BKButtonEvent(0, NO, 17); return; }
         if (dx != 0 || dy != 0) {
@@ -1009,18 +1030,21 @@ static void BKEngineInit(void)
     gSlotOf = [NSMutableDictionary dictionary];
     gKeyDown = [NSMutableDictionary dictionary];
     gKeyLast3 = [NSMutableDictionary dictionary];
+    gLogBuf = [NSMutableString new];
     gSendQ = dispatch_queue_create("com.wjf.ballkey.send", DISPATCH_QUEUE_SERIAL);
     dispatch_set_target_queue(gSendQ, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0));
     BKAppend(@"I init");
-    if (!BKLoadIOKit()) return;
+    BKLogFlush();
+    if (!BKLoadIOKit()) { BKLogFlush(); return; }
     gSendClient = gIO.ClientCreate(kCFAllocatorDefault);
     BKAppend(gSendClient ? @"I send=1" : @"I send=0");
     @try {
         gListenClient = BKNewListen();
-        if (!gListenClient) { BKAppend(@"I client=0"); return; }
+        if (!gListenClient) { BKAppend(@"I client=0"); BKLogFlush(); return; }
         BKAppend(@"I listen=1");
     } @catch (NSException *e) {
         BKAppend([NSString stringWithFormat:@"! init %@", e.reason]);
+        BKLogFlush();
         return;
     }
     dispatch_queue_t q = dispatch_get_main_queue();
@@ -1030,25 +1054,26 @@ static void BKEngineInit(void)
     notify_register_dispatch(kBKNotifyProbe, &t3, q, ^(int t) { (void)t; BKProbe(); });
     notify_register_dispatch(kBKNotifyCapture, &t4, q, ^(int t) { (void)t; BKCaptureRead(); });
     BKAppend(@"I notify=1");
+    BKLogFlush();
     BKLoadConfig();
     dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
     if (src) {
         dispatch_source_set_timer(src, dispatch_time(DISPATCH_TIME_NOW, 100ull * NSEC_PER_MSEC),
                                   100ull * NSEC_PER_MSEC, 20ull * NSEC_PER_MSEC);
         dispatch_source_set_event_handler(src, ^{
-            @try { BKCaptureWatch(); BKButtonWatch(); BKFpsEnsure(); }
+            @try { BKCaptureWatch(); BKButtonWatch(); BKFpsEnsure(); BKLogFlush(); }
             @catch (NSException *e) { }
         });
         dispatch_resume(src);
     }
     BKAppend(@"I ready");
+    BKLogFlush();
     BKMark(@"engine_loaded.txt");
 }
 __attribute__((constructor)) static void BKInitCtor(void)
 {
     @autoreleasepool {
         BKMark(@"engine_ctor.txt");
-        BKAppend(@"I ctor");
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)800 * NSEC_PER_MSEC),
                        dispatch_get_main_queue(), ^{
             @try { BKEngineInit(); }

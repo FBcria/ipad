@@ -6,11 +6,13 @@
 #import <stdarg.h>
 #define kBKConfigPath @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 #define kBKStatusPath @"/var/mobile/bk_status.txt"
+#define kBKPtrPath @"/var/mobile/bk_ptr.txt"
 #define kBKCaptureReqPath @"/var/mobile/bk_capture.txt"
 #define kBKCaptureResPath @"/var/mobile/bk_capture_result.txt"
 #define kBKEdgePt 30.0
 static UIWindow *gBallWindow = nil, *gMenuWindow = nil, *gEditWindow = nil;
-static UIView *gBall = nil, *gCanvas = nil, *gBanner = nil;
+static UIView *gBall = nil, *gCanvas = nil, *gBanner = nil, *gCursorView = nil;
+static NSTimer *gCursorTimer = nil;
 static NSMutableArray *gMarkers = nil;
 static NSString *gFrontBundle = nil;
 static BOOL gEnabled = NO;
@@ -212,10 +214,49 @@ static void BKWriteCfg(NSMutableDictionary *cfg)
     BKPost("com.wjf.ballkey.reload");
 }
 static BOOL BKGetDump(void) { NSNumber *n = BKReadCfg()[@"Dump"]; return n ? [n boolValue] : NO; }
+static BOOL BKGetCursor(void) { NSNumber *n = BKReadCfg()[@"Cursor"]; return n ? [n boolValue] : NO; }
 static NSString *BKStatusText(void)
 {
     NSString *s = [NSString stringWithContentsOfFile:kBKStatusPath encoding:NSUTF8StringEncoding error:nil];
     return s.length ? s : @"ativo=? marcadores=? app=?";
+}
+static void BKCursorTick(void)
+{
+    if (!gCursorView) return;
+    if (!BKGetCursor()) { gCursorView.hidden = YES; return; }
+    NSString *s = [NSString stringWithContentsOfFile:kBKPtrPath encoding:NSUTF8StringEncoding error:nil];
+    if (!s.length) { gCursorView.hidden = YES; return; }
+    NSArray *p = [[s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]
+                  componentsSeparatedByString:@" "];
+    if (p.count < 3) { gCursorView.hidden = YES; return; }
+    double x = [p[0] doubleValue], y = [p[1] doubleValue];
+    BOOL fps = [p[2] intValue] != 0;
+    CGSize sz = gCursorView.superview.bounds.size;
+    if (sz.width < 1.0 || sz.height < 1.0) return;
+    gCursorView.center = CGPointMake(x * sz.width, y * sz.height);
+    gCursorView.hidden = fps;
+}
+static void BKCursorSetup(void)
+{
+    if (gCursorView || !gBallWindow) return;
+    gCursorView = [[UIView alloc] initWithFrame:CGRectMake(-100, -100, 22, 22)];
+    gCursorView.userInteractionEnabled = NO;
+    gCursorView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.45];
+    gCursorView.layer.cornerRadius = 11;
+    gCursorView.layer.borderWidth = 1.5;
+    gCursorView.layer.borderColor = [UIColor colorWithWhite:0 alpha:0.55].CGColor;
+    gCursorView.layer.shadowColor = [UIColor blackColor].CGColor;
+    gCursorView.layer.shadowOpacity = 0.3;
+    gCursorView.layer.shadowRadius = 3;
+    gCursorView.layer.shadowOffset = CGSizeMake(0, 1);
+    gCursorView.hidden = YES;
+    [gBallWindow.rootViewController.view addSubview:gCursorView];
+    if (!gCursorTimer) {
+        gCursorTimer = [NSTimer scheduledTimerWithTimeInterval:0.04 repeats:YES block:^(NSTimer *t) {
+            (void)t;
+            BKCursorTick();
+        }];
+    }
 }
 static NSString *BKNewNonce(void) { return [[NSUUID UUID] UUIDString]; }
 static void BKStopCapture(void)
@@ -604,7 +645,7 @@ static void BKToggleMenu(void)
     gMenuWindow.frame = BKSpace();
     UIView *root = gMenuWindow.rootViewController.view;
     [[root viewWithTag:77] removeFromSuperview];
-    const CGFloat boxW = 210.0, boxH = 388.0, pad = 12.0, rowH = 30.0, rowPitch = 34.0, topY = 26.0;
+    const CGFloat boxW = 210.0, boxH = 422.0, pad = 12.0, rowH = 30.0, rowPitch = 34.0, topY = 26.0;
     UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, boxW, boxH)];
     box.tag = 77;
     box.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.08];
@@ -626,11 +667,13 @@ static void BKToggleMenu(void)
     st.text = BKStatusText();
     [box addSubview:st];
     BOOL dump = BKGetDump();
+    BOOL cur = BKGetCursor();
     NSArray *titles = @[@"Editar teclas",
                         [NSString stringWithFormat:@"Sensi FPS %.2f  (-)", BKGetSens()],
                         @"Sensi FPS  (+)",
                         gEnabled ? @"Desativar" : @"Ativar",
                         @"Testar centro",
+                        cur ? @"Cursor: LIGADO" : @"Ativar cursor",
                         dump ? @"Dump: LIGADO" : @"Dump: desligado",
                         @"Reler config",
                         @"Limpar direção",
@@ -639,12 +682,13 @@ static void BKToggleMenu(void)
     NSArray *cols = @[ [UIColor systemBlueColor], [UIColor systemPurpleColor], [UIColor systemPurpleColor],
                        gEnabled ? [UIColor systemGreenColor] : [UIColor systemGrayColor],
                        [UIColor systemTealColor],
+                       cur ? [UIColor systemGreenColor] : [UIColor systemGrayColor],
                        dump ? [UIColor systemOrangeColor] : [UIColor systemGrayColor],
                        [UIColor systemGrayColor], [UIColor systemPinkColor], [UIColor systemPinkColor],
                        [UIColor systemGrayColor] ];
     for (NSUInteger i = 0; i < titles.count; i++) {
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-        CGFloat y = topY + (CGFloat)i * rowPitch + (i == 9 ? 8.0 : 0.0);
+        CGFloat y = topY + (CGFloat)i * rowPitch + (i == 10 ? 8.0 : 0.0);
         b.frame = CGRectMake(pad, y, boxW - pad * 2, rowH);
         UIColor *col = cols[i];
         [b setTitle:titles[i] forState:UIControlStateNormal];
@@ -719,19 +763,25 @@ static void BKToggleMenu(void)
         });
         return;
     }
-    if (i == 9) { gMenuWindow.hidden = YES; return; }
+    if (i == 10) { gMenuWindow.hidden = YES; return; }
     if (i == 5) {
+        NSMutableDictionary *cfg = BKReadCfg();
+        BOOL on = ![cfg[@"Cursor"] boolValue];
+        cfg[@"Cursor"] = @(on);
+        BKWriteCfg(cfg);
+        BKLog(@"cursor=%d", (int)on);
+    } else if (i == 6) {
         NSMutableDictionary *cfg = BKReadCfg();
         BOOL on = ![cfg[@"Dump"] boolValue];
         cfg[@"Dump"] = @(on);
         BKWriteCfg(cfg);
         BKLog(@"dump=%d", (int)on);
-    } else if (i == 6) BKPost("com.wjf.ballkey.reload");
+    } else if (i == 7) BKPost("com.wjf.ballkey.reload");
     else if (i == 1) BKSetSens(BKGetSens() - 0.05);
     else if (i == 2) BKSetSens(BKGetSens() + 0.05);
     else if (i == 3) BKSetEnabled(!gEnabled);
-    else if (i == 7) BKLimpar(NO);
-    else if (i == 8) BKLimpar(YES);
+    else if (i == 8) BKLimpar(NO);
+    else if (i == 9) BKLimpar(YES);
     dispatch_async(dispatch_get_main_queue(), ^{ BKToggleMenu(); BKToggleMenu(); });
 }
 - (void)bkPan:(UIPanGestureRecognizer *)g
@@ -811,6 +861,7 @@ static void BKSetupBall(void)
     [gBallWindow.rootViewController.view addSubview:gBall];
     BKRelayout();
     gBallWindow.hidden = NO;
+    BKCursorSetup();
     BKMark(@"ball_shown.txt");
 }
 static void BKPollFrontmost(void)

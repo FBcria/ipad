@@ -5,7 +5,7 @@
 #import <notify.h>
 #import <dlfcn.h>
 
-#define kBKBuildTag    @"b36"
+#define kBKBuildTag    @"b37"
 #define kBKConfigPath  @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 #define kBKNotifyLoad  "com.wjf.ballkey.reload"
 #define kBKNotifyTest  "com.wjf.ballkey.test"
@@ -13,22 +13,31 @@
 #define kBKOffFile     @"/var/mobile/bk_off.txt"
 #define kBKOSafeFile   @"/var/mobile/bk_overlay_safe.txt"
 #define kBKOTryFile    @"/var/mobile/bk_ot.txt"
+#define kBKTagBall     9001
 
 #define kBKNeon  [UIColor colorWithRed:0.15 green:0.98 blue:0.85 alpha:1.0]
 #define kBKNeon2 [UIColor colorWithRed:0.45 green:0.35 blue:1.00 alpha:1.0]
 #define kBKHot   [UIColor colorWithRed:1.00 green:0.22 blue:0.55 alpha:1.0]
 #define kBKRed   [UIColor colorWithRed:1.00 green:0.30 blue:0.30 alpha:1.0]
 #define kBKDim   [UIColor colorWithRed:0.70 green:0.80 blue:0.85 alpha:1.0]
+#define kBKPanel [UIColor colorWithRed:0.02 green:0.04 blue:0.07 alpha:0.96]
 
 @interface BKRootView : UIView
+@property (nonatomic) BOOL blocksAll;
 @end
 
 @implementation BKRootView
 - (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e
 {
     UIView *v = [super hitTest:p withEvent:e];
-    if (!v || v == self) return nil;
-    return v;
+    if (!v || v == self) return self.blocksAll ? self : nil;
+    if (self.blocksAll) return v;
+    UIView *w = v;
+    while (w) {
+        if (w.tag == kBKTagBall) return v;
+        w = w.superview;
+    }
+    return nil;
 }
 @end
 
@@ -52,9 +61,12 @@
 - (void)fps:(UIButton *)b;
 - (void)map:(UIButton *)b;
 - (void)test:(UIButton *)b;
+- (void)close:(UIButton *)b;
 - (void)capture:(UIButton *)b;
 - (void)save:(UIButton *)b;
 - (void)done:(UIButton *)b;
+- (void)kindKeys:(UIButton *)b;
+- (void)kindBtns:(UIButton *)b;
 @end
 
 static UIWindow *gBallWin = nil;
@@ -103,7 +115,7 @@ static void BKCapturePoll(void);
 static void BKAddMarker(NSString *kind, int code, double nx, double ny);
 static void BKRemoveMarkerAt(int idx);
 static void BKSaveMarkers(void);
-static UIWindow *BKMakeWindow(CGFloat level);
+static UIWindow *BKMakeWindow(CGFloat level, BOOL blocks);
 static void BKBuildBall(void);
 static void BKBuildCursor(void);
 static void BKStartTimer(void);
@@ -460,7 +472,7 @@ static UIButton *BKButton(NSString *title, SEL sel, UIColor *color)
     return b;
 }
 
-static UIWindow *BKMakeWindow(CGFloat level)
+static UIWindow *BKMakeWindow(CGFloat level, BOOL blocks)
 {
     UIWindowScene *scene = nil;
     @try {
@@ -473,6 +485,10 @@ static UIWindow *BKMakeWindow(CGFloat level)
     w.windowLevel = level;
     w.backgroundColor = [UIColor clearColor];
     w.rootViewController = [[BKRootVC alloc] init];
+    if (blocks) {
+        w.rootViewController.view.backgroundColor = kBKPanel;
+        ((BKRootView *)w.rootViewController.view).blocksAll = YES;
+    }
     return w;
 }
 
@@ -481,15 +497,24 @@ static void BKOpenMenu(void)
     if (gMenuOpen) return;
     gMenuOpen = YES;
     @try {
-        if (!gMenuWin) gMenuWin = BKMakeWindow(UIWindowLevelAlert + 2002);
+        if (!gMenuWin) gMenuWin = BKMakeWindow(UIWindowLevelAlert + 2002, YES);
         UIViewController *vc = gMenuWin.rootViewController;
         for (UIView *v in vc.view.subviews) [v removeFromSuperview];
-        vc.view.backgroundColor = [UIColor colorWithRed:0.02 green:0.04 blue:0.07 alpha:0.94];
+
+        UILabel *credits = [[UILabel alloc] init];
+        credits.text = @"creditos a martidev333";
+        credits.font = [UIFont systemFontOfSize:9];
+        credits.textColor = [kBKDim colorWithAlphaComponent:0.75];
+        credits.textAlignment = NSTextAlignmentRight;
+        credits.translatesAutoresizingMaskIntoConstraints = NO;
+        [vc.view addSubview:credits];
 
         UILabel *title = [[UILabel alloc] init];
-        title.text = @"BALLKEY";
-        title.font = [UIFont boldSystemFontOfSize:22];
+        title.text = @"Mapeador de Teclado e Mouse";
+        title.numberOfLines = 2;
+        title.font = [UIFont boldSystemFontOfSize:17];
         title.textColor = kBKNeon;
+        title.textAlignment = NSTextAlignmentCenter;
         title.translatesAutoresizingMaskIntoConstraints = NO;
         [vc.view addSubview:title];
 
@@ -508,15 +533,16 @@ static void BKOpenMenu(void)
         UIButton *bOn = BKButton(on ? @"DESATIVAR" : @"ATIVAR", @selector(toggle:), kBKNeon);
         UIButton *bCur = BKButton(cur ? @"CURSOR OFF" : @"CURSOR ON", @selector(cursor:), kBKNeon2);
         UIButton *bFps = BKButton(fps ? @"FPS OFF" : @"FPS ON", @selector(fps:), kBKHot);
-        UIButton *bMap = BKButton(@"MAPA", @selector(map:), kBKNeon);
+        UIButton *bMap = BKButton(@"MAPEADOR", @selector(map:), kBKNeon);
         UIButton *bTst = BKButton(@"TESTE", @selector(test:), kBKDim);
+        UIButton *bCls = BKButton(@"FECHAR", @selector(close:), kBKHot);
 
         UIStackView *left = [[UIStackView alloc] initWithArrangedSubviews:@[bOn, bCur, bFps]];
         left.axis = UILayoutConstraintAxisVertical;
         left.spacing = 12;
         left.distribution = UIStackViewDistributionFillEqually;
 
-        UIStackView *right = [[UIStackView alloc] initWithArrangedSubviews:@[bMap, bTst]];
+        UIStackView *right = [[UIStackView alloc] initWithArrangedSubviews:@[bMap, bTst, bCls]];
         right.axis = UILayoutConstraintAxisVertical;
         right.spacing = 12;
         right.distribution = UIStackViewDistributionFillEqually;
@@ -530,9 +556,12 @@ static void BKOpenMenu(void)
 
         UILayoutGuide *safe = vc.view.safeAreaLayoutGuide;
         [NSLayoutConstraint activateConstraints:@[
-            [title.topAnchor constraintEqualToAnchor:safe.topAnchor constant:18],
-            [title.centerXAnchor constraintEqualToAnchor:vc.view.centerXAnchor],
-            [gStatusLabel.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:8],
+            [credits.topAnchor constraintEqualToAnchor:safe.topAnchor constant:8],
+            [credits.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-16],
+            [title.topAnchor constraintEqualToAnchor:credits.bottomAnchor constant:4],
+            [title.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:16],
+            [title.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-16],
+            [gStatusLabel.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:10],
             [gStatusLabel.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:16],
             [gStatusLabel.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-16],
             [cols.topAnchor constraintEqualToAnchor:gStatusLabel.bottomAnchor constant:16],
@@ -567,41 +596,51 @@ static void BKOpenEditor(NSString *kind, int code)
     gMenuOpen = NO;
     if (gMenuWin) gMenuWin.hidden = YES;
     @try {
-        if (!gEditWin) {
-            gEditWin = BKMakeWindow(UIWindowLevelAlert + 2003);
-            gEditWin.rootViewController.view.backgroundColor = [UIColor clearColor];
-        }
+        if (!gEditWin) gEditWin = BKMakeWindow(UIWindowLevelAlert + 2003, YES);
         UIViewController *vc = gEditWin.rootViewController;
         for (UIView *v in vc.view.subviews) [v removeFromSuperview];
-        vc.view.backgroundColor = [UIColor clearColor];
-
-        UIView *bg = [[UIView alloc] initWithFrame:vc.view.bounds];
-        bg.backgroundColor = [UIColor colorWithRed:0.02 green:0.04 blue:0.07 alpha:0.28];
-        bg.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        [vc.view addSubview:bg];
 
         gEditCanvas = [[UIView alloc] initWithFrame:vc.view.bounds];
         gEditCanvas.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         [vc.view addSubview:gEditCanvas];
 
-        gEditTitle = [[UILabel alloc] initWithFrame:CGRectMake(16, 60, vc.view.bounds.size.width - 32, 24)];
-        gEditTitle.text = @"Toque em CAPTURAR e aperte a tecla";
-        gEditTitle.font = [UIFont boldSystemFontOfSize:13];
+        UIView *top = [[UIView alloc] initWithFrame:CGRectMake(0, 0, vc.view.bounds.size.width, 96)];
+        top.backgroundColor = [UIColor colorWithRed:0.03 green:0.07 blue:0.10 alpha:0.95];
+        top.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        [vc.view addSubview:top];
+
+        gEditTitle = [[UILabel alloc] initWithFrame:CGRectMake(16, 46, vc.view.bounds.size.width - 32, 34)];
+        gEditTitle.text = @"MAPEADOR";
+        gEditTitle.font = [UIFont boldSystemFontOfSize:17];
         gEditTitle.textColor = kBKNeon;
         gEditTitle.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-        [vc.view addSubview:gEditTitle];
+        [top addSubview:gEditTitle];
+
+        UIView *bar = [[UIView alloc] initWithFrame:CGRectMake(0, vc.view.bounds.size.height - 116,
+                                                               vc.view.bounds.size.width, 116)];
+        bar.backgroundColor = [UIColor colorWithRed:0.03 green:0.07 blue:0.10 alpha:0.95];
+        bar.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin;
+        [vc.view addSubview:bar];
+
+        UIButton *kK = BKButton(@"TECLAS", @selector(kindKeys:), kBKNeon);
+        kK.frame = CGRectMake(16, 12, 118, 40);
+        [bar addSubview:kK];
+
+        UIButton *kB = BKButton(@"BOTOES", @selector(kindBtns:), kBKNeon2);
+        kB.frame = CGRectMake(146, 12, 118, 40);
+        [bar addSubview:kB];
 
         UIButton *cap = BKButton(@"CAPTURAR", @selector(capture:), kBKNeon);
-        cap.frame = CGRectMake(16, vc.view.bounds.size.height - 110, 130, 46);
-        [vc.view addSubview:cap];
+        cap.frame = CGRectMake(16, 62, 170, 44);
+        [bar addSubview:cap];
 
         UIButton *save = BKButton(@"SALVAR", @selector(save:), kBKNeon2);
-        save.frame = CGRectMake(156, vc.view.bounds.size.height - 110, 130, 46);
-        [vc.view addSubview:save];
+        save.frame = CGRectMake(196, 62, 100, 44);
+        [bar addSubview:save];
 
         UIButton *done = BKButton(@"FECHAR", @selector(done:), kBKHot);
-        done.frame = CGRectMake(296, vc.view.bounds.size.height - 110, 130, 46);
-        [vc.view addSubview:done];
+        done.frame = CGRectMake(306, 62, 92, 44);
+        [bar addSubview:done];
 
         gEditWin.hidden = NO;
         BKRedrawMarkers();
@@ -685,14 +724,31 @@ static void BKCloseEditor(void)
 
 - (void)map:(UIButton *)b { (void)b; BKCloseMenu(); BKOpenEditor(@"key", 0); }
 - (void)test:(UIButton *)b { (void)b; BKPost(kBKNotifyTest); BKAppend(@"autoteste"); }
+- (void)close:(UIButton *)b { (void)b; BKCloseMenu(); }
 - (void)capture:(UIButton *)b { (void)b; BKCaptureRequest(); }
+
+- (void)kindKeys:(UIButton *)b
+{
+    (void)b;
+    BKSaveMarkers();
+    gEditKind = @"key";
+    BKRedrawMarkers();
+}
+
+- (void)kindBtns:(UIButton *)b
+{
+    (void)b;
+    BKSaveMarkers();
+    gEditKind = @"btn";
+    BKRedrawMarkers();
+}
 
 - (void)save:(UIButton *)b
 {
     (void)b;
     BKSaveMarkers();
     BKRedrawMarkers();
-    if (gEditTitle) gEditTitle.text = @"salvo";
+    if (gEditTitle) gEditTitle.text = @"SALVO";
 }
 
 - (void)done:(UIButton *)b { (void)b; BKCloseEditor(); }
@@ -701,18 +757,19 @@ static void BKCloseEditor(void)
 
 static void BKBuildBall(void)
 {
-    gBallWin = BKMakeWindow(UIWindowLevelAlert + 2000);
+    gBallWin = BKMakeWindow(UIWindowLevelAlert + 2000, NO);
 
-    gBall = [[UIView alloc] initWithFrame:CGRectMake(20, 120, 44, 44)];
-    gBall.backgroundColor = [UIColor colorWithRed:0.03 green:0.07 blue:0.10 alpha:0.85];
-    gBall.layer.cornerRadius = 22;
+    gBall = [[UIView alloc] initWithFrame:CGRectMake(20, 120, 52, 52)];
+    gBall.tag = kBKTagBall;
+    gBall.backgroundColor = [UIColor colorWithRed:0.03 green:0.07 blue:0.10 alpha:0.90];
+    gBall.layer.cornerRadius = 26;
     gBall.layer.borderColor = kBKNeon.CGColor;
     gBall.layer.borderWidth = 2.0;
 
     UILabel *bl = [[UILabel alloc] initWithFrame:gBall.bounds];
-    bl.text = @"BK";
+    bl.text = @"Martin";
     bl.textAlignment = NSTextAlignmentCenter;
-    bl.font = [UIFont boldSystemFontOfSize:15];
+    bl.font = [UIFont boldSystemFontOfSize:11];
     bl.textColor = kBKNeon;
     bl.userInteractionEnabled = NO;
     [gBall addSubview:bl];
@@ -728,7 +785,8 @@ static void BKBuildBall(void)
 
 static void BKBuildCursor(void)
 {
-    gCursorWin = BKMakeWindow(UIWindowLevelAlert + 2001);
+    gCursorWin = BKMakeWindow(UIWindowLevelAlert + 2001, NO);
+    gCursorWin.userInteractionEnabled = NO;
 
     gCursor = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 18, 18)];
     gCursor.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.10];

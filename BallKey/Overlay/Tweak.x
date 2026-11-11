@@ -6,7 +6,7 @@
 #import <dlfcn.h>
 #import <stdarg.h>
 
-#define kBKBuildTag    @"b27"
+#define kBKBuildTag    @"b28"
 #define kBKPrefDomain  CFSTR("com.wjf.ballkey")
 #define kBKConfigPath  @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 
@@ -21,6 +21,7 @@ static UIView *gCursorView = nil;
 static NSMutableArray *gMarkers = nil;
 static NSString *gFrontBundle = nil;
 static NSString *gBaseDir = nil;
+static NSString *gLoadRes = @"-";
 static BOOL gEnabled = NO;
 static int gCloseTok = 0;
 static int gFpsTokOn = 0;
@@ -51,8 +52,7 @@ static NSString *BKAppText(void);
 static NSString *BKOwnDir(void);
 static long BKFileAge(NSString *name);
 static NSString *BKSibling(NSString *name);
-static NSString *BKFfApps(void);
-static NSString *BKPlHasFire(void);
+static void BKLoadEngine(void);
 
 @interface BKPassWindow : UIWindow
 @end
@@ -139,6 +139,29 @@ static void BKLog(NSString *fmt, ...)
 
 static void BKPost(const char *n) { notify_post(n); }
 
+// Carrega o motor dentro do SpringBoard, sem depender de injecao no jogo.
+static void BKLoadEngine(void)
+{
+    NSString *d = BKOwnDir();
+    if (!d) { gLoadRes = @"E0"; return; }
+    NSString *p = [d stringByAppendingPathComponent:@"BallKeyEngine.dylib"];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:p]) { gLoadRes = @"NAO"; return; }
+
+    void *h = dlopen(p.fileSystemRepresentation, RTLD_NOLOAD);
+    if (h) { gLoadRes = @"ja"; return; }
+
+    dlerror();
+    h = dlopen(p.fileSystemRepresentation, RTLD_NOW);
+    if (h) { gLoadRes = @"ok"; }
+    else {
+        const char *e = dlerror();
+        NSString *es = e ? @(e) : @"?";
+        if (es.length > 40) es = [es substringToIndex:40];
+        gLoadRes = [NSString stringWithFormat:@"E:%@", es];
+    }
+    BKLog(@"load=%@", gLoadRes);
+}
+
 static UIWindowScene *BKMainScene(void)
 {
     Class appCls = objc_getClass("UIApplication");
@@ -202,40 +225,6 @@ static NSString *BKSibling(NSString *name)
         fileExistsAtPath:[d stringByAppendingPathComponent:name]] ? @"S" : @"N";
 }
 
-// O plist instalado realmente lista o bundle do jogo?
-static NSString *BKPlHasFire(void)
-{
-    NSString *d = BKOwnDir();
-    if (!d) return @"?";
-    NSString *p = [d stringByAppendingPathComponent:@"BallKeyEngine.plist"];
-    NSString *c = [NSString stringWithContentsOfFile:p
-                                            encoding:NSUTF8StringEncoding error:nil];
-    if (!c) return @"N";
-    return ([c rangeOfString:@"freefire"].location != NSNotFound) ? @"S" : @"N";
-}
-
-// Bundles instalados que contenham "fire".
-static NSString *BKFfApps(void)
-{
-    Class wsCls = objc_getClass("LSApplicationWorkspace");
-    if (!wsCls) return @"?";
-    id ws = ((id (*)(id, SEL))objc_msgSend)(wsCls, @selector(defaultWorkspace));
-    if (!ws) return @"?";
-    SEL s = @selector(allInstalledApplications);
-    if (![ws respondsToSelector:s]) return @"?";
-    NSArray *apps = ((id (*)(id, SEL))objc_msgSend)(ws, s);
-    NSMutableString *out = [NSMutableString string];
-    for (id a in apps) {
-        NSString *b = ((id (*)(id, SEL))objc_msgSend)(a, @selector(bundleIdentifier));
-        if (![b isKindOfClass:[NSString class]] || !b.length) continue;
-        if ([b.lowercaseString rangeOfString:@"fire"].location == NSNotFound) continue;
-        if (out.length) [out appendString:@","];
-        [out appendString:b];
-        if (out.length > 70) break;
-    }
-    return out.length ? out : @"none";
-}
-
 static long BKStatusAge(void) { return BKFileAge(@"bk_status.txt"); }
 
 static NSString *BKAppText(void)
@@ -254,10 +243,8 @@ static NSString *BKStatusText(void)
     long age = BKStatusAge();
     long eng = BKFileAge(@"bk_engine_ctor.txt");
     NSString *motor = (age >= 0 && age <= 5) ? @"mot:ok" : @"mot:NAO";
-    return [NSString stringWithFormat:@"%@ v%@ lib:%@ pl:%@ plf:%@\nff:%@\neng:%lds dir:%@\n%@",
-            motor, kBKBuildTag, BKSibling(@"BallKeyEngine.dylib"),
-            BKSibling(@"BallKeyEngine.plist"), BKPlHasFire(), BKFfApps(), eng,
-            [BKBase() lastPathComponent], st.length ? st : @"-"];
+    return [NSString stringWithFormat:@"%@ v%@ ld:%@ eng:%lds\n%@",
+            motor, kBKBuildTag, gLoadRes, eng, st.length ? st : @"-"];
 }
 
 static void BKSyncApp(void)
@@ -1049,7 +1036,7 @@ static void BKMenuLayout(void)
 
     BOOL duas = (sz.height < 580.0);
     CGFloat bw = duas ? MIN(540.0, sz.width * 0.76) : MIN(320.0, sz.width * 0.74);
-    CGFloat headerH = 112.0;
+    CGFloat headerH = 96.0;
     CGFloat rowH = duas ? 38.0 : 42.0;
     CGFloat gap = 10.0;
     int linhas = duas ? 6 : 11;
@@ -1135,9 +1122,9 @@ static void BKToggleMenu(void)
     tt.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [head addSubview:tt];
 
-    UILabel *st = [[UILabel alloc] initWithFrame:CGRectMake(0, 22, 300, 76)];
+    UILabel *st = [[UILabel alloc] initWithFrame:CGRectMake(0, 22, 300, 60)];
     st.font = [UIFont monospacedSystemFontOfSize:9 weight:UIFontWeightSemibold];
-    st.numberOfLines = 5;
+    st.numberOfLines = 4;
     st.textAlignment = NSTextAlignmentCenter;
     st.backgroundColor = [UIColor colorWithWhite:0 alpha:0.60];
     st.layer.cornerRadius = 8;
@@ -1293,7 +1280,8 @@ static void BKOverlayInit(void)
     gEnabled = [cfg[@"Enabled"] boolValue];
     gFrontBundle = cfg[@"ActiveBundle"];
     BKMark(@"overlay_loaded.txt");
-    BKLog(@"ov dir=%@ base=%@", BKOwnDir() ?: @"?", BKBase());
+
+    BKLoadEngine();
 
     notify_register_dispatch("com.wjf.ballkey.close", &gCloseTok, dispatch_get_main_queue(), ^(int t) {
         (void)t;

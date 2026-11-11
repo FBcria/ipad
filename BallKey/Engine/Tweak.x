@@ -19,6 +19,7 @@ typedef struct {
     void (*SetQueue)(BKIOHIDEventSystemClientRef, dispatch_queue_t);
     void (*ScheduleRL)(BKIOHIDEventSystemClientRef, CFRunLoopRef, CFStringRef);
     void (*RegisterCB)(BKIOHIDEventSystemClientRef, void *, void *, void *);
+    void (*RegisterBlock)(BKIOHIDEventSystemClientRef, id, void *);
     void (*Activate)(BKIOHIDEventSystemClientRef);
     void (*Dispatch)(BKIOHIDEventSystemClientRef, BKIOHIDEventRef);
     int  (*GetType)(BKIOHIDEventRef);
@@ -194,10 +195,11 @@ static void BKAppend(NSString *s)
 
 static void BKAppendD(NSString *s) { if (gDump) BKAppend(s); }
 
+// Grava marcador em /var/mobile/bk_<nome>.
 static void BKMark(NSString *name)
 {
     [[NSString stringWithFormat:@"%.0f", (double)BKNow()]
-        writeToFile:[@"/var/mobile/" stringByAppendingString:name]
+        writeToFile:[@"/var/mobile/bk_" stringByAppendingString:name]
         atomically:NO encoding:NSUTF8StringEncoding error:nil];
 }
 
@@ -228,7 +230,9 @@ static int BKCurrentOrient(void)
     if (!sb) return 3;
     SEL sel = @selector(_frontMostAppOrientation);
     if (![sb respondsToSelector:sel]) return 3;
-    return (int)((int (*)(id, SEL))objc_msgSend)(sb, sel);
+    int o = (int)((int (*)(id, SEL))objc_msgSend)(sb, sel);
+    if (o < 1 || o > 4) return 3;
+    return o;
 }
 
 static void BKConvInv(double vx, double vy, int orient, double *ox, double *oy)
@@ -410,6 +414,7 @@ static BOOL BKInitIO(void)
     gIO.SetQueue     = dlsym(gIOKit, "IOHIDEventSystemClientSetDispatchQueue");
     gIO.ScheduleRL   = dlsym(gIOKit, "IOHIDEventSystemClientScheduleWithRunLoop");
     gIO.RegisterCB   = dlsym(gIOKit, "IOHIDEventSystemClientRegisterEventCallback");
+    gIO.RegisterBlock = dlsym(gIOKit, "IOHIDEventSystemClientRegisterEventBlock");
     gIO.Activate     = dlsym(gIOKit, "IOHIDEventSystemClientActivate");
     gIO.Dispatch     = dlsym(gIOKit, "IOHIDEventSystemClientDispatchEvent");
     gIO.GetType      = dlsym(gIOKit, "IOHIDEventGetType");
@@ -445,6 +450,7 @@ static int gHookDispatch = 0;
 static int gHookHandle = 0;
 static int gHookEnqueue = 0;
 static int gHookDistribute = 0;
+static int gHookSelf = 0;
 static BOOL gMarkDispatch = NO;
 static BOOL gMarkHandle = NO;
 static BOOL gMarkEnqueue = NO;
@@ -496,7 +502,8 @@ static void *BKSubstrateSym(const char *name)
 
 static void BKHookDispatch(BKIOHIDEventSystemClientRef c, BKIOHIDEventRef e)
 {
-    BKOnEventRaw(e, 1);
+    if (e && gIO.GetSender && gIO.GetSender(e) == kBKSenderID) gHookSelf++;
+    else BKOnEventRaw(e, 1);
     if (origDispatch) origDispatch(c, e);
 }
 
@@ -563,8 +570,10 @@ static void BKInstallHooks(void)
     }
 
     gHooksReady = YES;
-    BKAppend([NSString stringWithFormat:@"H hooks=%@", rep.length ? rep : @"-"]);
-    [rep writeToFile:@"/var/mobile/bk_hooks.txt"
+    NSString *line = [NSString stringWithFormat:@"msf=%d msm=%d rep=%@",
+        gMSHookFunction ? 1 : 0, gMSHookMessageEx ? 1 : 0, rep.length ? rep : @"-"];
+    BKAppend([NSString stringWithFormat:@"H %@", line]);
+    [line writeToFile:@"/var/mobile/bk_hooks.txt"
           atomically:NO encoding:NSUTF8StringEncoding error:nil];
 }
 
@@ -670,9 +679,7 @@ static void BKPtrSpan(double *w, double *h)
 
 static void BKPtrWriteTag(char tag, double a, double b, double c, double d)
 {
-    uint64_t now = BKNow();
-    if (now - gLastPtrWrite < 8) return;
-    gLastPtrWrite = now;
+    gLastPtrWrite = BKNow();
     NSString *s = (tag == 'A')
         ? [NSString stringWithFormat:@"A %.2f %.2f %.2f %.2f", a, b, c, d]
         : [NSString stringWithFormat:@"R %.4f %.4f", a, b];
@@ -790,7 +797,6 @@ static void BKFpsOn(void)
     if (gFps) return;
     gFps = YES;
     gCx = 0.5; gCy = 0.5;
-    gLastPtrWrite = 0;
     BKPtrWrite();
     gAimX = 0.5; gAimY = 0.5;
     BKDown(kBKIdxAim, 0.5, 0.5);
@@ -808,7 +814,6 @@ static void BKFpsOff(void)
     BKUp(kBKIdxAim);
     gAimSlot = 0;
     gCx = 0.5; gCy = 0.5;
-    gLastPtrWrite = 0;
     BKPtrWrite();
     BKAppend(@"F off");
     notify_post("com.wjf.ballkey.fps_off");
@@ -828,6 +833,21 @@ static NSString *BKFrontBundleNow(void)
     SEL s2 = @selector(_frontMostApplication);
     if ([sb respondsToSelector:s1]) app = ((id (*)(id, SEL))objc_msgSend)(sb, s1);
     if (!app && [sb respondsToSelector:s2]) app = ((id (*)(id, SEL))objc_msgSend)(sb, s2);
+    if (!app) {
+        Class ctrl = objc_getClass("SBApplicationController");
+        if (ctrl) {
+            id c = ((id (*)(id, SEL))objc_msgSend)(ctrl, @selector(sharedInstance));
+            SEL s4 = @selector(allApplications);
+            if (c && [c respondsToSelector:s4]) {
+                NSArray *all = ((id (*)(id, SEL))objc_msgSend)(c, s4);
+                for (id a in all) {
+                    SEL s5 = @selector(isFrontmost);
+                    if ([a respondsToSelector:s5]
+                        && ((BOOL (*)(id, SEL))objc_msgSend)(a, s5)) { app = a; break; }
+                }
+            }
+        }
+    }
     if (!app) return nil;
 
     NSString *bid = ((id (*)(id, SEL))objc_msgSend)(app, @selector(bundleIdentifier));
@@ -837,9 +857,9 @@ static NSString *BKFrontBundleNow(void)
 
 static void BKStatus(void)
 {
-    NSString *s = [NSString stringWithFormat:@"e%d k%d p%d m%lu l%d h%d.%d.%d.%d\na=%@ o%d\n",
+    NSString *s = [NSString stringWithFormat:@"e%d k%d p%d m%lu l%d h%d.%d.%d.%d s%d\na=%@ o%d\n",
         (int)gEnabled, gKeySeen, gPtrSeen, (unsigned long)gPoints.count, gLstSeen,
-        gHookDispatch, gHookHandle, gHookEnqueue, gHookDistribute,
+        gHookDispatch, gHookHandle, gHookEnqueue, gHookDistribute, gHookSelf,
         gActiveBundle ?: @"-", BKCurrentOrient()];
     [s writeToFile:kBKStatusPath atomically:NO encoding:NSUTF8StringEncoding error:nil];
 }
@@ -1126,9 +1146,29 @@ static BKIOHIDEventSystemClientRef BKNewListen(void)
     if (!c) return NULL;
     if (gIO.SetQueue) gIO.SetQueue(c, dispatch_get_main_queue());
     else if (gIO.ScheduleRL) gIO.ScheduleRL(c, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-    if (gIO.RegisterCB) gIO.RegisterCB(c, (void *)BKListenCB, NULL, NULL);
+
+    if (gIO.RegisterCB) {
+        gIO.RegisterCB(c, (void *)BKListenCB, NULL, NULL);
+    } else if (gIO.RegisterBlock) {
+        void (^blk)(void *, void *, void *, void *) = ^(void *t, void *rc, void *sv, void *ev) {
+            BKListenCB(t, rc, sv, (BKIOHIDEventRef)ev);
+        };
+        gIO.RegisterBlock(c, (__bridge id)blk, NULL);
+    }
     if (gIO.Activate) gIO.Activate(c);
     return c;
+}
+
+// Autoteste: um evento nosso e contado em gHookSelf se o hook de Dispatch estiver vivo.
+static void BKSelfTest(void)
+{
+    if (!gSendClient || !gIO.CreateDigitizer || !gIO.Dispatch) return;
+    BKIOHIDEventRef ev = gIO.CreateDigitizer(kCFAllocatorDefault, mach_absolute_time(),
+        kBKTransducerHand, 0, 0, kBKFlagPosition, 0, 0.5, 0.5, 0.0, 0.0, 0.0, 0, 0, 0);
+    if (!ev) return;
+    gIO.SetSender(ev, kBKSenderID);
+    gIO.Dispatch(gSendClient, ev);
+    CFRelease(ev);
 }
 
 __attribute__((constructor)) static void BKInitC(void)
@@ -1180,6 +1220,7 @@ __attribute__((constructor)) static void BKInitC(void)
                     BKCaptureWatch();
                     BKFpsEnsure();
                     if (tick % 5 == 0) BKFrontTick();
+                    if (tick == 21) BKSelfTest();
                     if (tick == 100 && gEvSeen == 0) BKMark(@"hook_none.txt");
                     if (tick % 8 == 0) BKStatus();
                 } @catch (NSException *e) { }

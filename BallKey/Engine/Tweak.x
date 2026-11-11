@@ -30,7 +30,7 @@ typedef struct {
         double, double, double, double, double, uint8_t, uint8_t, uint32_t);
 } BKIO;
 
-#define kBKBuildTag             @"b28"
+#define kBKBuildTag             @"b30"
 #define kBKPrefDomain           CFSTR("com.wjf.ballkey")
 #define kBKConfigFile           "/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 #define kBKNotifyReload         "com.wjf.ballkey.reload"
@@ -98,7 +98,7 @@ static NSString *gBaseDir = nil;
 static NSArray *gPoints = nil;
 static BOOL gEnabled = NO;
 static NSString *gActiveBundle = nil;
-static BOOL gInSpring = NO;
+static BOOL gInApp = NO;
 static NSMutableDictionary *gDown = nil;
 static NSMutableDictionary *gGen = nil;
 static NSMutableDictionary *gSlotOf = nil;
@@ -137,6 +137,7 @@ static int gPtrSeen = 0;
 static int gLstSeen = 0;
 static NSString *gLogBuf = nil;
 static uint64_t gLogLast = 0;
+static NSString *gHookLib = @"-";
 
 typedef struct { int on; double x, y; } BKAct;
 static BKAct gAct[kBKMaxFinger + 1];
@@ -240,17 +241,6 @@ static int BKCurrentOrient(void)
             if ([app respondsToSelector:sb]) {
                 int o = (int)((int (*)(id, SEL))objc_msgSend)(app, sb);
                 if (o >= 1 && o <= 4) return o;
-            }
-            SEL ws = @selector(connectedScenes);
-            if ([app respondsToSelector:ws]) {
-                NSSet *scenes = ((id (*)(id, SEL))objc_msgSend)(app, ws);
-                for (id sc in scenes) {
-                    SEL io = @selector(interfaceOrientation);
-                    if ([sc respondsToSelector:io]) {
-                        int o = (int)((int (*)(id, SEL))objc_msgSend)(sc, io);
-                        if (o >= 1 && o <= 4) return o;
-                    }
-                }
             }
         }
     }
@@ -479,13 +469,16 @@ static BKMSHookMessageEx gMSHookMessageEx = NULL;
 static void (*origDispatch)(BKIOHIDEventSystemClientRef, BKIOHIDEventRef) = NULL;
 static BOOL (*origHandleEvent)(id, SEL, BKIOHIDEventRef, id) = NULL;
 static void (*origEnqueueHID)(id, SEL, BKIOHIDEventRef) = NULL;
+static void (*origDistribute)(id, SEL, BKIOHIDEventRef) = NULL;
 static int gHookDispatch = 0;
 static int gHookHandle = 0;
 static int gHookEnqueue = 0;
+static int gHookDistribute = 0;
 static int gHookSelf = 0;
 static BOOL gMarkDispatch = NO;
 static BOOL gMarkHandle = NO;
 static BOOL gMarkEnqueue = NO;
+static BOOL gMarkDistribute = NO;
 static BOOL gHooksReady = NO;
 
 static void *gSeen[kBKSeenMax];
@@ -513,18 +506,24 @@ static BOOL BKSeenRecently(void *ev)
 static void *BKSubstrateSym(const char *name)
 {
     void *p = dlsym(RTLD_DEFAULT, name);
-    if (p) return p;
+    if (p) { gHookLib = @"dflt"; return p; }
+
     static void *h = NULL;
     if (!h) {
         const char *paths[] = {
             "libellekit.dylib",
             "libsubstrate.dylib",
             "libhooker.dylib",
+            "libsubstitute.dylib",
             "/usr/lib/libellekit.dylib",
-            "/usr/lib/libsubstrate.dylib"
+            "/usr/lib/libsubstrate.dylib",
+            "/var/jb/usr/lib/libellekit.dylib",
+            "/var/jb/usr/lib/libsubstrate.dylib",
+            "/var/jb/usr/lib/libhooker.dylib"
         };
         for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]) && !h; i++) {
             h = dlopen(paths[i], RTLD_LAZY);
+            if (h) gHookLib = @(paths[i]);
         }
     }
     if (!h) return NULL;
@@ -549,6 +548,12 @@ static void BKHookEnqueue(id self, SEL cmd, BKIOHIDEventRef e)
 {
     BKOnEventRaw(e, 3);
     if (origEnqueueHID) origEnqueueHID(self, cmd, e);
+}
+
+static void BKHookDistribute(id self, SEL cmd, BKIOHIDEventRef e)
+{
+    BKOnEventRaw(e, 4);
+    if (origDistribute) origDistribute(self, cmd, e);
 }
 
 static void BKInstallHooks(void)
@@ -579,9 +584,20 @@ static void BKInstallHooks(void)
         }
     }
 
+    Class delCls = objc_getClass("BKSHIDEventDeliveryManager");
+    if (gMSHookMessageEx && delCls) {
+        SEL s3 = @selector(distributeEvent:);
+        Method m3 = class_getInstanceMethod(delCls, s3);
+        if (m3) {
+            gMSHookMessageEx(delCls, s3, (void *)BKHookDistribute, (void **)&origDistribute);
+            [rep appendString:@"b"];
+        }
+    }
+
     gHooksReady = YES;
-    NSString *line = [NSString stringWithFormat:@"v=%@ msf=%d msm=%d rep=%@",
-        kBKBuildTag, gMSHookFunction ? 1 : 0, gMSHookMessageEx ? 1 : 0, rep.length ? rep : @"-"];
+    NSString *line = [NSString stringWithFormat:@"v=%@ hl=%@ msf=%d msm=%d rep=%@",
+        kBKBuildTag, gHookLib, gMSHookFunction ? 1 : 0, gMSHookMessageEx ? 1 : 0,
+        rep.length ? rep : @"-"];
     BKAppend([NSString stringWithFormat:@"H %@", line]);
     [line writeToFile:BKPath(@"bk_hooks.txt")
           atomically:NO encoding:NSUTF8StringEncoding error:nil];
@@ -600,6 +616,9 @@ static void BKOnEvent(BKIOHIDEventRef event, int type, int src)
         } else if (src == 3) {
             gHookEnqueue++;
             if (!gMarkEnqueue) { gMarkEnqueue = YES; BKMark(@"hook_enqueue.txt"); }
+        } else if (src == 4) {
+            gHookDistribute++;
+            if (!gMarkDistribute) { gMarkDistribute = YES; BKMark(@"hook_distribute.txt"); }
         }
 
         if (type == kBKTypePointer) {
@@ -741,6 +760,7 @@ static void BKGCStart(void)
     }
 
     BKMark(@"gc_on.txt");
+    BKStatus();
 }
 
 static void BKGCStop(void)
@@ -919,10 +939,10 @@ static void BKFpsOff(void)
 
 static void BKStatus(void)
 {
-    NSString *s = [NSString stringWithFormat:@"v%@ e%d k%d p%d m%lu l%d h%d.%d.%d s%d g%d\na=%@ o%d\n",
+    NSString *s = [NSString stringWithFormat:@"v%@ e%d k%d p%d m%lu l%d h%d.%d.%d.%d s%d g%d hl:%@\na=%@ o%d\n",
         kBKBuildTag, (int)gEnabled, gKeySeen, gPtrSeen, (unsigned long)gPoints.count, gLstSeen,
-        gHookDispatch, gHookHandle, gHookEnqueue, gHookSelf, (int)gGCOn,
-        gActiveBundle ?: @"-", BKCurrentOrient()];
+        gHookDispatch, gHookHandle, gHookEnqueue, gHookDistribute, gHookSelf, (int)gGCOn,
+        gHookLib, gActiveBundle ?: @"-", BKCurrentOrient()];
     [s writeToFile:BKPath(@"bk_status.txt") atomically:NO encoding:NSUTF8StringEncoding error:nil];
 }
 
@@ -979,22 +999,25 @@ static void BKLoadConfig(void)
     gEnabled = enabled;
 
     NSString *own = [[NSBundle mainBundle] bundleIdentifier];
-    if (!own.length || [own isEqualToString:@"com.apple.springboard"]) {
-        gInSpring = YES;
+    if (!own.length || [own isEqualToString:@"com.apple.springboard"]
+        || [own isEqualToString:@"com.apple.backboardd"]) {
+        gInApp = NO;
         own = [cfg[@"ActiveBundle"] isKindOfClass:[NSString class]] ? cfg[@"ActiveBundle"] : nil;
+    } else {
+        gInApp = YES;
     }
     gActiveBundle = own;
     gPoints = BKResolvePoints(cfg, own);
 
-    if (!gInSpring && own.length) {
+    if (gInApp && own.length) {
         [own writeToFile:BKPath(@"bk_app.txt")
               atomically:NO encoding:NSUTF8StringEncoding error:nil];
     }
 
     if (!enabled && wasEnabled) { BKReleaseAll(); if (gFps) BKFpsOff(); }
     if (enabled && gPoints.count) BKMark(@"engine_armed.txt");
-    BKAppend([NSString stringWithFormat:@"L en=%d app=%@ pts=%lu sp=%d",
-        (int)enabled, own ?: @"-", (unsigned long)gPoints.count, (int)gInSpring]);
+    BKAppend([NSString stringWithFormat:@"L en=%d app=%@ pts=%lu app=%d",
+        (int)enabled, own ?: @"-", (unsigned long)gPoints.count, (int)gInApp]);
     BKStatus();
 }
 
@@ -1215,24 +1238,24 @@ __attribute__((constructor)) static void BKInitC(void)
 
         BKLoadConfig();
 
+        // GameController liga sempre, sem depender de timer nem de hook.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1200 * NSEC_PER_MSEC)),
+                       q, ^{ @try { BKGCStart(); } @catch (NSException *e) { } });
+
         dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
         if (src) {
-            dispatch_source_set_timer(src, dispatch_time(DISPATCH_TIME_NOW, 120ull * NSEC_PER_MSEC),
-                                      120ull * NSEC_PER_MSEC, 20ull * NSEC_PER_MSEC);
+            dispatch_source_set_timer(src, dispatch_time(DISPATCH_TIME_NOW, 150ull * NSEC_PER_MSEC),
+                                      150ull * NSEC_PER_MSEC, 30ull * NSEC_PER_MSEC);
             dispatch_source_set_event_handler(src, ^{
                 @try {
                     static int tick = 0;
                     tick++;
                     BKCaptureWatch();
                     BKFpsEnsure();
-                    if (tick == 21) BKSelfTest();
-                    if (tick == 25) {
-                        if (!gHooksReady || !gMSHookFunction) BKGCStart();
-                    }
-                    if (tick == 70 && !gGCOn && gEvSeen == 0) BKGCStart();
-                    if (tick == 120 && gGCOn && gEvSeen > 0) BKGCStop();
-                    if (tick == 100 && gEvSeen == 0) BKMark(@"hook_none.txt");
-                    if (tick % 8 == 0) BKStatus();
+                    if (tick == 14) BKSelfTest();
+                    if (tick == 20 && !gGCOn) BKGCStart();
+                    if (tick == 70 && gEvSeen == 0) BKMark(@"hook_none.txt");
+                    if (tick % 6 == 0) BKStatus();
                 } @catch (NSException *e) { }
             });
             dispatch_resume(src);

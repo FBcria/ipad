@@ -106,6 +106,7 @@ typedef struct {
 static void *gIOKit = NULL;
 static BKIO gIO;
 static BKIOHIDEventSystemClientRef gListenClient = NULL;
+static id gListenBlock = nil;
 static BKIOHIDEventSystemClientRef gSendClient = NULL;
 static dispatch_queue_t gSendQ = NULL;
 static NSArray *gPoints = nil;
@@ -1153,7 +1154,8 @@ static BKIOHIDEventSystemClientRef BKNewListen(void)
         void (^blk)(void *, void *, void *, void *) = ^(void *t, void *rc, void *sv, void *ev) {
             BKListenCB(t, rc, sv, (BKIOHIDEventRef)ev);
         };
-        gIO.RegisterBlock(c, (__bridge id)blk, NULL);
+        gListenBlock = [blk copy];
+        gIO.RegisterBlock(c, gListenBlock, NULL);
     }
     if (gIO.Activate) gIO.Activate(c);
     return c;

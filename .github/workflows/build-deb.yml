@@ -7,9 +7,13 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 40
     steps:
       - name: Checkout
@@ -20,7 +24,23 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/theos
-          key: theos-roothide-${{ runner.os }}-v3
+          key: theos-roothide-linux-v3
+
+      - name: Dependências
+        if: steps.tc.outputs.cache-hit != 'true'
+        run: |
+          PACOTES="libxml2 libxml2-dev libtinfo6 dpkg-dev make curl git jq clang lld pkg-config libplist-dev"
+          APT="sudo apt-get -o Acquire::Retries=2 -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
+          for i in 1 2; do
+            timeout 120 $APT update || true
+            if timeout 150 $APT install -y $PACOTES; then
+              echo "dependencias ok"
+              exit 0
+            fi
+            echo "tentativa $i falhou"
+            sleep 8
+          done
+          echo "::warning::dependencias incompletas, seguindo"
 
       - name: Instalar Theos
         if: steps.tc.outputs.cache-hit != 'true'
@@ -45,6 +65,7 @@ jobs:
           set -e
           test -d "$THEOS/makefiles" || { echo "theos ausente"; exit 1; }
           test -d "$THEOS/sdks" || { echo "sdks ausentes"; exit 1; }
+          command -v clang >/dev/null || { echo "clang ausente"; exit 1; }
 
       - name: Localizar Makefile
         id: mk

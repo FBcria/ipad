@@ -281,18 +281,6 @@ static void BKConvInv(double vx, double vy, int orient, double *ox, double *oy)
     *ox = BKClamp(rx);
     *oy = BKClamp(ry);
 }
-static void BKConv(double rx, double ry, int orient, double *ox, double *oy)
-{
-    double vx = rx, vy = ry;
-    switch (orient) {
-        case 2: vx = 1.0 - rx; vy = 1.0 - ry; break;
-        case 3: vx = 1.0 - ry; vy = rx;       break;
-        case 4: vx = ry;       vy = 1.0 - rx; break;
-        default: break;
-    }
-    *ox = BKClamp(vx);
-    *oy = BKClamp(vy);
-}
 static int BKUsageFromKey(id k)
 {
     if (![k isKindOfClass:[NSString class]]) return 0;

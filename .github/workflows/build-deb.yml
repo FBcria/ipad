@@ -18,8 +18,20 @@ jobs:
       - name: Dependências
         run: |
           set -e
-          PACOTES="libxml2 libxml2-dev
-          
+          PACOTES="libxml2 libxml2-dev libtinfo6 dpkg-dev make curl git jq libncurses-dev libssl-dev libplist-dev libpng-dev libjpeg-dev libtiff-dev libwebp-dev zlib1g-dev liblzma-dev libcurl4-openssl-dev swig pkg-config clang lld"
+          APT="sudo apt-get -o Acquire::Retries=8 -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          ok=0
+          for i in 1 2 3 4 5; do
+            if $APT update && $APT install -y $PACOTES; then
+              echo "dependencias ok na tentativa $i"
+              ok=1
+              break
+            fi
+            echo "tentativa $i falhou, esperando 15s"
+            sleep 15
+          done
+          test "$ok" = "1" || { echo "dependencias falharam"; exit 1; }
+
       - name: Instalar Theos
         run: |
           export THEOS=$HOME/theos
@@ -27,11 +39,11 @@ jobs:
           bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
           rc=$?
           set -e
-          if [ $rc -ne 0 ]; then
-            echo "::warning::instalador do Theos saiu com $rc, seguindo para a verificação"
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning::instalador do Theos saiu com $rc, seguindo para a verificacao"
           fi
           echo "THEOS=$THEOS" >> $GITHUB_ENV
-          
+
       - name: Aplicar fork RootHide
         run: |
           set -e

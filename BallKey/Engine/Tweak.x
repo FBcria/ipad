@@ -13,7 +13,7 @@
 typedef struct __IOHIDEvent *BKIOHIDEventRef;
 typedef struct __IOHIDEventSystemClient *BKIOHIDEventSystemClientRef;
 
-const char BKEngineTag[] = "b35";
+const char BKEngineTag[] = "b36";
 
 #define kBKSenderID 0x8000000817319372ULL
 static const int kBKTypeKeyExtra = 1;
@@ -44,7 +44,6 @@ static NSString *gBaseDir = nil;
 static NSString *gLogBuf = nil;
 static uint64_t gLogLast = 0;
 static int gEvSeen = 0, gKeySeen = 0, gPtrSeen = 0, gLstSeen = 0;
-static int gStatN = 0;
 static BOOL gReady = NO;
 static BOOL gOff = NO, gSafe = NO;
 static int gCapType = 0, gSendType = 0;
@@ -110,6 +109,8 @@ static void BKMark(NSString *name);
 static void BKAppend(NSString *fmt, ...);
 static uint64_t BKNow(void);
 static BOOL BKExists(NSString *p);
+static int BKReadInt(NSString *p);
+static void BKWriteInt(NSString *p, int n);
 static void BKPtrSpan(double *w, double *h);
 static void BKPtrWriteTag(char tag, double a, double b, double c, double d);
 static void BKCursorAbs(double x, double y);
@@ -126,8 +127,6 @@ static void BKArmCapture(void);
 static void BKOnEvent(BKIOHIDEventRef event, int type, int src);
 static void BKListenCB(void *t, void *r, void *s, BKIOHIDEventRef e);
 static void BKInit(void);
-static int BKTryCount(void);
-static void BKTrySet(int n);
 
 static uint64_t BKNow(void) { return mach_absolute_time() / 1000000ull; }
 
@@ -137,19 +136,18 @@ static BOOL BKExists(NSString *p)
     @catch (NSException *e) { return NO; }
 }
 
-static int BKTryCount(void)
+static int BKReadInt(NSString *p)
 {
     @try {
-        NSString *s = [NSString stringWithContentsOfFile:kBKTryFile
-                                                encoding:NSUTF8StringEncoding error:nil];
+        NSString *s = [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil];
         return s ? [s intValue] : 0;
     } @catch (NSException *e) { return 0; }
 }
 
-static void BKTrySet(int n)
+static void BKWriteInt(NSString *p, int n)
 {
     @try {
-        [[NSString stringWithFormat:@"%d", n] writeToFile:kBKTryFile atomically:NO
+        [[NSString stringWithFormat:@"%d", n] writeToFile:p atomically:NO
                     encoding:NSUTF8StringEncoding error:nil];
     } @catch (NSException *e) { }
 }
@@ -596,7 +594,6 @@ static NSString *BKFilterOK(void)
 static void BKStatus(void)
 {
     @try {
-        gStatN++;
         NSString *s = [NSString stringWithFormat:
             @"e%d k%d p%d m%d a=%@ o%d ct=%d/%d plf=%@ sf=%d",
             gEvSeen, gKeySeen, gPtrSeen, gPtrMask, BKAppAt(),
@@ -717,7 +714,7 @@ static void BKInit(void)
 
         BKLoadConfig();
 
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(300 * NSEC_PER_MSEC)),
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(400 * NSEC_PER_MSEC)),
                        dispatch_get_main_queue(), ^{
             @try {
                 gPtrClient = BKNewListen(@{ @"PrimaryUsagePage": @1 }, &gPtrBlock, &gCapType);
@@ -740,10 +737,8 @@ static void BKInit(void)
                     tick++;
                     BKCaptureWatch();
                     if (tick == 80) {
-                        BKTrySet(0);
-                        if (gSafe && BKExists(kBKSafeFile)) {
-                            [[NSFileManager defaultManager] removeItemAtPath:kBKSafeFile error:nil];
-                        }
+                        BKWriteInt(kBKTryFile, 0);
+                        if (gSafe) [[NSFileManager defaultManager] removeItemAtPath:kBKSafeFile error:nil];
                         BKMark(@"engine_ok.txt");
                     }
                     if (tick % 4 == 0) BKStatus();
@@ -764,26 +759,31 @@ static void BKInit(void)
 
 __attribute__((constructor)) static void BKInitC(void)
 {
-    BKMark(@"engine_ctor.txt");
-
-    int n = BKTryCount() + 1;
-    BKTrySet(n);
-    gOff = BKExists(kBKOffFile);
-    if (n > 3) {
-        @try {
-            [@"" writeToFile:kBKSafeFile atomically:NO encoding:NSUTF8StringEncoding error:nil];
-        } @catch (NSException *e) { }
-    }
-    gSafe = BKExists(kBKSafeFile);
-    BKAppend(@"I boot n=%d off=%d safe=%d", n, gOff, gSafe);
-
-    if (gOff || (gSafe && n > 3)) {
-        BKMark(@"engine_safe.txt");
-        dispatch_async(dispatch_get_main_queue(), ^{ BKStatus(); });
-        return;
-    }
-
     dispatch_async(dispatch_get_main_queue(), ^{
-        @autoreleasepool { BKInit(); }
+        @autoreleasepool {
+            @try {
+                BKMark(@"engine_ctor.txt");
+                int n = BKReadInt(kBKTryFile) + 1;
+                BKWriteInt(kBKTryFile, n);
+                gOff = BKExists(kBKOffFile);
+                if (n > 3) {
+                    [@"" writeToFile:kBKSafeFile atomically:NO encoding:NSUTF8StringEncoding error:nil];
+                }
+                gSafe = BKExists(kBKSafeFile);
+                BKAppend(@"I boot n=%d off=%d safe=%d", n, gOff, gSafe);
+
+                if (gOff || (gSafe && n > 3)) {
+                    BKMark(@"engine_safe.txt");
+                    BKStatus();
+                    return;
+                }
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1000 * NSEC_PER_MSEC)),
+                               dispatch_get_main_queue(), ^{
+                    @try { BKInit(); } @catch (NSException *e) { }
+                });
+            } @catch (NSException *e) {
+                BKAppend(@"! ctor %@", e.reason);
+            }
+        }
     });
 }

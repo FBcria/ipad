@@ -6,7 +6,7 @@
 #import <dlfcn.h>
 #import <stdarg.h>
 
-#define kBKBuildTag    @"b26"
+#define kBKBuildTag    @"b27"
 #define kBKPrefDomain  CFSTR("com.wjf.ballkey")
 #define kBKConfigPath  @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 
@@ -50,6 +50,9 @@ static long BKStatusAge(void);
 static NSString *BKAppText(void);
 static NSString *BKOwnDir(void);
 static long BKFileAge(NSString *name);
+static NSString *BKSibling(NSString *name);
+static NSString *BKFfApps(void);
+static NSString *BKPlHasFire(void);
 
 @interface BKPassWindow : UIWindow
 @end
@@ -100,7 +103,6 @@ static NSString *BKBase(void)
 
 static NSString *BKPath(NSString *name) { return [BKBase() stringByAppendingString:name]; }
 
-// Diretorio onde este dylib foi instalado (mesmo do motor).
 static NSString *BKOwnDir(void)
 {
     static NSString *dir = nil;
@@ -200,6 +202,40 @@ static NSString *BKSibling(NSString *name)
         fileExistsAtPath:[d stringByAppendingPathComponent:name]] ? @"S" : @"N";
 }
 
+// O plist instalado realmente lista o bundle do jogo?
+static NSString *BKPlHasFire(void)
+{
+    NSString *d = BKOwnDir();
+    if (!d) return @"?";
+    NSString *p = [d stringByAppendingPathComponent:@"BallKeyEngine.plist"];
+    NSString *c = [NSString stringWithContentsOfFile:p
+                                            encoding:NSUTF8StringEncoding error:nil];
+    if (!c) return @"N";
+    return ([c rangeOfString:@"freefire"].location != NSNotFound) ? @"S" : @"N";
+}
+
+// Bundles instalados que contenham "fire".
+static NSString *BKFfApps(void)
+{
+    Class wsCls = objc_getClass("LSApplicationWorkspace");
+    if (!wsCls) return @"?";
+    id ws = ((id (*)(id, SEL))objc_msgSend)(wsCls, @selector(defaultWorkspace));
+    if (!ws) return @"?";
+    SEL s = @selector(allInstalledApplications);
+    if (![ws respondsToSelector:s]) return @"?";
+    NSArray *apps = ((id (*)(id, SEL))objc_msgSend)(ws, s);
+    NSMutableString *out = [NSMutableString string];
+    for (id a in apps) {
+        NSString *b = ((id (*)(id, SEL))objc_msgSend)(a, @selector(bundleIdentifier));
+        if (![b isKindOfClass:[NSString class]] || !b.length) continue;
+        if ([b.lowercaseString rangeOfString:@"fire"].location == NSNotFound) continue;
+        if (out.length) [out appendString:@","];
+        [out appendString:b];
+        if (out.length > 70) break;
+    }
+    return out.length ? out : @"none";
+}
+
 static long BKStatusAge(void) { return BKFileAge(@"bk_status.txt"); }
 
 static NSString *BKAppText(void)
@@ -218,11 +254,10 @@ static NSString *BKStatusText(void)
     long age = BKStatusAge();
     long eng = BKFileAge(@"bk_engine_ctor.txt");
     NSString *motor = (age >= 0 && age <= 5) ? @"mot:ok" : @"mot:NAO";
-    return [NSString stringWithFormat:@"%@ v%@\nlib:%@ pl:%@ eng:%lds dir:%@\n%@",
+    return [NSString stringWithFormat:@"%@ v%@ lib:%@ pl:%@ plf:%@\nff:%@\neng:%lds dir:%@\n%@",
             motor, kBKBuildTag, BKSibling(@"BallKeyEngine.dylib"),
-            BKSibling(@"BallKeyEngine.plist"), eng,
-            [[BKBase() lastPathComponent] isEqualToString:@""] ? @"?" : [BKBase() lastPathComponent],
-            st.length ? st : @"-"];
+            BKSibling(@"BallKeyEngine.plist"), BKPlHasFire(), BKFfApps(), eng,
+            [BKBase() lastPathComponent], st.length ? st : @"-"];
 }
 
 static void BKSyncApp(void)
@@ -1014,7 +1049,7 @@ static void BKMenuLayout(void)
 
     BOOL duas = (sz.height < 580.0);
     CGFloat bw = duas ? MIN(540.0, sz.width * 0.76) : MIN(320.0, sz.width * 0.74);
-    CGFloat headerH = 100.0;
+    CGFloat headerH = 112.0;
     CGFloat rowH = duas ? 38.0 : 42.0;
     CGFloat gap = 10.0;
     int linhas = duas ? 6 : 11;
@@ -1100,15 +1135,15 @@ static void BKToggleMenu(void)
     tt.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [head addSubview:tt];
 
-    UILabel *st = [[UILabel alloc] initWithFrame:CGRectMake(0, 22, 300, 64)];
-    st.font = [UIFont monospacedSystemFontOfSize:9.5 weight:UIFontWeightSemibold];
-    st.numberOfLines = 4;
+    UILabel *st = [[UILabel alloc] initWithFrame:CGRectMake(0, 22, 300, 76)];
+    st.font = [UIFont monospacedSystemFontOfSize:9 weight:UIFontWeightSemibold];
+    st.numberOfLines = 5;
     st.textAlignment = NSTextAlignmentCenter;
     st.backgroundColor = [UIColor colorWithWhite:0 alpha:0.60];
     st.layer.cornerRadius = 8;
     st.clipsToBounds = YES;
     st.adjustsFontSizeToFitWidth = YES;
-    st.minimumScaleFactor = 0.45;
+    st.minimumScaleFactor = 0.4;
     st.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     st.tag = 79;
     [head addSubview:st];

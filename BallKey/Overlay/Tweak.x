@@ -36,6 +36,7 @@ static NSMutableDictionary *BKReadCfg(void);
 @property (nonatomic, assign) double ny;
 @property (nonatomic, assign) CGFloat radius;
 @property (nonatomic, strong) UILabel *label;
+@property (nonatomic, strong) UIView *box;
 @end
 static BKMarkerView *gPending = nil;
 static NSTimer *gCapTimer = nil;
@@ -172,6 +173,7 @@ static void BKPlaceMarker(BKMarkerView *m)
     m.ny = BKClamp01(m.ny);
     CGFloat side = 56;
     m.frame = CGRectMake(m.nx * sz.width - side / 2, m.ny * sz.height - side / 2, side, side);
+    if (m.box) m.box.frame = CGRectMake(m.center.x - 40, m.center.y - 40, 80, 80);
 }
 static void BKRelayout(void)
 {
@@ -287,6 +289,7 @@ static void BKStartCapture(BKMarkerView *m)
     self.center = c;
     self.nx = c.x / sz.width;
     self.ny = c.y / sz.height;
+    if (self.box) self.box.frame = CGRectMake(c.x - 40, c.y - 40, 80, 80);
     [g setTranslation:CGPointZero inView:gCanvas];
 }
 - (void)bkTap:(UITapGestureRecognizer *)g
@@ -299,6 +302,7 @@ static void BKStartCapture(BKMarkerView *m)
 {
     if (g.state != UIGestureRecognizerStateBegan) return;
     if (gPending == self) BKStopCapture();
+    [self.box removeFromSuperview];
     [gMarkers removeObject:self];
     [self removeFromSuperview];
 }
@@ -343,6 +347,16 @@ static BKMarkerView *BKMakeMarker(NSString *type, double nx, double ny, NSString
     l.text = [NSString stringWithFormat:@"%@\n%@", BKTypeName(type), enc ?: @"…"];
     [m addSubview:l];
     m.label = l;
+    if ([type isEqualToString:@"Fps"]) {
+        UIView *bx = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 80, 80)];
+        bx.userInteractionEnabled = NO;
+        bx.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.05];
+        bx.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.55].CGColor;
+        bx.layer.borderWidth = 1.5;
+        bx.layer.cornerRadius = 4;
+        [gCanvas insertSubview:bx atIndex:0];
+        m.box = bx;
+    }
     [m addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:m action:@selector(bkPan:)]];
     [m addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:m action:@selector(bkTap:)]];
     [m addGestureRecognizer:[[UILongPressGestureRecognizer alloc] initWithTarget:m action:@selector(bkLong:)]];

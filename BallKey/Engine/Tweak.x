@@ -75,7 +75,6 @@ typedef struct {
 
 #define kBKDefaultFpsKey        224
 #define kBKCtrlRight            228
-#define kBKPageBtn              12
 #define kBKUsageBtnBase         64
 #define kBKMaxBtn               3
 
@@ -84,20 +83,15 @@ typedef struct {
 #define kBKMoveDedupNs          3000000ull
 #define kBKEdge                 0.06
 #define kBKPressNs              (60ull * NSEC_PER_MSEC)
-#define kBKPtrScale             3000.0
-#define kBKPtrWriteNs           8000000ull
 
-#define kBKKeyGraceNs           60000000ull
 #define kBKBtnLockNs            100000000ull
 #define kBKCapArmNs             90000000ull
 #define kBKCapLifeNs            8000000000ull
 
 #define kBKIdxAim               70
-#define kBKIdxAimB              75
 #define kBKIdxAds               71
 #define kBKIdxDir               72
 #define kBKIdxFogo              73
-#define kBKIdxMirar             74
 #define kBKIdxCursor            40
 
 static void *gIOKit = NULL;
@@ -132,7 +126,6 @@ static double gAimX = 0.5, gAimY = 0.5;
 static int gAimSlot = 0;
 static BOOL gFogoDown = NO, gAdsDown = NO, gDirActive = NO;
 static double gDirSens = 1.0;
-static int gBtnOwner[kBKMaxBtn];
 static BOOL gAimB = NO;
 
 static double gCx = 0.5, gCy = 0.5;

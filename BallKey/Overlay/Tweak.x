@@ -5,7 +5,7 @@
 #import <notify.h>
 #import <dlfcn.h>
 
-#define kBKBuildTag    @"b34"
+#define kBKBuildTag    @"b35"
 #define kBKConfigPath  @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 #define kBKNotifyLoad  "com.wjf.ballkey.reload"
 #define kBKNotifyTest  "com.wjf.ballkey.test"
@@ -16,6 +16,18 @@
 #define kBKHot   [UIColor colorWithRed:1.00 green:0.22 blue:0.55 alpha:1.0]
 #define kBKRed   [UIColor colorWithRed:1.00 green:0.30 blue:0.30 alpha:1.0]
 #define kBKDim   [UIColor colorWithRed:0.70 green:0.80 blue:0.85 alpha:1.0]
+
+@interface BKRootView : UIView
+@end
+
+@implementation BKRootView
+- (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e
+{
+    UIView *v = [super hitTest:p withEvent:e];
+    if (!v || v == self) return nil;
+    return v;
+}
+@end
 
 @interface BKUI : NSObject
 - (void)dragMarker:(UIPanGestureRecognizer *)g;
@@ -235,30 +247,19 @@ static void BKRefreshStatus(void)
     @try {
         NSString *eng = [NSString stringWithContentsOfFile:BKPath(@"bk_engine_status.txt")
                                                   encoding:NSUTF8StringEncoding error:nil];
-        if (!eng) eng = @"e0 k0 p0 m0 a=- o0 h0.0.0.0 hl=- g0";
+        if (!eng) eng = @"e0 k0 p0 m0 a=- o0 ct=0/0 plf=N sf=0";
         uint64_t age = BKAgeOf(@"bk_engine_status.txt");
         uint64_t engAge = BKAgeOf(@"bk_engine_ready.txt");
 
-        NSString *hl = @"-";
-        NSString *hook = [NSString stringWithContentsOfFile:BKPath(@"bk_hooks.txt")
-                                                   encoding:NSUTF8StringEncoding error:nil];
-        if (hook.length) {
-            NSRange r = [hook rangeOfString:@"hl="];
-            if (r.location != NSNotFound) {
-                hl = [hook substringFromIndex:r.location + 3];
-                NSRange sp = [hl rangeOfString:@" "];
-                if (sp.location != NSNotFound) hl = [hl substringToIndex:sp.location];
-            }
-        }
+        BOOL safe = [[NSFileManager defaultManager] fileExistsAtPath:@"/var/mobile/bk_safe.txt"];
 
         NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:kBKConfigPath];
         BOOL on = cfg ? [[cfg objectForKey:@"Enabled"] boolValue] : YES;
 
         NSString *head = [NSString stringWithFormat:
-            @"v %@  at %@  lib:%@  ld:%@  eng:%llus  age:%llus  hl:%@",
+            @"v %@  at %@  lib:%@  eng:%llus  age:%llus  safe:%@",
             kBKBuildTag, on ? @"1" : @"0", gEngineLoaded ? @"S" : @"N",
-            gEngineLoaded ? @"ok" : @"-",
-            (unsigned long long)engAge, (unsigned long long)age, hl];
+            (unsigned long long)engAge, (unsigned long long)age, safe ? @"1" : @"0"];
 
         NSString *bb = [NSString stringWithContentsOfFile:BKPath(@"bk_engine_bb.txt")
                                                  encoding:NSUTF8StringEncoding error:nil];
@@ -446,7 +447,7 @@ static void BKOpenMenu(void)
             }
             gMenuWin = scene ? [[UIWindow alloc] initWithWindowScene:scene]
                              : [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-            gMenuWin.windowLevel = 10000001;
+            gMenuWin.windowLevel = UIWindowLevelAlert + 2002;
             gMenuWin.backgroundColor = [UIColor clearColor];
             gMenuWin.rootViewController = [[UIViewController alloc] init];
         }
@@ -537,7 +538,7 @@ static void BKOpenEditor(NSString *kind, int code)
     @try {
         if (!gEditWin) {
             gEditWin = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-            gEditWin.windowLevel = 10000002;
+            gEditWin.windowLevel = UIWindowLevelAlert + 2003;
             gEditWin.backgroundColor = [UIColor clearColor];
             gEditWin.rootViewController = [[UIViewController alloc] init];
         }
@@ -680,9 +681,10 @@ static void BKOverlayBuild(void)
 
     gBallWin = scene ? [[UIWindow alloc] initWithWindowScene:scene]
                      : [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    gBallWin.windowLevel = 10000000;
+    gBallWin.windowLevel = UIWindowLevelAlert + 2000;
     gBallWin.backgroundColor = [UIColor clearColor];
     gBallWin.rootViewController = [[UIViewController alloc] init];
+    gBallWin.rootViewController.view = [[BKRootView alloc] initWithFrame:gBallWin.bounds];
 
     gBall = [[UIView alloc] initWithFrame:CGRectMake(20, 120, 44, 44)];
     gBall.backgroundColor = [UIColor colorWithRed:0.03 green:0.07 blue:0.10 alpha:0.85];
@@ -708,9 +710,10 @@ static void BKOverlayBuild(void)
 
     gCursorWin = scene ? [[UIWindow alloc] initWithWindowScene:scene]
                        : [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    gCursorWin.windowLevel = 10000003;
+    gCursorWin.windowLevel = UIWindowLevelAlert + 2001;
     gCursorWin.backgroundColor = [UIColor clearColor];
     gCursorWin.rootViewController = [[UIViewController alloc] init];
+    gCursorWin.rootViewController.view = [[BKRootView alloc] initWithFrame:gCursorWin.bounds];
 
     gCursor = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 18, 18)];
     gCursor.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.10];

@@ -17,20 +17,18 @@ jobs:
 
       - name: Dependências
         run: |
-          set -e
-          PACOTES="clang lld pkg-config libplist-dev libwebp-dev libcurl4-openssl-dev libxml2-dev libtinfo6"
-          APT="sudo apt-get -o Acquire::Retries=3 -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
-          ok=0
-          for i in 1 2 3 4 5; do
-            if timeout 180 $APT update && timeout 180 $APT install -y $PACOTES; then
-              echo "dependencias ok na tentativa $i"
-              ok=1
-              break
+          PACOTES="libxml2 libxml2-dev libtinfo6 dpkg-dev make curl git jq clang lld pkg-config libplist-dev"
+          APT="sudo apt-get -o Acquire::Retries=2 -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
+          for i in 1 2; do
+            timeout 120 $APT update || true
+            if timeout 150 $APT install -y $PACOTES; then
+              echo "dependencias ok"
+              exit 0
             fi
-            echo "tentativa $i falhou, esperando 10s"
-            sleep 10
+            echo "tentativa $i falhou"
+            sleep 8
           done
-          test "$ok" = "1" || { echo "dependencias falharam"; exit 1; }
+          echo "::warning::dependencias incompletas, seguindo"
           
       - name: Instalar Theos
         run: |

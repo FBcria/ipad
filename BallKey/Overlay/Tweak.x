@@ -3,9 +3,10 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <notify.h>
+#import <dlfcn.h>
 #import <stdarg.h>
 
-#define kBKBuildTag    @"b25"
+#define kBKBuildTag    @"b26"
 #define kBKPrefDomain  CFSTR("com.wjf.ballkey")
 #define kBKConfigPath  @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 
@@ -47,6 +48,8 @@ static NSString *BKPath(NSString *name);
 static void BKSyncApp(void);
 static long BKStatusAge(void);
 static NSString *BKAppText(void);
+static NSString *BKOwnDir(void);
+static long BKFileAge(NSString *name);
 
 @interface BKPassWindow : UIWindow
 @end
@@ -96,6 +99,18 @@ static NSString *BKBase(void)
 }
 
 static NSString *BKPath(NSString *name) { return [BKBase() stringByAppendingString:name]; }
+
+// Diretorio onde este dylib foi instalado (mesmo do motor).
+static NSString *BKOwnDir(void)
+{
+    static NSString *dir = nil;
+    if (dir) return dir;
+    Dl_info info;
+    if (dladdr((void *)BKOwnDir, &info) && info.dli_fname) {
+        dir = [@(info.dli_fname) stringByDeletingLastPathComponent];
+    }
+    return dir;
+}
 
 static void BKMark(NSString *name)
 {
@@ -168,27 +183,24 @@ static BOOL BKGetDump(void)
     return n ? [n boolValue] : NO;
 }
 
-static NSString *BKLibCheck(void)
-{
-    NSArray *ps = @[@"/var/jb/usr/lib/TweakInject/BallKeyEngine.dylib",
-                    @"/var/jb/Library/MobileSubstrate/DynamicLibraries/BallKeyEngine.dylib",
-                    @"/usr/lib/TweakInject/BallKeyEngine.dylib",
-                    @"/Library/MobileSubstrate/DynamicLibraries/BallKeyEngine.dylib"];
-    for (NSUInteger i = 0; i < ps.count; i++) {
-        if ([[NSFileManager defaultManager] fileExistsAtPath:ps[i]])
-            return [NSString stringWithFormat:@"L%lu", (unsigned long)(i + 1)];
-    }
-    return @"L0";
-}
-
-static long BKStatusAge(void)
+static long BKFileAge(NSString *name)
 {
     NSDictionary *at = [[NSFileManager defaultManager]
-        attributesOfItemAtPath:BKPath(@"bk_status.txt") error:nil];
+        attributesOfItemAtPath:BKPath(name) error:nil];
     NSDate *mt = at[NSFileModificationDate];
     if (!mt) return -1;
     return (long)[[NSDate date] timeIntervalSinceDate:mt];
 }
+
+static NSString *BKSibling(NSString *name)
+{
+    NSString *d = BKOwnDir();
+    if (!d) return @"?";
+    return [[NSFileManager defaultManager]
+        fileExistsAtPath:[d stringByAppendingPathComponent:name]] ? @"S" : @"N";
+}
+
+static long BKStatusAge(void) { return BKFileAge(@"bk_status.txt"); }
 
 static NSString *BKAppText(void)
 {
@@ -204,9 +216,13 @@ static NSString *BKStatusText(void)
                                             encoding:NSUTF8StringEncoding error:nil];
     st = [st stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     long age = BKStatusAge();
+    long eng = BKFileAge(@"bk_engine_ctor.txt");
     NSString *motor = (age >= 0 && age <= 5) ? @"mot:ok" : @"mot:NAO";
-    return [NSString stringWithFormat:@"%@ v%@ lib:%@ age:%lds\n%@",
-            motor, kBKBuildTag, BKLibCheck(), age, st.length ? st : @"-"];
+    return [NSString stringWithFormat:@"%@ v%@\nlib:%@ pl:%@ eng:%lds dir:%@\n%@",
+            motor, kBKBuildTag, BKSibling(@"BallKeyEngine.dylib"),
+            BKSibling(@"BallKeyEngine.plist"), eng,
+            [[BKBase() lastPathComponent] isEqualToString:@""] ? @"?" : [BKBase() lastPathComponent],
+            st.length ? st : @"-"];
 }
 
 static void BKSyncApp(void)
@@ -998,7 +1014,7 @@ static void BKMenuLayout(void)
 
     BOOL duas = (sz.height < 580.0);
     CGFloat bw = duas ? MIN(540.0, sz.width * 0.76) : MIN(320.0, sz.width * 0.74);
-    CGFloat headerH = 92.0;
+    CGFloat headerH = 100.0;
     CGFloat rowH = duas ? 38.0 : 42.0;
     CGFloat gap = 10.0;
     int linhas = duas ? 6 : 11;
@@ -1084,15 +1100,15 @@ static void BKToggleMenu(void)
     tt.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [head addSubview:tt];
 
-    UILabel *st = [[UILabel alloc] initWithFrame:CGRectMake(0, 22, 300, 56)];
-    st.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightSemibold];
-    st.numberOfLines = 3;
+    UILabel *st = [[UILabel alloc] initWithFrame:CGRectMake(0, 22, 300, 64)];
+    st.font = [UIFont monospacedSystemFontOfSize:9.5 weight:UIFontWeightSemibold];
+    st.numberOfLines = 4;
     st.textAlignment = NSTextAlignmentCenter;
     st.backgroundColor = [UIColor colorWithWhite:0 alpha:0.60];
     st.layer.cornerRadius = 8;
     st.clipsToBounds = YES;
     st.adjustsFontSizeToFitWidth = YES;
-    st.minimumScaleFactor = 0.5;
+    st.minimumScaleFactor = 0.45;
     st.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     st.tag = 79;
     [head addSubview:st];
@@ -1242,6 +1258,7 @@ static void BKOverlayInit(void)
     gEnabled = [cfg[@"Enabled"] boolValue];
     gFrontBundle = cfg[@"ActiveBundle"];
     BKMark(@"overlay_loaded.txt");
+    BKLog(@"ov dir=%@ base=%@", BKOwnDir() ?: @"?", BKBase());
 
     notify_register_dispatch("com.wjf.ballkey.close", &gCloseTok, dispatch_get_main_queue(), ^(int t) {
         (void)t;

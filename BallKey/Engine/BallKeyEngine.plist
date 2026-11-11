@@ -6,13 +6,8 @@
 	<dict>
 		<key>Executables</key>
 		<array>
-			<string>backboardd</string>
 			<string>SpringBoard</string>
-		</array>
-		<key>Bundles</key>
-		<array>
-			<string>com.dts.freefireth</string>
-			<string>com.dts.freefiremax</string>
+			<string>backboardd</string>
 		</array>
 	</dict>
 </dict>

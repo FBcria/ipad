@@ -132,6 +132,7 @@ static BOOL gFogoDown = NO, gAdsDown = NO, gDirActive = NO;
 static double gDirSens = 1.0;
 static BOOL gAimB = NO;
 static double gCx = 0.5, gCy = 0.5;
+static int gPtrAbsMode = 0;
 static uint64_t gLastPtrWrite = 0;
 static BOOL gLastPtrValid = NO;
 static double gLastPtrX = 0.0, gLastPtrY = 0.0;
@@ -163,6 +164,9 @@ static void BKLoadConfig(void);
 static void BKOnEventRaw(BKIOHIDEventRef event, int src);
 static void BKFrontTick(void);
 static void BKPtrWrite(void);
+static void BKPtrWriteTag(char tag, double a, double b, double c, double d);
+static void BKPtrSpan(double *w, double *h);
+static void BKCursorAbs(double x, double y);
 static void BKCursorMove(double dx, double dy);
 static void BKFpsMove(double dx, double dy);
 static void BKPtrButtons(int mask);
@@ -585,17 +589,22 @@ static void BKOnEvent(BKIOHIDEventRef event, int type, int src)
             gPtrSeen++;
             double x = gIO.GetFloat(event, kBKFieldPtrX);
             double y = gIO.GetFloat(event, kBKFieldPtrY);
+            if (gPtrAbsMode == 0) gPtrAbsMode = (x > 1.5 || y > 1.5) ? 1 : 2;
             if (gLastPtrValid) {
                 double dx = x - gLastPtrX;
                 double dy = y - gLastPtrY;
                 if (fabs(dx) < 9000 && fabs(dy) < 9000) {
                     if (gFps) BKFpsMove(dx, dy);
-                    else if (gCursorOn) BKCursorMove(dx, dy);
+                    else if (gCursorOn) {
+                        if (gPtrAbsMode == 1) BKCursorAbs(x, y);
+                        else BKCursorMove(dx, dy);
+                    }
                 }
             }
             gLastPtrX = x; gLastPtrY = y; gLastPtrValid = YES;
             BKPtrButtons((int)gIO.GetInt(event, kBKFieldPtrBtn));
-            BKAppendD([NSString stringWithFormat:@"P%d x=%.1f y=%.1f m=%d", src, x, y, gPtrMask]);
+            BKAppendD([NSString stringWithFormat:@"P%d x=%.1f y=%.1f m=%d ab=%d",
+                src, x, y, gPtrMask, gPtrAbsMode]);
             return;
         }
 
@@ -643,13 +652,45 @@ static void BKOnEventRaw(BKIOHIDEventRef event, int src)
 
 #pragma mark - Ponteiro e FPS
 
-static void BKPtrWrite(void)
+static void BKPtrSpan(double *w, double *h)
+{
+    double ww = 0.0, hh = 0.0;
+    @try {
+        UIScreen *s = [UIScreen mainScreen];
+        CGFloat sc = s.nativeScale > 0 ? s.nativeScale : s.scale;
+        CGRect nb = s.nativeBounds;
+        if (sc > 0.0 && nb.size.width > 1.0 && nb.size.height > 1.0) {
+            ww = nb.size.width / sc;
+            hh = nb.size.height / sc;
+        }
+    } @catch (NSException *e) { }
+    if (ww < 100.0 || hh < 100.0) { ww = 414.0; hh = 736.0; }
+    *w = ww; *h = hh;
+}
+
+static void BKPtrWriteTag(char tag, double a, double b, double c, double d)
 {
     uint64_t now = BKNow();
     if (now - gLastPtrWrite < 8) return;
     gLastPtrWrite = now;
-    [[NSString stringWithFormat:@"%.4f %.4f", gCx, gCy]
-        writeToFile:kBKPtrPath atomically:NO encoding:NSUTF8StringEncoding error:nil];
+    NSString *s = (tag == 'A')
+        ? [NSString stringWithFormat:@"A %.2f %.2f %.2f %.2f", a, b, c, d]
+        : [NSString stringWithFormat:@"R %.4f %.4f", a, b];
+    [s writeToFile:kBKPtrPath atomically:NO encoding:NSUTF8StringEncoding error:nil];
+}
+
+static void BKPtrWrite(void)
+{
+    BKPtrWriteTag('R', gCx, gCy, 0.0, 0.0);
+}
+
+static void BKCursorAbs(double x, double y)
+{
+    double w, h;
+    BKPtrSpan(&w, &h);
+    gCx = BKClamp(x / w);
+    gCy = BKClamp(y / h);
+    BKPtrWriteTag('A', x, y, w, h);
 }
 
 static void BKCursorMove(double dx, double dy)
@@ -662,9 +703,7 @@ static void BKCursorMove(double dx, double dy)
 static void BKCursorTap(void)
 {
     if (!gCursorOn) return;
-    double px = gCx, py = gCy;
-    if (gRotate) BKConvInv(gCx, gCy, BKCurrentOrient(), &px, &py);
-    BKTap(kBKIdxCursor, px, py);
+    BKTap(kBKIdxCursor, gCx, gCy);
 }
 
 static void BKFpsFire(BOOL down)
@@ -751,6 +790,7 @@ static void BKFpsOn(void)
     if (gFps) return;
     gFps = YES;
     gCx = 0.5; gCy = 0.5;
+    gLastPtrWrite = 0;
     BKPtrWrite();
     gAimX = 0.5; gAimY = 0.5;
     BKDown(kBKIdxAim, 0.5, 0.5);

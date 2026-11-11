@@ -12,8 +12,11 @@ typedef void *BKIOHIDEventRef;
 
 typedef struct {
     BKIOHIDEventSystemClientRef (*ClientCreate)(CFAllocatorRef);
-    void (*RegisterCB)(BKIOHIDEventSystemClientRef, void *, void *, void *);
+    BKIOHIDEventSystemClientRef (*ClientCreateType)(CFAllocatorRef, uint32_t, CFDictionaryRef);
+    void (*SetMatching)(BKIOHIDEventSystemClientRef, CFDictionaryRef);
     void (*SetQueue)(BKIOHIDEventSystemClientRef, dispatch_queue_t);
+    void (*ScheduleRL)(BKIOHIDEventSystemClientRef, CFRunLoopRef, CFStringRef);
+    void (*RegisterCB)(BKIOHIDEventSystemClientRef, void *, void *, void *);
     void (*Activate)(BKIOHIDEventSystemClientRef);
     void (*Dispatch)(BKIOHIDEventSystemClientRef, BKIOHIDEventRef);
     int  (*GetType)(BKIOHIDEventRef);
@@ -48,7 +51,6 @@ typedef struct {
 #define kBKSenderID             0x8000000817319372ull
 #define kBKMaxFinger            10
 
-// Campo digitizer: (11 << 16) | n
 #define kBKFieldX               (11u << 16 | 0u)
 #define kBKFieldY               (11u << 16 | 1u)
 #define kBKFieldBtnMask         (11u << 16 | 3u)
@@ -60,18 +62,20 @@ typedef struct {
 #define kBKFieldDisplayInt      0xb0019u
 #define kBKFieldIsBuiltIn       0x4u
 
-// Máscaras reais do kIOHIDDigitizerEventMask
+#define kBKFieldPtrX            (17u << 16 | 0u)
+#define kBKFieldPtrY            (17u << 16 | 1u)
+#define kBKFieldPtrBtn          (17u << 16 | 2u)
+
 #define kBKFlagRange            0x01u
 #define kBKFlagTouch            0x02u
 #define kBKFlagPosition         0x04u
 #define kBKFlagIdentity         0x20u
 
+#define kBKTypeButton           2
 #define kBKTypeKeyboard         3
+#define kBKTypeDigitizer        11
 #define kBKTypeKeyExtra         15
 #define kBKTypePointer          17
-#define kBKTypeDigitizer        11
-#define kBKTypeBtn              32
-#define kBKTypeButton           2
 
 #define kBKDefaultFpsKey        224
 #define kBKCtrlRight            228
@@ -132,22 +136,23 @@ static double gCx = 0.5, gCy = 0.5;
 static uint64_t gLastPtrWrite = 0;
 static BOOL gLastPtrValid = NO;
 static double gLastPtrX = 0.0, gLastPtrY = 0.0;
+static int gPtrMask = 0;
 static uint64_t gLastMoveNs = 0;
 static double gLastMdx = 0.0, gLastMdy = 0.0;
 
 static BOOL gCapArm = NO;
 static uint64_t gCapArmNs = 0;
 static NSString *gCapNonce = nil;
-static BOOL gCapHave = NO;
 
 static uint64_t gLastKeyNs = 0;
 static uint64_t gLastBtnNs = 0;
 static int gEvSeen = 0;
+static int gKeySeen = 0;
+static int gPtrSeen = 0;
 
 static NSString *gLogBuf = nil;
 static uint64_t gLogLast = 0;
 
-// ---------------------------------------------------------------- dedos ----
 typedef struct { int on; double x, y; } BKAct;
 static BKAct gAct[kBKMaxFinger + 1];
 static int gSlotOwner[kBKMaxFinger + 1];
@@ -155,7 +160,6 @@ static NSMutableSet *gEnding = nil;
 static int gPending = 0;
 static int gSched = 0;
 
-// declarações antecipadas: BKTap usa BKMove e BKLoadConfig usa BKStatus
 static void BKMove(NSUInteger idx, double nx, double ny);
 static void BKStatus(void);
 
@@ -233,7 +237,6 @@ static void BKConvInv(double vx, double vy, int orient, double *ox, double *oy)
     *ox = BKClamp(rx); *oy = BKClamp(ry);
 }
 
-// Dedos 9 e 10 são reservados para a troca atômica da mira.
 static int BKSlotFor(NSUInteger idx)
 {
     NSNumber *n = gSlotOf[@(idx)];
@@ -367,8 +370,6 @@ static void BKUp(NSUInteger idx)
     BKSlotUp([n intValue]);
 }
 
-// Toque curto com pressão real de 60 ms. 8 ms cai dentro de um frame e o jogo
-// não amostra o toque: era isso que obrigava a apertar duas vezes.
 static void BKTap(NSUInteger idx, double nx, double ny)
 {
     if ([gDown[@(idx)] boolValue]) { BKMove(idx, nx, ny); return; }
@@ -390,16 +391,19 @@ static void BKReleaseAll(void)
     gFogoDown = NO; gAdsDown = NO; gDirActive = NO;
 }
 
-// ------------------------------------------------------------------ IOKit ---
 static void BKListenCB(void *target, void *refcon, void *service, BKIOHIDEventRef event);
 
 static BOOL BKInitIO(void)
 {
     gIOKit = dlopen("/usr/lib/libIOKit.dylib", RTLD_LAZY);
+    if (!gIOKit) gIOKit = dlopen("/var/jb/usr/lib/libIOKit.dylib", RTLD_LAZY);
     if (!gIOKit) { BKAppend(@"I io=0"); return NO; }
     gIO.ClientCreate = dlsym(gIOKit, "IOHIDEventSystemClientCreate");
-    gIO.RegisterCB   = dlsym(gIOKit, "IOHIDEventSystemClientRegisterEventCallback");
+    gIO.ClientCreateType = dlsym(gIOKit, "IOHIDEventSystemClientCreateWithType");
+    gIO.SetMatching = dlsym(gIOKit, "IOHIDEventSystemClientSetMatching");
     gIO.SetQueue     = dlsym(gIOKit, "IOHIDEventSystemClientSetDispatchQueue");
+    gIO.ScheduleRL   = dlsym(gIOKit, "IOHIDEventSystemClientScheduleWithRunLoop");
+    gIO.RegisterCB   = dlsym(gIOKit, "IOHIDEventSystemClientRegisterEventCallback");
     gIO.Activate     = dlsym(gIOKit, "IOHIDEventSystemClientActivate");
     gIO.Dispatch     = dlsym(gIOKit, "IOHIDEventSystemClientDispatchEvent");
     gIO.GetType      = dlsym(gIOKit, "IOHIDEventGetType");
@@ -416,10 +420,10 @@ static BOOL BKInitIO(void)
         || !gIO.GetType || !gIO.GetInt || !gIO.GetFloat || !gIO.SetInt
         || !gIO.SetFloat || !gIO.SetSender || !gIO.Append) { BKAppend(@"I sym=0"); return NO; }
     BKAppend(@"I io=1");
+    BKMark(@"engine_io.txt");
     return YES;
 }
 
-// ------------------------------------------------------------- cursor/fps ---
 static void BKPtrWrite(void)
 {
     uint64_t now = BKNow();
@@ -471,8 +475,6 @@ static void BKFpsAdsToggle(void)
     BKAppend(@"F mirar on");
 }
 
-// Troca atômica do dedo da câmera: o dedo antigo termina e o novo nasce no
-// centro NO MESMO evento de mão. Sem frame vazio, sem toque engolido.
 static void BKAimRecenter(int fromSlot, double cx, double cy)
 {
     int toSlot = gAimB ? (kBKMaxFinger - 1) : kBKMaxFinger;
@@ -480,7 +482,7 @@ static void BKAimRecenter(int fromSlot, double cx, double cy)
     if (fromSlot == toSlot) { BKSlotMove(fromSlot, cx, cy); return; }
     if (fromSlot > 0) {
         BKSlotUp(fromSlot);
-        gSlotOwner[fromSlot] = 0;   // o flush não pode apagar o mapa novo
+        gSlotOwner[fromSlot] = 0;
     }
     gAct[toSlot].on = 1;
     gAct[toSlot].x = BKClamp(cx);
@@ -550,7 +552,6 @@ static void BKFpsOff(void)
     if (gAdsDown) { gAdsDown = NO; BKUp(kBKIdxAds); }
     BKUp(kBKIdxAim);
     gAimSlot = 0;
-    // cursor volta ao centro SEM tocar na câmera: só o dedo da mira é solto.
     gCx = 0.5; gCy = 0.5;
     gLastPtrWrite = 0;
     BKPtrWrite();
@@ -558,7 +559,14 @@ static void BKFpsOff(void)
     notify_post("com.wjf.ballkey.fps_off");
 }
 
-// -------------------------------------------------------------- config -----
+static void BKStatus(void)
+{
+    NSString *s = [NSString stringWithFormat:@"e%d k%d p%d m%lu a=%@ o%d\n",
+        (int)gEnabled, gKeySeen, gPtrSeen, (unsigned long)gPoints.count,
+        gActiveBundle ?: @"-", BKCurrentOrient()];
+    [s writeToFile:kBKStatusPath atomically:NO encoding:NSUTF8StringEncoding error:nil];
+}
+
 static void BKLoadConfig(void)
 {
     NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:kBKConfigPath];
@@ -566,9 +574,20 @@ static void BKLoadConfig(void)
     NSString *active = cfg[@"ActiveBundle"];
     NSArray *pts = nil;
     NSDictionary *profiles = cfg[@"Profiles"];
-    if ([profiles isKindOfClass:[NSDictionary class]] && [active isKindOfClass:[NSString class]]) {
-        id p = profiles[active];
-        if ([p isKindOfClass:[NSArray class]]) pts = p;
+    if ([profiles isKindOfClass:[NSDictionary class]]) {
+        if ([active isKindOfClass:[NSString class]]) {
+            id p = profiles[active];
+            if ([p isKindOfClass:[NSArray class]]) pts = p;
+        }
+        // app errado/ausente: cai no coringa e depois no único perfil salvo
+        if (!pts) {
+            id p = profiles[@"*"];
+            if ([p isKindOfClass:[NSArray class]]) pts = p;
+        }
+        if (!pts && profiles.count == 1) {
+            id p = [[profiles allValues] firstObject];
+            if ([p isKindOfClass:[NSArray class]]) pts = p;
+        }
     }
 
     if ([cfg[@"Rotate"] isKindOfClass:[NSNumber class]]) gRotate = [cfg[@"Rotate"] boolValue];
@@ -599,21 +618,10 @@ static void BKLoadConfig(void)
     BKStatus();
 }
 
-static void BKStatus(void)
-{
-    NSString *s = [NSString stringWithFormat:
-        @"enabled=%d bundle=%@ pontos=%lu fps=%d dedos=%d:%d:%d o=%d\n",
-        (int)gEnabled, gActiveBundle ?: @"-", (unsigned long)gPoints.count,
-        (int)gFps, (int)gAct[1].on, (int)gAct[2].on, (int)gAct[3].on, BKCurrentOrient()];
-    [s writeToFile:kBKStatusPath atomically:NO encoding:NSUTF8StringEncoding error:nil];
-}
-
-// -------------------------------------------------------------- captura ----
 static void BKCaptureWrite(NSString *key)
 {
     if (!gCapArm || !gCapNonce) return;
     gCapArm = NO;
-    gCapHave = YES;
     NSString *s = [NSString stringWithFormat:@"%@|%@", gCapNonce, key];
     [s writeToFile:kBKCaptureResPath atomically:NO encoding:NSUTF8StringEncoding error:nil];
     notify_post(kBKNotifyCapRes);
@@ -628,7 +636,6 @@ static void BKArmCapture(void)
     if (req.length < 3) { BKAppend(@"C sem nonce"); return; }
     gCapNonce = req;
     gCapArm = YES;
-    gCapHave = NO;
     gCapArmNs = BKNow();
     [@"" writeToFile:kBKCaptureResPath atomically:NO encoding:NSUTF8StringEncoding error:nil];
     BKAppend([NSString stringWithFormat:@"C arm %@", req]);
@@ -643,7 +650,6 @@ static void BKCaptureWatch(void)
     }
 }
 
-// ------------------------------------------------------------- handlers ----
 static void BKPonto(NSDictionary *pt, double *ox, double *oy)
 {
     double nx = [pt[@"X"] doubleValue];
@@ -737,6 +743,15 @@ static void BKHandleButton(int b, BOOL down)
     }
 }
 
+static void BKPtrButtons(int mask)
+{
+    if (mask == gPtrMask) return;
+    int diff = mask ^ gPtrMask;
+    gPtrMask = mask;
+    if (diff & 1) BKHandleButton(0, (mask & 1) != 0);
+    if (diff & 2) BKHandleButton(1, (mask & 2) != 0);
+}
+
 static void BKListenCB(void *target, void *refcon, void *service, BKIOHIDEventRef event)
 {
     (void)target; (void)refcon; (void)service;
@@ -746,8 +761,9 @@ static void BKListenCB(void *target, void *refcon, void *service, BKIOHIDEventRe
         gEvSeen++;
 
         if (type == kBKTypePointer) {
-            double x = gIO.GetFloat(event, kBKFieldX);
-            double y = gIO.GetFloat(event, kBKFieldY);
+            gPtrSeen++;
+            double x = gIO.GetFloat(event, kBKFieldPtrX);
+            double y = gIO.GetFloat(event, kBKFieldPtrY);
             if (gLastPtrValid) {
                 double dx = x - gLastPtrX;
                 double dy = y - gLastPtrY;
@@ -757,39 +773,35 @@ static void BKListenCB(void *target, void *refcon, void *service, BKIOHIDEventRe
                 }
             }
             gLastPtrX = x; gLastPtrY = y; gLastPtrValid = YES;
-            BKAppendD([NSString stringWithFormat:@"P x=%.1f y=%.1f", x, y]);
+            BKPtrButtons((int)gIO.GetInt(event, kBKFieldPtrBtn));
+            BKAppendD([NSString stringWithFormat:@"P x=%.1f y=%.1f m=%d", x, y, gPtrMask]);
             return;
         }
 
-        if (type == kBKTypeDigitizer) {
-            int btn = gIO.GetInt(event, kBKFieldBtnMask);
-            if (btn) BKAppendD([NSString stringWithFormat:@"Dg btn=%d", btn]);
-            return;
-        }
+        if (type == kBKTypeDigitizer) return;
 
         if (type == kBKTypeKeyExtra || type == kBKTypeKeyboard) {
+            gKeySeen++;
             int page = gIO.GetInt(event, (3u << 16 | 0u));
             int usage = gIO.GetInt(event, (3u << 16 | 1u));
             int down = gIO.GetInt(event, (3u << 16 | 2u));
+            BKAppendD([NSString stringWithFormat:@"K pg=%d u=%d d=%d", page, usage, down]);
             if (page != 7 && page != 0) return;
-            BKAppendD([NSString stringWithFormat:@"K %d d=%d", usage, down]);
             BKHandleKey(usage, down != 0);
             return;
         }
 
-        if (type == kBKTypeBtn || type == kBKTypeButton) {
+        if (type == kBKTypeButton) {
             int usage = gIO.GetInt(event, kBKFieldBtnMask);
-            if (!usage) return;
             int b = usage - kBKUsageBtnBase;
             if (b < 0 || b >= kBKMaxBtn) return;
-            int down = gIO.GetInt(event, (kBKTypeBtn << 16 | 3u));
+            int down = gIO.GetInt(event, (kBKTypeButton << 16 | 3u));
             BKHandleButton(b, down != 0);
             return;
         }
     } @catch (NSException *e) { }
 }
 
-// ---------------------------------------------------------------- testes ----
 static void BKTestCenter(void)
 {
     BKAppend(@"T ini");
@@ -823,19 +835,34 @@ static void BKProbe(void)
     }
 }
 
-// ------------------------------------------------------------------ init ----
 static BKIOHIDEventSystemClientRef BKNewListen(void)
 {
-    BKIOHIDEventSystemClientRef c = gIO.ClientCreate(kCFAllocatorDefault);
+    BKIOHIDEventSystemClientRef c = NULL;
+
+    // 1) cliente monitor: recebe tudo
+    if (gIO.ClientCreateType) c = gIO.ClientCreateType(kCFAllocatorDefault, 2, NULL);
+
+    // 2) cliente simples exige matching; página 1 = generic desktop (teclado+mouse)
+    if (!c && gIO.ClientCreate) {
+        c = gIO.ClientCreate(kCFAllocatorDefault);
+        if (c && gIO.SetMatching) {
+            NSDictionary *m = @{ @"PrimaryUsagePage": @1 };
+            gIO.SetMatching(c, (CFDictionaryRef)m);
+        }
+    }
     if (!c) return NULL;
-    if (gIO.RegisterCB) gIO.RegisterCB(c, (void *)BKListenCB, NULL, NULL);
+
+    // fila ANTES do callback: registrar antes não entrega nada
     if (gIO.SetQueue) gIO.SetQueue(c, dispatch_get_main_queue());
+    else if (gIO.ScheduleRL) gIO.ScheduleRL(c, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+    if (gIO.RegisterCB) gIO.RegisterCB(c, (void *)BKListenCB, NULL, NULL);
     if (gIO.Activate) gIO.Activate(c);
     return c;
 }
 
 __attribute__((constructor)) static void BKInitC(void)
 {
+    BKMark(@"engine_ctor.txt");
     dispatch_async(dispatch_get_main_queue(), ^{
         @autoreleasepool {
         gDown = [NSMutableDictionary dictionary];
@@ -845,17 +872,19 @@ __attribute__((constructor)) static void BKInitC(void)
         gEnding = [NSMutableSet set];
         gSendQ = dispatch_queue_create("com.wjf.ballkey.send", DISPATCH_QUEUE_SERIAL);
 
-        if (!BKInitIO()) return;
+        if (!BKInitIO()) { BKStatus(); return; }
 
         gSendClient = gIO.ClientCreate(kCFAllocatorDefault);
         BKAppend(gSendClient ? @"I send=1" : @"I send=0");
 
         @try {
             gListenClient = BKNewListen();
-            if (!gListenClient) { BKAppend(@"I client=0"); return; }
+            if (!gListenClient) { BKAppend(@"I client=0"); BKStatus(); return; }
             BKAppend(@"I listen=1");
+            BKMark(@"engine_listen.txt");
         } @catch (NSException *e) {
             BKAppend([NSString stringWithFormat:@"! init %@", e.reason]);
+            BKStatus();
             return;
         }
 
@@ -874,13 +903,14 @@ __attribute__((constructor)) static void BKInitC(void)
             dispatch_source_set_timer(src, dispatch_time(DISPATCH_TIME_NOW, 120ull * NSEC_PER_MSEC),
                                       120ull * NSEC_PER_MSEC, 20ull * NSEC_PER_MSEC);
             dispatch_source_set_event_handler(src, ^{
-                @try { BKCaptureWatch(); BKFpsEnsure(); } @catch (NSException *e) { }
+                @try { BKCaptureWatch(); BKFpsEnsure(); BKStatus(); } @catch (NSException *e) { }
             });
             dispatch_resume(src);
         }
 
         BKAppend(@"I ready");
-        BKMark(@"engine_loaded.txt");
+        BKMark(@"engine_ready.txt");
+        BKStatus();
         }
     });
 }

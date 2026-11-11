@@ -5,6 +5,8 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <mach/mach_time.h>
+#import <pthread.h>
+#import <os/lock.h>
 #import <math.h>
 
 typedef void *BKIOHIDEventSystemClientRef;
@@ -97,6 +99,9 @@ typedef struct {
 #define kBKIdxFogo              73
 #define kBKIdxCursor            40
 
+#define kBKSeenMax              24
+#define kBKSeenWindowMs         20
+
 static void *gIOKit = NULL;
 static BKIO gIO;
 static BKIOHIDEventSystemClientRef gListenClient = NULL;
@@ -141,6 +146,7 @@ static uint64_t gLastBtnNs = 0;
 static int gEvSeen = 0;
 static int gKeySeen = 0;
 static int gPtrSeen = 0;
+static int gLstSeen = 0;
 static NSString *gLogBuf = nil;
 static uint64_t gLogLast = 0;
 
@@ -153,6 +159,9 @@ static int gSched = 0;
 
 static void BKMove(NSUInteger idx, double nx, double ny);
 static void BKStatus(void);
+static void BKLoadConfig(void);
+static void BKOnEventRaw(BKIOHIDEventRef event, int src);
+static void BKFrontTick(void);
 
 static uint64_t BKNow(void) { return mach_absolute_time() / 1000000ull; }
 
@@ -411,6 +420,223 @@ static BOOL BKInitIO(void)
     return YES;
 }
 
+#pragma mark - Captura por hook
+
+typedef void (*BKMSHookFunction)(void *sym, void *rep, void **res);
+typedef void (*BKMSHookMessageEx)(Class cls, SEL sel, void *rep, void **res);
+
+static BKMSHookFunction gMSHookFunction = NULL;
+static BKMSHookMessageEx gMSHookMessageEx = NULL;
+static void (*origDispatch)(BKIOHIDEventSystemClientRef, BKIOHIDEventRef) = NULL;
+static BOOL (*origHandleEvent)(id, SEL, BKIOHIDEventRef, id) = NULL;
+static void (*origEnqueueHID)(id, SEL, BKIOHIDEventRef) = NULL;
+static void (*origDistribute)(id, SEL, BKIOHIDEventRef) = NULL;
+static int gHookDispatch = 0;
+static int gHookHandle = 0;
+static int gHookEnqueue = 0;
+static int gHookDistribute = 0;
+static BOOL gMarkDispatch = NO;
+static BOOL gMarkHandle = NO;
+static BOOL gMarkEnqueue = NO;
+static BOOL gMarkDistribute = NO;
+static BOOL gHooksReady = NO;
+
+static void *gSeen[kBKSeenMax];
+static uint64_t gSeenMs[kBKSeenMax];
+static int gSeenIdx = 0;
+static os_unfair_lock gSeenLock = OS_UNFAIR_LOCK_INIT;
+
+static BOOL BKSeenRecently(void *ev)
+{
+    uint64_t now = BKNow();
+    BOOL found = NO;
+    os_unfair_lock_lock(&gSeenLock);
+    for (int i = 0; i < kBKSeenMax; i++) {
+        if (gSeen[i] == ev && (now - gSeenMs[i]) < kBKSeenWindowMs) { found = YES; break; }
+    }
+    if (!found) {
+        gSeen[gSeenIdx] = ev;
+        gSeenMs[gSeenIdx] = now;
+        gSeenIdx = (gSeenIdx + 1) % kBKSeenMax;
+    }
+    os_unfair_lock_unlock(&gSeenLock);
+    return found;
+}
+
+static void *BKSubstrateSym(const char *name)
+{
+    void *p = dlsym(RTLD_DEFAULT, name);
+    if (p) return p;
+    static void *h = NULL;
+    if (!h) {
+        const char *paths[] = {
+            "/usr/lib/libellekit.dylib",
+            "/var/jb/usr/lib/libellekit.dylib",
+            "/usr/lib/libsubstrate.dylib",
+            "/var/jb/usr/lib/libsubstrate.dylib",
+            "/var/jb/usr/lib/libhooker.dylib"
+        };
+        for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]) && !h; i++) {
+            h = dlopen(paths[i], RTLD_LAZY);
+        }
+    }
+    if (!h) return NULL;
+    return dlsym(h, name);
+}
+
+static void BKHookDispatch(BKIOHIDEventSystemClientRef c, BKIOHIDEventRef e)
+{
+    BKOnEventRaw(e, 1);
+    if (origDispatch) origDispatch(c, e);
+}
+
+static BOOL BKHookHandleEvent(id self, SEL cmd, BKIOHIDEventRef e, id ne)
+{
+    BKOnEventRaw(e, 2);
+    if (origHandleEvent) return origHandleEvent(self, cmd, e, ne);
+    return YES;
+}
+
+static void BKHookEnqueue(id self, SEL cmd, BKIOHIDEventRef e)
+{
+    BKOnEventRaw(e, 3);
+    if (origEnqueue) origEnqueue(self, cmd, e);
+}
+
+static void BKHookDistribute(id self, SEL cmd, BKIOHIDEventRef e)
+{
+    BKOnEventRaw(e, 4);
+    if (origDistribute) origDistribute(self, cmd, e);
+}
+
+static void BKInstallHooks(void)
+{
+    gMSHookFunction = (BKMSHookFunction)BKSubstrateSym("MSHookFunction");
+    gMSHookMessageEx = (BKMSHookMessageEx)BKSubstrateSym("MSHookMessageEx");
+
+    NSMutableString *rep = [NSMutableString string];
+
+    if (gMSHookFunction && gIO.Dispatch) {
+        gMSHookFunction((void *)gIO.Dispatch, (void *)BKHookDispatch, (void **)&origDispatch);
+        [rep appendString:@"d"];
+    }
+
+    Class sbCls = objc_getClass("SpringBoard");
+    Class appCls = objc_getClass("UIApplication");
+    Class delCls = objc_getClass("BKSHIDEventDeliveryManager");
+
+    if (gMSHookMessageEx) {
+        if (sbCls) {
+            SEL s = @selector(handleEvent:withNewEvent:);
+            Method m = class_getInstanceMethod(sbCls, s);
+            if (m) {
+                gMSHookMessageEx(sbCls, s, (void *)BKHookHandleEvent, (void **)&origHandleEvent);
+                [rep appendString:@"h"];
+            }
+        }
+        if (appCls) {
+            SEL s = @selector(_enqueueHIDEvent:);
+            Method m = class_getInstanceMethod(appCls, s);
+            if (m) {
+                gMSHookMessageEx(appCls, s, (void *)BKHookEnqueue, (void **)&origEnqueueHID);
+                [rep appendString:@"e"];
+            }
+        }
+        if (delCls) {
+            SEL s = @selector(distributeEvent:);
+            Method m = class_getInstanceMethod(delCls, s);
+            if (m) {
+                gMSHookMessageEx(delCls, s, (void *)BKHookDistribute, (void **)&origDistribute);
+                [rep appendString:@"b"];
+            }
+        }
+    }
+
+    gHooksReady = YES;
+    BKAppend([NSString stringWithFormat:@"H hooks=%@", rep.length ? rep : @"-"]);
+    [rep writeToFile:@"/var/mobile/bk_hooks.txt"
+          atomically:NO encoding:NSUTF8StringEncoding error:nil];
+}
+
+static void BKOnEvent(BKIOHIDEventRef event, int type, int src)
+{
+    @try {
+        if (src == 1) {
+            gHookDispatch++;
+            if (!gMarkDispatch) { gMarkDispatch = YES; BKMark(@"hook_dispatch.txt"); }
+        } else if (src == 2) {
+            gHookHandle++;
+            if (!gMarkHandle) { gMarkHandle = YES; BKMark(@"hook_handle.txt"); }
+        } else if (src == 3) {
+            gHookEnqueue++;
+            if (!gMarkEnqueue) { gMarkEnqueue = YES; BKMark(@"hook_enqueue.txt"); }
+        } else if (src == 4) {
+            gHookDistribute++;
+            if (!gMarkDistribute) { gMarkDistribute = YES; BKMark(@"hook_distribute.txt"); }
+        }
+
+        if (type == kBKTypePointer) {
+            gPtrSeen++;
+            double x = gIO.GetFloat(event, kBKFieldPtrX);
+            double y = gIO.GetFloat(event, kBKFieldPtrY);
+            if (gLastPtrValid) {
+                double dx = x - gLastPtrX;
+                double dy = y - gLastPtrY;
+                if (fabs(dx) < 9000 && fabs(dy) < 9000) {
+                    if (gFps) BKFpsMove(dx, dy);
+                    else if (gCursorOn) BKCursorMove(dx, dy);
+                }
+            }
+            gLastPtrX = x; gLastPtrY = y; gLastPtrValid = YES;
+            BKPtrButtons((int)gIO.GetInt(event, kBKFieldPtrBtn));
+            BKAppendD([NSString stringWithFormat:@"P%d x=%.1f y=%.1f m=%d", src, x, y, gPtrMask]);
+            return;
+        }
+
+        if (type == kBKTypeKeyExtra || type == kBKTypeKeyboard) {
+            gKeySeen++;
+            int page = gIO.GetInt(event, (3u << 16 | 0u));
+            int usage = gIO.GetInt(event, (3u << 16 | 1u));
+            int down = gIO.GetInt(event, (3u << 16 | 2u));
+            BKAppendD([NSString stringWithFormat:@"K%d pg=%d u=%d d=%d", src, page, usage, down]);
+            if (page != 7 && page != 0) return;
+            BKHandleKey(usage, down != 0);
+            return;
+        }
+
+        if (type == kBKTypeButton) {
+            int usage = gIO.GetInt(event, kBKFieldBtnMask);
+            int b = usage - kBKUsageBtnBase;
+            if (b < 0 || b >= kBKMaxBtn) return;
+            BKHandleButton(b, gIO.GetInt(event, (kBKTypeButton << 16 | 3u)) != 0);
+            return;
+        }
+    } @catch (NSException *e) { }
+}
+
+static void BKOnEventRaw(BKIOHIDEventRef event, int src)
+{
+    if (!event || !gIO.GetType || !gHooksReady) return;
+    @try {
+        if (gIO.GetSender && gIO.GetSender(event) == kBKSenderID) return;
+        if (BKSeenRecently(event)) return;
+        int type = gIO.GetType(event);
+        if (type == kBKTypeDigitizer) return;
+        gEvSeen++;
+        if (!pthread_main_np()) {
+            CFRetain(event);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                BKOnEvent(event, type, src);
+                CFRelease(event);
+            });
+            return;
+        }
+        BKOnEvent(event, type, src);
+    } @catch (NSException *e) { }
+}
+
+#pragma mark - Ponteiro e FPS
+
 static void BKPtrWrite(void)
 {
     uint64_t now = BKNow();
@@ -542,35 +768,59 @@ static void BKFpsOff(void)
     notify_post("com.wjf.ballkey.fps_off");
 }
 
+#pragma mark - Estado
+
+static NSString *BKFrontBundleNow(void)
+{
+    Class sbCls = objc_getClass("SpringBoard");
+    if (!sbCls) return nil;
+    id sb = ((id (*)(id, SEL))objc_msgSend)(sbCls, @selector(sharedApplication));
+    if (!sb) return nil;
+
+    id app = nil;
+    SEL s1 = @selector(_accessibilityFrontMostApplication);
+    SEL s2 = @selector(_frontMostApplication);
+    if ([sb respondsToSelector:s1]) app = ((id (*)(id, SEL))objc_msgSend)(sb, s1);
+    if (!app && [sb respondsToSelector:s2]) app = ((id (*)(id, SEL))objc_msgSend)(sb, s2);
+    if (!app) return nil;
+
+    NSString *bid = ((id (*)(id, SEL))objc_msgSend)(app, @selector(bundleIdentifier));
+    if (![bid isKindOfClass:[NSString class]] || !bid.length) return nil;
+    return bid;
+}
+
 static void BKStatus(void)
 {
-    NSString *s = [NSString stringWithFormat:@"e%d k%d p%d m%lu a=%@ o%d\n",
-        (int)gEnabled, gKeySeen, gPtrSeen, (unsigned long)gPoints.count,
+    NSString *s = [NSString stringWithFormat:@"e%d k%d p%d m%lu l%d h%d.%d.%d.%d\na=%@ o%d\n",
+        (int)gEnabled, gKeySeen, gPtrSeen, (unsigned long)gPoints.count, gLstSeen,
+        gHookDispatch, gHookHandle, gHookEnqueue, gHookDistribute,
         gActiveBundle ?: @"-", BKCurrentOrient()];
     [s writeToFile:kBKStatusPath atomically:NO encoding:NSUTF8StringEncoding error:nil];
+}
+
+static NSArray *BKResolvePoints(NSDictionary *cfg, NSString *bundle)
+{
+    NSDictionary *profiles = cfg[@"Profiles"];
+    if (![profiles isKindOfClass:[NSDictionary class]]) return nil;
+    if ([bundle isKindOfClass:[NSString class]] && bundle.length) {
+        id p = profiles[bundle];
+        if ([p isKindOfClass:[NSArray class]]) return p;
+    }
+    id w = profiles[@"*"];
+    if ([w isKindOfClass:[NSArray class]]) return w;
+    if (profiles.count == 1) {
+        id p = [[profiles allValues] firstObject];
+        if ([p isKindOfClass:[NSArray class]]) return p;
+    }
+    return nil;
 }
 
 static void BKLoadConfig(void)
 {
     NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:kBKConfigPath];
     BOOL enabled = [cfg[@"Enabled"] boolValue];
-    NSString *active = cfg[@"ActiveBundle"];
-    NSArray *pts = nil;
-    NSDictionary *profiles = cfg[@"Profiles"];
-    if ([profiles isKindOfClass:[NSDictionary class]]) {
-        if ([active isKindOfClass:[NSString class]]) {
-            id p = profiles[active];
-            if ([p isKindOfClass:[NSArray class]]) pts = p;
-        }
-        if (!pts) {
-            id p = profiles[@"*"];
-            if ([p isKindOfClass:[NSArray class]]) pts = p;
-        }
-        if (!pts && profiles.count == 1) {
-            id p = [[profiles allValues] firstObject];
-            if ([p isKindOfClass:[NSArray class]]) pts = p;
-        }
-    }
+    NSString *active = [cfg[@"ActiveBundle"] isKindOfClass:[NSString class]]
+        ? cfg[@"ActiveBundle"] : nil;
 
     if ([cfg[@"Rotate"] isKindOfClass:[NSNumber class]]) gRotate = [cfg[@"Rotate"] boolValue];
     if ([cfg[@"FollowCursor"] isKindOfClass:[NSNumber class]]) gFollowCursor = [cfg[@"FollowCursor"] boolValue];
@@ -592,13 +842,34 @@ static void BKLoadConfig(void)
 
     BOOL wasEnabled = gEnabled;
     gEnabled = enabled;
-    gActiveBundle = active;
-    gPoints = pts;
+
+    NSString *use = active;
+    if (!use) use = BKFrontBundleNow();
+    gActiveBundle = use;
+    gPoints = BKResolvePoints(cfg, use);
 
     if (!enabled && wasEnabled) { BKReleaseAll(); if (gFps) BKFpsOff(); }
     if (enabled && gPoints.count) BKMark(@"engine_armed.txt");
+    BKAppend([NSString stringWithFormat:@"L en=%d app=%@ pts=%lu",
+        (int)enabled, use ?: @"-", (unsigned long)gPoints.count]);
     BKStatus();
 }
+
+static void BKFrontTick(void)
+{
+    NSString *b = BKFrontBundleNow();
+    if (!b.length) return;
+    if (gActiveBundle && [gActiveBundle isEqualToString:b]) return;
+    gActiveBundle = b;
+    NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:kBKConfigPath];
+    gPoints = BKResolvePoints(cfg, b);
+    [b writeToFile:@"/var/mobile/bk_front.txt" atomically:NO encoding:NSUTF8StringEncoding error:nil];
+    BKAppend([NSString stringWithFormat:@"A app=%@ pts=%lu", b, (unsigned long)gPoints.count]);
+    if (gPoints.count) BKMark(@"engine_armed.txt");
+    BKStatus();
+}
+
+#pragma mark - Captura de tecla
 
 static void BKCaptureWrite(NSString *key)
 {
@@ -631,6 +902,8 @@ static void BKCaptureWatch(void)
         BKAppend(@"C expirou");
     }
 }
+
+#pragma mark - Roteamento
 
 static void BKPonto(NSDictionary *pt, double *ox, double *oy)
 {
@@ -740,48 +1013,25 @@ static void BKListenCB(void *target, void *refcon, void *service, BKIOHIDEventRe
     @try {
         if (!gIO.GetType || !event) return;
         int type = gIO.GetType(event);
-        gEvSeen++;
-
-        if (type == kBKTypePointer) {
-            gPtrSeen++;
-            double x = gIO.GetFloat(event, kBKFieldPtrX);
-            double y = gIO.GetFloat(event, kBKFieldPtrY);
-            if (gLastPtrValid) {
-                double dx = x - gLastPtrX;
-                double dy = y - gLastPtrY;
-                if (fabs(dx) < 9000 && fabs(dy) < 9000) {
-                    if (gFps) BKFpsMove(dx, dy);
-                    else if (gCursorOn) BKCursorMove(dx, dy);
-                }
-            }
-            gLastPtrX = x; gLastPtrY = y; gLastPtrValid = YES;
-            BKPtrButtons((int)gIO.GetInt(event, kBKFieldPtrBtn));
-            BKAppendD([NSString stringWithFormat:@"P x=%.1f y=%.1f m=%d", x, y, gPtrMask]);
-            return;
-        }
-
         if (type == kBKTypeDigitizer) return;
-
-        if (type == kBKTypeKeyExtra || type == kBKTypeKeyboard) {
-            gKeySeen++;
-            int page = gIO.GetInt(event, (3u << 16 | 0u));
-            int usage = gIO.GetInt(event, (3u << 16 | 1u));
-            int down = gIO.GetInt(event, (3u << 16 | 2u));
-            BKAppendD([NSString stringWithFormat:@"K pg=%d u=%d d=%d", page, usage, down]);
-            if (page != 7 && page != 0) return;
-            BKHandleKey(usage, down != 0);
+        if (gIO.GetSender && gIO.GetSender(event) == kBKSenderID) return;
+        if (BKSeenRecently(event)) return;
+        gLstSeen++;
+        gEvSeen++;
+        if (!gMarkDispatch) { gMarkDispatch = YES; BKMark(@"hook_listen.txt"); }
+        if (!pthread_main_np()) {
+            CFRetain(event);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                BKOnEvent(event, type, 0);
+                CFRelease(event);
+            });
             return;
         }
-
-        if (type == kBKTypeButton) {
-            int usage = gIO.GetInt(event, kBKFieldBtnMask);
-            int b = usage - kBKUsageBtnBase;
-            if (b < 0 || b >= kBKMaxBtn) return;
-            BKHandleButton(b, gIO.GetInt(event, (kBKTypeButton << 16 | 3u)) != 0);
-            return;
-        }
+        BKOnEvent(event, type, 0);
     } @catch (NSException *e) { }
 }
+
+#pragma mark - Testes
 
 static void BKTestCenter(void)
 {
@@ -854,14 +1104,14 @@ __attribute__((constructor)) static void BKInitC(void)
 
         @try {
             gListenClient = BKNewListen();
-            if (!gListenClient) { BKAppend(@"I client=0"); BKStatus(); return; }
-            BKAppend(@"I listen=1");
-            BKMark(@"engine_listen.txt");
+            BKAppend(gListenClient ? @"I listen=1" : @"I client=0");
+            if (gListenClient) BKMark(@"engine_listen.txt");
         } @catch (NSException *e) {
-            BKAppend([NSString stringWithFormat:@"! init %@", e.reason]);
-            BKStatus();
-            return;
+            BKAppend([NSString stringWithFormat:@"! listen %@", e.reason]);
         }
+
+        @try { BKInstallHooks(); }
+        @catch (NSException *e) { BKAppend([NSString stringWithFormat:@"! hooks %@", e.reason]); }
 
         dispatch_queue_t q = dispatch_get_main_queue();
         int t1 = 0, t2 = 0, t3 = 0, t4 = 0;
@@ -878,7 +1128,15 @@ __attribute__((constructor)) static void BKInitC(void)
             dispatch_source_set_timer(src, dispatch_time(DISPATCH_TIME_NOW, 120ull * NSEC_PER_MSEC),
                                       120ull * NSEC_PER_MSEC, 20ull * NSEC_PER_MSEC);
             dispatch_source_set_event_handler(src, ^{
-                @try { BKCaptureWatch(); BKFpsEnsure(); BKStatus(); } @catch (NSException *e) { }
+                @try {
+                    static int tick = 0;
+                    tick++;
+                    BKCaptureWatch();
+                    BKFpsEnsure();
+                    if (tick % 5 == 0) BKFrontTick();
+                    if (tick == 100 && gEvSeen == 0) BKMark(@"hook_none.txt");
+                    if (tick % 8 == 0) BKStatus();
+                } @catch (NSException *e) { }
             });
             dispatch_resume(src);
         }

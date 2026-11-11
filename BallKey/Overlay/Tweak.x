@@ -5,11 +5,14 @@
 #import <notify.h>
 #import <dlfcn.h>
 
-#define kBKBuildTag    @"b35"
+#define kBKBuildTag    @"b36"
 #define kBKConfigPath  @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 #define kBKNotifyLoad  "com.wjf.ballkey.reload"
 #define kBKNotifyTest  "com.wjf.ballkey.test"
 #define kBKNotifyCap   "com.wjf.ballkey.capture"
+#define kBKOffFile     @"/var/mobile/bk_off.txt"
+#define kBKOSafeFile   @"/var/mobile/bk_overlay_safe.txt"
+#define kBKOTryFile    @"/var/mobile/bk_ot.txt"
 
 #define kBKNeon  [UIColor colorWithRed:0.15 green:0.98 blue:0.85 alpha:1.0]
 #define kBKNeon2 [UIColor colorWithRed:0.45 green:0.35 blue:1.00 alpha:1.0]
@@ -26,6 +29,16 @@
     UIView *v = [super hitTest:p withEvent:e];
     if (!v || v == self) return nil;
     return v;
+}
+@end
+
+@interface BKRootVC : UIViewController
+@end
+
+@implementation BKRootVC
+- (void)loadView
+{
+    self.view = [[BKRootView alloc] initWithFrame:[UIScreen mainScreen].bounds];
 }
 @end
 
@@ -56,8 +69,8 @@ static UIView *gEditCanvas = nil;
 static BKUI *gUI = nil;
 static BOOL gMenuOpen = NO;
 static BOOL gEngineLoaded = NO;
+static BOOL gBallDone = NO, gCursorDone = NO, gTimerDone = NO;
 static int gLoadTries = 0;
-static NSString *gEnginePath = nil;
 static double gCurX = 0.0, gCurY = 0.0;
 static double gSpanW = 414.0, gSpanH = 736.0;
 static BOOL gCurValid = NO;
@@ -70,6 +83,9 @@ static NSString *BKBase(void);
 static NSString *BKPath(NSString *name);
 static void BKMark(NSString *name);
 static void BKAppend(NSString *fmt, ...);
+static BOOL BKExists(NSString *p);
+static int BKReadInt(NSString *p);
+static void BKWriteInt(NSString *p, int n);
 static void BKLoadEngine(void);
 static void BKPost(const char *name);
 static NSMutableDictionary *BKConfig(void);
@@ -87,6 +103,10 @@ static void BKCapturePoll(void);
 static void BKAddMarker(NSString *kind, int code, double nx, double ny);
 static void BKRemoveMarkerAt(int idx);
 static void BKSaveMarkers(void);
+static UIWindow *BKMakeWindow(CGFloat level);
+static void BKBuildBall(void);
+static void BKBuildCursor(void);
+static void BKStartTimer(void);
 static void BKOverlayBuild(void);
 
 static NSString *BKBase(void)
@@ -94,8 +114,7 @@ static NSString *BKBase(void)
     if (gBaseDir) return gBaseDir;
     @try {
         NSString *probe = @"/var/mobile/.bk_ow";
-        BOOL ok = [@"x" writeToFile:probe atomically:NO encoding:NSUTF8StringEncoding error:nil];
-        if (ok) {
+        if ([@"x" writeToFile:probe atomically:NO encoding:NSUTF8StringEncoding error:nil]) {
             [[NSFileManager defaultManager] removeItemAtPath:probe error:nil];
             gBaseDir = @"/var/mobile";
         } else {
@@ -130,6 +149,28 @@ static void BKAppend(NSString *fmt, ...)
                         encoding:NSUTF8StringEncoding error:nil];
         } @catch (NSException *e) { }
     }
+}
+
+static BOOL BKExists(NSString *p)
+{
+    @try { return [[NSFileManager defaultManager] fileExistsAtPath:p]; }
+    @catch (NSException *e) { return NO; }
+}
+
+static int BKReadInt(NSString *p)
+{
+    @try {
+        NSString *s = [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil];
+        return s ? [s intValue] : 0;
+    } @catch (NSException *e) { return 0; }
+}
+
+static void BKWriteInt(NSString *p, int n)
+{
+    @try {
+        [[NSString stringWithFormat:@"%d", n] writeToFile:p atomically:NO
+                    encoding:NSUTF8StringEncoding error:nil];
+    } @catch (NSException *e) { }
 }
 
 static void BKPost(const char *name) { notify_post(name); }
@@ -173,22 +214,11 @@ static void BKLoadEngine(void)
     if (gLoadTries > 20) return;
     gLoadTries++;
     @try {
-        if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/mobile/bk_off.txt"]) return;
-        Dl_info info;
-        NSString *dir = @"/var/jb/Library/MobileSubstrate/DynamicLibraries";
-        if (dladdr((void *)&BKLoadEngine, &info) && info.dli_fname) {
-            NSString *s = [NSString stringWithUTF8String:info.dli_fname];
-            if (s.length) dir = [s stringByDeletingLastPathComponent];
-        }
-        NSString *cand = [dir stringByAppendingPathComponent:@"BallKeyEngine.dylib"];
-        if (![[NSFileManager defaultManager] fileExistsAtPath:cand]) {
-            cand = @"/var/jb/Library/MobileSubstrate/DynamicLibraries/BallKeyEngine.dylib";
-        }
-        gEnginePath = cand;
-        if (![[NSFileManager defaultManager] fileExistsAtPath:cand]) return;
+        if (BKExists(kBKOffFile)) return;
+        NSString *cand = @"/var/jb/Library/MobileSubstrate/DynamicLibraries/BallKeyEngine.dylib";
+        if (!BKExists(cand)) return;
         void *h = dlopen([cand UTF8String], RTLD_LAZY);
         if (h) { gEngineLoaded = YES; BKAppend(@"E dlopen ok"); }
-        else BKAppend(@"E falha %s", dlerror());
     } @catch (NSException *e) { }
 }
 
@@ -250,22 +280,17 @@ static void BKRefreshStatus(void)
         if (!eng) eng = @"e0 k0 p0 m0 a=- o0 ct=0/0 plf=N sf=0";
         uint64_t age = BKAgeOf(@"bk_engine_status.txt");
         uint64_t engAge = BKAgeOf(@"bk_engine_ready.txt");
-
-        BOOL safe = [[NSFileManager defaultManager] fileExistsAtPath:@"/var/mobile/bk_safe.txt"];
+        BOOL safe = BKExists(kBKOSafeFile);
 
         NSDictionary *cfg = [NSDictionary dictionaryWithContentsOfFile:kBKConfigPath];
         BOOL on = cfg ? [[cfg objectForKey:@"Enabled"] boolValue] : YES;
 
         NSString *head = [NSString stringWithFormat:
-            @"v %@  at %@  lib:%@  eng:%llus  age:%llus  safe:%@",
+            @"v %@  at %@  lib:%@  eng:%llus  age:%llus  osf:%@",
             kBKBuildTag, on ? @"1" : @"0", gEngineLoaded ? @"S" : @"N",
             (unsigned long long)engAge, (unsigned long long)age, safe ? @"1" : @"0"];
 
-        NSString *bb = [NSString stringWithContentsOfFile:BKPath(@"bk_engine_bb.txt")
-                                                 encoding:NSUTF8StringEncoding error:nil];
-        if (!bb.length) bb = @"bb=-";
-
-        gStatusLabel.text = [NSString stringWithFormat:@"%@\n%@\n%@", head, eng, bb];
+        gStatusLabel.text = [NSString stringWithFormat:@"%@\n%@", head, eng];
         gStatusLabel.textColor = (engAge > 8 || age > 8) ? kBKRed : kBKDim;
     } @catch (NSException *e) { }
 }
@@ -435,22 +460,28 @@ static UIButton *BKButton(NSString *title, SEL sel, UIColor *color)
     return b;
 }
 
+static UIWindow *BKMakeWindow(CGFloat level)
+{
+    UIWindowScene *scene = nil;
+    @try {
+        for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+            if ([s isKindOfClass:[UIWindowScene class]]) { scene = (UIWindowScene *)s; break; }
+        }
+    } @catch (NSException *e) { }
+    UIWindow *w = scene ? [[UIWindow alloc] initWithWindowScene:scene]
+                        : [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    w.windowLevel = level;
+    w.backgroundColor = [UIColor clearColor];
+    w.rootViewController = [[BKRootVC alloc] init];
+    return w;
+}
+
 static void BKOpenMenu(void)
 {
     if (gMenuOpen) return;
     gMenuOpen = YES;
     @try {
-        if (!gMenuWin) {
-            UIWindowScene *scene = nil;
-            for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-                if ([s isKindOfClass:[UIWindowScene class]]) { scene = (UIWindowScene *)s; break; }
-            }
-            gMenuWin = scene ? [[UIWindow alloc] initWithWindowScene:scene]
-                             : [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-            gMenuWin.windowLevel = UIWindowLevelAlert + 2002;
-            gMenuWin.backgroundColor = [UIColor clearColor];
-            gMenuWin.rootViewController = [[UIViewController alloc] init];
-        }
+        if (!gMenuWin) gMenuWin = BKMakeWindow(UIWindowLevelAlert + 2002);
         UIViewController *vc = gMenuWin.rootViewController;
         for (UIView *v in vc.view.subviews) [v removeFromSuperview];
         vc.view.backgroundColor = [UIColor colorWithRed:0.02 green:0.04 blue:0.07 alpha:0.94];
@@ -463,7 +494,7 @@ static void BKOpenMenu(void)
         [vc.view addSubview:title];
 
         gStatusLabel = [[UILabel alloc] init];
-        gStatusLabel.numberOfLines = 5;
+        gStatusLabel.numberOfLines = 4;
         gStatusLabel.font = [UIFont systemFontOfSize:10];
         gStatusLabel.textColor = kBKDim;
         gStatusLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -537,10 +568,8 @@ static void BKOpenEditor(NSString *kind, int code)
     if (gMenuWin) gMenuWin.hidden = YES;
     @try {
         if (!gEditWin) {
-            gEditWin = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-            gEditWin.windowLevel = UIWindowLevelAlert + 2003;
-            gEditWin.backgroundColor = [UIColor clearColor];
-            gEditWin.rootViewController = [[UIViewController alloc] init];
+            gEditWin = BKMakeWindow(UIWindowLevelAlert + 2003);
+            gEditWin.rootViewController.view.backgroundColor = [UIColor clearColor];
         }
         UIViewController *vc = gEditWin.rootViewController;
         for (UIView *v in vc.view.subviews) [v removeFromSuperview];
@@ -670,21 +699,9 @@ static void BKCloseEditor(void)
 
 @end
 
-static void BKOverlayBuild(void)
+static void BKBuildBall(void)
 {
-    gUI = [[BKUI alloc] init];
-
-    UIWindowScene *scene = nil;
-    for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-        if ([s isKindOfClass:[UIWindowScene class]]) { scene = (UIWindowScene *)s; break; }
-    }
-
-    gBallWin = scene ? [[UIWindow alloc] initWithWindowScene:scene]
-                     : [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    gBallWin.windowLevel = UIWindowLevelAlert + 2000;
-    gBallWin.backgroundColor = [UIColor clearColor];
-    gBallWin.rootViewController = [[UIViewController alloc] init];
-    gBallWin.rootViewController.view = [[BKRootView alloc] initWithFrame:gBallWin.bounds];
+    gBallWin = BKMakeWindow(UIWindowLevelAlert + 2000);
 
     gBall = [[UIView alloc] initWithFrame:CGRectMake(20, 120, 44, 44)];
     gBall.backgroundColor = [UIColor colorWithRed:0.03 green:0.07 blue:0.10 alpha:0.85];
@@ -707,13 +724,11 @@ static void BKOverlayBuild(void)
 
     [gBallWin.rootViewController.view addSubview:gBall];
     gBallWin.hidden = NO;
+}
 
-    gCursorWin = scene ? [[UIWindow alloc] initWithWindowScene:scene]
-                       : [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    gCursorWin.windowLevel = UIWindowLevelAlert + 2001;
-    gCursorWin.backgroundColor = [UIColor clearColor];
-    gCursorWin.rootViewController = [[UIViewController alloc] init];
-    gCursorWin.rootViewController.view = [[BKRootView alloc] initWithFrame:gCursorWin.bounds];
+static void BKBuildCursor(void)
+{
+    gCursorWin = BKMakeWindow(UIWindowLevelAlert + 2001);
 
     gCursor = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 18, 18)];
     gCursor.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.10];
@@ -729,15 +744,25 @@ static void BKOverlayBuild(void)
     gCurX = gSpanW * 0.5;
     gCurY = gSpanH * 0.5;
     gCurValid = YES;
+}
 
-    BKLoadEngine();
-
+static void BKStartTimer(void)
+{
     dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
                                                  dispatch_get_main_queue());
     dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, 500ull * NSEC_PER_MSEC),
                               500ull * NSEC_PER_MSEC, 80ull * NSEC_PER_MSEC);
     dispatch_source_set_event_handler(t, ^{
         @try {
+            static int tick = 0;
+            tick++;
+            if (tick == 40) {
+                BKWriteInt(kBKOTryFile, 0);
+                if (BKExists(kBKOSafeFile)) {
+                    [[NSFileManager defaultManager] removeItemAtPath:kBKOSafeFile error:nil];
+                }
+                BKMark(@"overlay_ok.txt");
+            }
             if (gMenuOpen) BKRefreshStatus();
             BKRefreshCursor();
             BKCapturePoll();
@@ -748,19 +773,55 @@ static void BKOverlayBuild(void)
         } @catch (NSException *e) { }
     });
     dispatch_resume(t);
+}
 
+static void BKOverlayBuild(void)
+{
+    @try { if (!gUI) gUI = [[BKUI alloc] init]; } @catch (NSException *e) { return; }
+
+    if (!gBallDone) {
+        @try { BKBuildBall(); gBallDone = YES; }
+        @catch (NSException *e) { BKAppend(@"! ball %@", e.reason); }
+    }
+    if (!gCursorDone) {
+        @try { BKBuildCursor(); gCursorDone = YES; }
+        @catch (NSException *e) { BKAppend(@"! cursor %@", e.reason); }
+    }
+    @try { BKLoadEngine(); } @catch (NSException *e) { }
+    if (!gTimerDone) {
+        @try { BKStartTimer(); gTimerDone = YES; }
+        @catch (NSException *e) { BKAppend(@"! timer %@", e.reason); }
+    }
     BKMark(@"overlay_loaded.txt");
-    BKAppend(@"overlay pronto");
 }
 
 __attribute__((constructor)) static void BKOverlayInit(void)
 {
-    BKMark(@"overlay_ctor.txt");
     dispatch_async(dispatch_get_main_queue(), ^{
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(350 * NSEC_PER_MSEC)),
-                       dispatch_get_main_queue(), ^{
-            @try { BKOverlayBuild(); }
-            @catch (NSException *e) { BKAppend(@"! build %@", e.reason); }
-        });
+        @autoreleasepool {
+            @try {
+                BKMark(@"overlay_ctor.txt");
+                int n = BKReadInt(kBKOTryFile) + 1;
+                BKWriteInt(kBKOTryFile, n);
+                BOOL off = BKExists(kBKOffFile);
+                if (n > 3) {
+                    [@"" writeToFile:kBKOSafeFile atomically:NO encoding:NSUTF8StringEncoding error:nil];
+                }
+                BOOL safe = BKExists(kBKOSafeFile);
+                BKAppend(@"O boot n=%d off=%d osf=%d", n, off, safe);
+
+                if (off || (safe && n > 3)) {
+                    BKMark(@"overlay_safe.txt");
+                    return;
+                }
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(900 * NSEC_PER_MSEC)),
+                               dispatch_get_main_queue(), ^{
+                    @try { BKOverlayBuild(); }
+                    @catch (NSException *e) { BKAppend(@"! build %@", e.reason); }
+                });
+            } @catch (NSException *e) {
+                BKAppend(@"! ctor %@", e.reason);
+            }
+        }
     });
 }

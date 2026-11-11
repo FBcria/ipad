@@ -17,13 +17,9 @@ jobs:
 
       - name: Dependências
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libxml2 libxml2-dev libtinfo6 dpkg-dev make curl git jq \
-            libncurses-dev libssl-dev libplist-dev libpng-dev libjpeg-dev \
-            libtiff-dev libwebp-dev zlib1g-dev liblzma-dev \
-            libcurl4-openssl-dev swig pkg-config clang lld
-
+          set -e
+          PACOTES="libxml2 libxml2-dev
+          
       - name: Instalar Theos
         run: |
           export THEOS=$HOME/theos

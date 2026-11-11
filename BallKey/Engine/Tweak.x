@@ -87,7 +87,6 @@ typedef struct {
 #define kBKMoveDedupNs          3000000ull
 #define kBKEdge                 0.06
 #define kBKPressNs              (60ull * NSEC_PER_MSEC)
-
 #define kBKBtnLockNs            100000000ull
 #define kBKCapArmNs             90000000ull
 #define kBKCapLifeNs            8000000000ull
@@ -103,23 +102,19 @@ static BKIO gIO;
 static BKIOHIDEventSystemClientRef gListenClient = NULL;
 static BKIOHIDEventSystemClientRef gSendClient = NULL;
 static dispatch_queue_t gSendQ = NULL;
-
 static NSArray *gPoints = nil;
 static BOOL gEnabled = NO;
 static NSString *gActiveBundle = nil;
-
 static NSMutableDictionary *gDown = nil;
 static NSMutableDictionary *gGen = nil;
 static NSMutableDictionary *gSlotOf = nil;
 static NSMutableDictionary *gKeyDown = nil;
-
 static BOOL gRotate = YES;
 static BOOL gFollowCursor = NO;
 static BOOL gCursorOn = YES;
 static double gFollowSens = 1.0;
 static int gOrientOverride = 0;
 static BOOL gDump = NO;
-
 static BOOL gFps = NO;
 static double gFpsSens = 1.0;
 static int gFpsKey = kBKDefaultFpsKey;
@@ -131,7 +126,6 @@ static int gAimSlot = 0;
 static BOOL gFogoDown = NO, gAdsDown = NO, gDirActive = NO;
 static double gDirSens = 1.0;
 static BOOL gAimB = NO;
-
 static double gCx = 0.5, gCy = 0.5;
 static uint64_t gLastPtrWrite = 0;
 static BOOL gLastPtrValid = NO;
@@ -139,17 +133,14 @@ static double gLastPtrX = 0.0, gLastPtrY = 0.0;
 static int gPtrMask = 0;
 static uint64_t gLastMoveNs = 0;
 static double gLastMdx = 0.0, gLastMdy = 0.0;
-
 static BOOL gCapArm = NO;
 static uint64_t gCapArmNs = 0;
 static NSString *gCapNonce = nil;
-
 static uint64_t gLastKeyNs = 0;
 static uint64_t gLastBtnNs = 0;
 static int gEvSeen = 0;
 static int gKeySeen = 0;
 static int gPtrSeen = 0;
-
 static NSString *gLogBuf = nil;
 static uint64_t gLogLast = 0;
 
@@ -177,11 +168,8 @@ static void BKAppend(NSString *s)
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
         NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:kBKLogPath];
         if (!fh) { [out writeToFile:kBKLogPath atomically:NO encoding:NSUTF8StringEncoding error:nil]; return; }
-        @try {
-            [fh seekToEndOfFile];
-            [fh writeData:[out dataUsingEncoding:NSUTF8StringEncoding]];
-            [fh closeFile];
-        } @catch (NSException *e) { }
+        @try { [fh seekToEndOfFile]; [fh writeData:[out dataUsingEncoding:NSUTF8StringEncoding]]; [fh closeFile]; }
+        @catch (NSException *e) { }
     });
 }
 
@@ -221,8 +209,7 @@ static int BKCurrentOrient(void)
     if (!sb) return 3;
     SEL sel = @selector(_frontMostAppOrientation);
     if (![sb respondsToSelector:sel]) return 3;
-    long o = (long)((int (*)(id, SEL))objc_msgSend)(sb, sel);
-    return (int)o;
+    return (int)((int (*)(id, SEL))objc_msgSend)(sb, sel);
 }
 
 static void BKConvInv(double vx, double vy, int orient, double *ox, double *oy)
@@ -480,10 +467,7 @@ static void BKAimRecenter(int fromSlot, double cx, double cy)
     int toSlot = gAimB ? (kBKMaxFinger - 1) : kBKMaxFinger;
     gAimB = !gAimB;
     if (fromSlot == toSlot) { BKSlotMove(fromSlot, cx, cy); return; }
-    if (fromSlot > 0) {
-        BKSlotUp(fromSlot);
-        gSlotOwner[fromSlot] = 0;
-    }
+    if (fromSlot > 0) { BKSlotUp(fromSlot); gSlotOwner[fromSlot] = 0; }
     gAct[toSlot].on = 1;
     gAct[toSlot].x = BKClamp(cx);
     gAct[toSlot].y = BKClamp(cy);
@@ -501,9 +485,8 @@ static void BKFpsMove(double dx, double dy)
         && dx == gLastMdx && dy == gLastMdy && (now - gLastMoveNs) < kBKMoveDedupNs) return;
     gLastMdx = dx; gLastMdy = dy; gLastMoveNs = now;
 
-    double nx = gAimX + dx * gFpsSens * kBKMoveFactor;
-    double ny = gAimY + dy * gFpsSens * kBKMoveFactor;
-    nx = BKClamp(nx); ny = BKClamp(ny);
+    double nx = BKClamp(gAimX + dx * gFpsSens * kBKMoveFactor);
+    double ny = BKClamp(gAimY + dy * gFpsSens * kBKMoveFactor);
 
     double px, py;
     int o = BKCurrentOrient();
@@ -517,7 +500,7 @@ static void BKFpsMove(double dx, double dy)
         BKAimRecenter(gAimSlot, 0.5, 0.5);
         gAimX = 0.5; gAimY = 0.5;
         gAimSlot = [gSlotOf[@(kBKIdxAim)] intValue];
-        BKAppendD([NSString stringWithFormat:@"F borda->centro dedo=%d", gAimSlot]);
+        BKAppendD([NSString stringWithFormat:@"F borda dedo=%d", gAimSlot]);
     }
 }
 
@@ -579,7 +562,6 @@ static void BKLoadConfig(void)
             id p = profiles[active];
             if ([p isKindOfClass:[NSArray class]]) pts = p;
         }
-        // app errado/ausente: cai no coringa e depois no único perfil salvo
         if (!pts) {
             id p = profiles[@"*"];
             if ([p isKindOfClass:[NSArray class]]) pts = p;
@@ -795,8 +777,7 @@ static void BKListenCB(void *target, void *refcon, void *service, BKIOHIDEventRe
             int usage = gIO.GetInt(event, kBKFieldBtnMask);
             int b = usage - kBKUsageBtnBase;
             if (b < 0 || b >= kBKMaxBtn) return;
-            int down = gIO.GetInt(event, (kBKTypeButton << 16 | 3u));
-            BKHandleButton(b, down != 0);
+            BKHandleButton(b, gIO.GetInt(event, (kBKTypeButton << 16 | 3u)) != 0);
             return;
         }
     } @catch (NSException *e) { }
@@ -838,21 +819,15 @@ static void BKProbe(void)
 static BKIOHIDEventSystemClientRef BKNewListen(void)
 {
     BKIOHIDEventSystemClientRef c = NULL;
-
-    // 1) cliente monitor: recebe tudo
     if (gIO.ClientCreateType) c = gIO.ClientCreateType(kCFAllocatorDefault, 2, NULL);
-
-    // 2) cliente simples exige matching; página 1 = generic desktop (teclado+mouse)
     if (!c && gIO.ClientCreate) {
         c = gIO.ClientCreate(kCFAllocatorDefault);
         if (c && gIO.SetMatching) {
             NSDictionary *m = @{ @"PrimaryUsagePage": @1 };
-            gIO.SetMatching(c, (CFDictionaryRef)m);
+            gIO.SetMatching(c, (__bridge CFDictionaryRef)m);
         }
     }
     if (!c) return NULL;
-
-    // fila ANTES do callback: registrar antes não entrega nada
     if (gIO.SetQueue) gIO.SetQueue(c, dispatch_get_main_queue());
     else if (gIO.ScheduleRL) gIO.ScheduleRL(c, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
     if (gIO.RegisterCB) gIO.RegisterCB(c, (void *)BKListenCB, NULL, NULL);

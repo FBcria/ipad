@@ -5,7 +5,7 @@
 #import <notify.h>
 #import <dlfcn.h>
 
-#define kBKBuildTag    @"b33"
+#define kBKBuildTag    @"b34"
 #define kBKConfigPath  @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 #define kBKNotifyLoad  "com.wjf.ballkey.reload"
 #define kBKNotifyTest  "com.wjf.ballkey.test"
@@ -161,6 +161,7 @@ static void BKLoadEngine(void)
     if (gLoadTries > 20) return;
     gLoadTries++;
     @try {
+        if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/mobile/bk_off.txt"]) return;
         Dl_info info;
         NSString *dir = @"/var/jb/Library/MobileSubstrate/DynamicLibraries";
         if (dladdr((void *)&BKLoadEngine, &info) && info.dli_fname) {
@@ -259,7 +260,11 @@ static void BKRefreshStatus(void)
             gEngineLoaded ? @"ok" : @"-",
             (unsigned long long)engAge, (unsigned long long)age, hl];
 
-        gStatusLabel.text = [NSString stringWithFormat:@"%@\n%@", head, eng];
+        NSString *bb = [NSString stringWithContentsOfFile:BKPath(@"bk_engine_bb.txt")
+                                                 encoding:NSUTF8StringEncoding error:nil];
+        if (!bb.length) bb = @"bb=-";
+
+        gStatusLabel.text = [NSString stringWithFormat:@"%@\n%@\n%@", head, eng, bb];
         gStatusLabel.textColor = (engAge > 8 || age > 8) ? kBKRed : kBKDim;
     } @catch (NSException *e) { }
 }
@@ -457,7 +462,7 @@ static void BKOpenMenu(void)
         [vc.view addSubview:title];
 
         gStatusLabel = [[UILabel alloc] init];
-        gStatusLabel.numberOfLines = 4;
+        gStatusLabel.numberOfLines = 5;
         gStatusLabel.font = [UIFont systemFontOfSize:10];
         gStatusLabel.textColor = kBKDim;
         gStatusLabel.translatesAutoresizingMaskIntoConstraints = NO;

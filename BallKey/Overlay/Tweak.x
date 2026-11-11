@@ -8,6 +8,7 @@
 #define kBKStatusPath @"/var/mobile/bk_status.txt"
 #define kBKCaptureReqPath @"/var/mobile/bk_capture.txt"
 #define kBKCaptureResPath @"/var/mobile/bk_capture_result.txt"
+#define kBKEdgePt 30.0
 static UIWindow *gBallWindow = nil, *gMenuWindow = nil, *gEditWindow = nil;
 static UIView *gBall = nil, *gCanvas = nil, *gBanner = nil;
 static NSMutableArray *gMarkers = nil;
@@ -173,7 +174,7 @@ static void BKPlaceMarker(BKMarkerView *m)
     m.ny = BKClamp01(m.ny);
     CGFloat side = 56;
     m.frame = CGRectMake(m.nx * sz.width - side / 2, m.ny * sz.height - side / 2, side, side);
-    if (m.box) m.box.frame = CGRectMake(m.center.x - 40, m.center.y - 40, 80, 80);
+    if (m.box) m.box.frame = CGRectInset(gCanvas.bounds, kBKEdgePt, kBKEdgePt);
 }
 static void BKRelayout(void)
 {
@@ -289,14 +290,16 @@ static void BKStartCapture(BKMarkerView *m)
     self.center = c;
     self.nx = c.x / sz.width;
     self.ny = c.y / sz.height;
-    if (self.box) self.box.frame = CGRectMake(c.x - 40, c.y - 40, 80, 80);
     [g setTranslation:CGPointZero inView:gCanvas];
 }
 - (void)bkTap:(UITapGestureRecognizer *)g
 {
     (void)g;
-    @try { if (gPending == self) return; BKStartCapture(self); }
-    @catch (NSException *e) { BKLog(@"tap erro: %@", e.reason); }
+    @try {
+        if ([self.type isEqualToString:@"Fogo"] || [self.type isEqualToString:@"Mirar"]) return;
+        if (gPending == self) return;
+        BKStartCapture(self);
+    } @catch (NSException *e) { BKLog(@"tap erro: %@", e.reason); }
 }
 - (void)bkLong:(UILongPressGestureRecognizer *)g
 {
@@ -314,6 +317,8 @@ static NSString *BKTypeName(NSString *t)
     if ([t isEqualToString:@"Hold"]) return @"Segurar";
     if ([t isEqualToString:@"Dir"]) return @"Direção";
     if ([t isEqualToString:@"Fps"]) return @"Trava FPS";
+    if ([t isEqualToString:@"Fogo"]) return @"Atirar";
+    if ([t isEqualToString:@"Mirar"]) return @"Mirar";
     return t;
 }
 static UIColor *BKTypeColor(NSString *t)
@@ -322,6 +327,9 @@ static UIColor *BKTypeColor(NSString *t)
     if ([t isEqualToString:@"Press"]) return [UIColor systemGreenColor];
     if ([t isEqualToString:@"Hold"]) return [UIColor systemOrangeColor];
     if ([t isEqualToString:@"Dir"]) return [UIColor systemPurpleColor];
+    if ([t isEqualToString:@"Fps"]) return [UIColor systemIndigoColor];
+    if ([t isEqualToString:@"Fogo"]) return [UIColor systemRedColor];
+    if ([t isEqualToString:@"Mirar"]) return [UIColor systemTealColor];
     return [UIColor systemRedColor];
 }
 static BKMarkerView *BKMakeMarker(NSString *type, double nx, double ny, NSString *enc)
@@ -334,6 +342,10 @@ static BKMarkerView *BKMakeMarker(NSString *type, double nx, double ny, NSString
     m.layer.borderColor = col.CGColor;
     m.layer.borderWidth = 2;
     m.type = type;
+    if (!enc) {
+        if ([type isEqualToString:@"Fogo"]) enc = @"m:0";
+        else if ([type isEqualToString:@"Mirar"]) enc = @"m:1";
+    }
     m.keyEnc = enc;
     m.nx = BKClamp01(nx);
     m.ny = BKClamp01(ny);
@@ -348,12 +360,12 @@ static BKMarkerView *BKMakeMarker(NSString *type, double nx, double ny, NSString
     [m addSubview:l];
     m.label = l;
     if ([type isEqualToString:@"Fps"]) {
-        UIView *bx = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 80, 80)];
+        UIView *bx = [[UIView alloc] initWithFrame:CGRectZero];
         bx.userInteractionEnabled = NO;
-        bx.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.05];
-        bx.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.55].CGColor;
+        bx.backgroundColor = [UIColor clearColor];
+        bx.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.35].CGColor;
         bx.layer.borderWidth = 1.5;
-        bx.layer.cornerRadius = 4;
+        bx.layer.cornerRadius = 6;
         [gCanvas insertSubview:bx atIndex:0];
         m.box = bx;
     }
@@ -378,13 +390,19 @@ static void BKLayoutEditor(void)
         if (bw < 40) bw = 40;
         for (int i = 0; i < 5; i++) {
             UIView *v = [bar viewWithTag:200 + i];
-            v.frame = CGRectMake(x, 8, bw, 34);
+            v.frame = CGRectMake(x, 6, bw, 32);
             x += bw + gap;
         }
+        CGFloat x2 = 8;
+        for (int i = 5; i < 7; i++) {
+            UIView *v = [bar viewWithTag:200 + i];
+            v.frame = CGRectMake(x2, 44, bw, 32);
+            x2 += bw + gap;
+        }
         UIView *sv = [bar viewWithTag:210];
-        sv.frame = CGRectMake(b.size.width - 158, 50, 70, 34);
+        sv.frame = CGRectMake(b.size.width - 158, 44, 70, 32);
         UIView *ex = [bar viewWithTag:211];
-        ex.frame = CGRectMake(b.size.width - 82, 50, 74, 34);
+        ex.frame = CGRectMake(b.size.width - 82, 44, 74, 32);
     }
     if (gBanner) gBanner.frame = CGRectMake(b.size.width / 2 - 155, b.size.height - 54, 310, 34);
     for (BKMarkerView *m in gMarkers) BKPlaceMarker(m);
@@ -415,6 +433,20 @@ static void BKSaveEditor(void)
             [pts addObject:d];
             continue;
         }
+        if ([m.type isEqualToString:@"Fogo"]) {
+            d[@"Key"] = @"m:0";
+            cfg[@"FireX"] = d[@"X"];
+            cfg[@"FireY"] = d[@"Y"];
+            [pts addObject:d];
+            continue;
+        }
+        if ([m.type isEqualToString:@"Mirar"]) {
+            d[@"Key"] = @"m:1";
+            cfg[@"AdsX"] = d[@"X"];
+            cfg[@"AdsY"] = d[@"Y"];
+            [pts addObject:d];
+            continue;
+        }
         if ([m.type isEqualToString:@"Dir"]) {
             double r = m.radius;
             d[@"Key"] = m.keyEnc ?: @"m:0";
@@ -428,8 +460,6 @@ static void BKSaveEditor(void)
         } else {
             d[@"Key"] = m.keyEnc ?: @"";
             if ([m.type isEqualToString:@"Hold"]) d[@"HoldMs"] = @(400);
-            if ([m.keyEnc isEqualToString:@"m:0"]) { cfg[@"FireX"] = d[@"X"]; cfg[@"FireY"] = d[@"Y"]; }
-            else if ([m.keyEnc isEqualToString:@"m:1"]) { cfg[@"AdsX"] = d[@"X"]; cfg[@"AdsY"] = d[@"Y"]; }
         }
         [pts addObject:d];
     }
@@ -468,7 +498,8 @@ static void BKOpenEditor(void)
     bar.backgroundColor = [UIColor clearColor];
     [root addSubview:bar];
     NSArray *row1 = @[@[@"+ Toque", @"Tap"], @[@"+ Pressionar", @"Press"],
-                      @[@"+ Segurar", @"Hold"], @[@"+ Direção", @"Dir"], @[@"+ Trava", @"Fps"]];
+                      @[@"+ Segurar", @"Hold"], @[@"+ Direção", @"Dir"], @[@"+ Trava", @"Fps"],
+                      @[@"+ Atirar", @"Fogo"], @[@"+ Mirar", @"Mirar"]];
     for (NSUInteger i = 0; i < row1.count; i++) {
         NSArray *pair = row1[i];
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -476,7 +507,7 @@ static void BKOpenEditor(void)
         [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
         b.backgroundColor = [BKTypeColor(pair[1]) colorWithAlphaComponent:0.85];
         b.layer.cornerRadius = 8;
-        b.titleLabel.font = [UIFont boldSystemFontOfSize:11];
+        b.titleLabel.font = [UIFont boldSystemFontOfSize:10];
         b.titleLabel.adjustsFontSizeToFitWidth = YES;
         [b addTarget:gEditWindow.rootViewController action:@selector(bkAdd:) forControlEvents:UIControlEventTouchUpInside];
         b.tag = 200 + (NSInteger)i;
@@ -651,10 +682,12 @@ static void BKToggleMenu(void)
 - (void)bkAdd:(UIButton *)b
 {
     @try {
-        NSArray *types = @[@"Tap", @"Press", @"Hold", @"Dir", @"Fps"];
+        NSArray *types = @[@"Tap", @"Press", @"Hold", @"Dir", @"Fps", @"Fogo", @"Mirar"];
         NSInteger i = b.tag - 200;
         if (i < 0 || i >= (NSInteger)types.count) return;
-        BKAddMarker(types[i], YES);
+        NSString *t = types[i];
+        BOOL cap = !([t isEqualToString:@"Fogo"] || [t isEqualToString:@"Mirar"]);
+        BKAddMarker(t, cap);
     } @catch (NSException *e) { BKLog(@"add erro: %@", e.reason); }
 }
 - (void)bkSave:(UIButton *)b

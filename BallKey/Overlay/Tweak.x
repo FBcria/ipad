@@ -5,6 +5,7 @@
 #import <notify.h>
 #import <stdarg.h>
 
+#define kBKBuildTag    @"b25"
 #define kBKPrefDomain  CFSTR("com.wjf.ballkey")
 #define kBKConfigPath  @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 
@@ -78,7 +79,6 @@ static double BKClamp01(double v)
     return v;
 }
 
-// Diretorio compartilhado com o motor (que roda dentro do jogo).
 static NSString *BKBase(void)
 {
     if (gBaseDir) return gBaseDir;
@@ -165,9 +165,35 @@ static BOOL BKGetDump(void)
     return n ? [n boolValue] : NO;
 }
 
-static BOOL BKFile(NSString *n)
+// Onde o motor deveria estar instalado.
+static NSString *BKLibCheck(void)
 {
-    return [[NSFileManager defaultManager] fileExistsAtPath:BKPath(n)];
+    NSArray *ps = @[@"/var/jb/usr/lib/TweakInject/BallKeyEngine.dylib",
+                    @"/var/jb/Library/MobileSubstrate/DynamicLibraries/BallKeyEngine.dylib",
+                    @"/usr/lib/TweakInject/BallKeyEngine.dylib",
+                    @"/Library/MobileSubstrate/DynamicLibraries/BallKeyEngine.dylib"];
+    for (NSUInteger i = 0; i < ps.count; i++) {
+        if ([[NSFileManager defaultManager] fileExistsAtPath:ps[i]])
+            return [NSString stringWithFormat:@"L%lu", (unsigned long)(i + 1)];
+    }
+    return @"L0";
+}
+
+static long BKStatusAge(void)
+{
+    NSDictionary *at = [[NSFileManager defaultManager]
+        attributesOfItemAtPath:BKPath(@"bk_status.txt") error:nil];
+    NSDate *mt = at[NSFileModificationDate];
+    if (!mt) return -1;
+    return (long)[[NSDate date] timeIntervalSinceDate:mt];
+}
+
+static NSString *BKAppText(void)
+{
+    NSString *s = [NSString stringWithContentsOfFile:BKPath(@"bk_app.txt")
+                                           encoding:NSUTF8StringEncoding error:nil];
+    s = [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return s.length ? s : @"-";
 }
 
 static NSString *BKStatusText(void)
@@ -175,16 +201,16 @@ static NSString *BKStatusText(void)
     NSString *st = [NSString stringWithContentsOfFile:BKPath(@"bk_status.txt")
                                             encoding:NSUTF8StringEncoding error:nil];
     st = [st stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    NSString *motor = BKFile(@"bk_engine_ready.txt") ? @"mot:ok" : @"mot:NAO";
-    return [NSString stringWithFormat:@"%@ %@", motor, st.length ? st : @"-"];
+    long age = BKStatusAge();
+    NSString *motor = (age >= 0 && age <= 5) ? @"mot:ok" : @"mot:NAO";
+    return [NSString stringWithFormat:@"%@ v%@ lib:%@ age:%lds\n%@",
+            motor, kBKBuildTag, BKLibCheck(), age, st.length ? st : @"-"];
 }
 
 static void BKSyncApp(void)
 {
-    NSString *s = [NSString stringWithContentsOfFile:BKPath(@"bk_app.txt")
-                                           encoding:NSUTF8StringEncoding error:nil];
-    s = [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (!s.length) return;
+    NSString *s = BKAppText();
+    if ([s isEqualToString:@"-"]) return;
     if ([s isEqualToString:gFrontBundle]) return;
     gFrontBundle = s;
     NSMutableDictionary *cfg = BKReadCfg();
@@ -970,7 +996,7 @@ static void BKMenuLayout(void)
 
     BOOL duas = (sz.height < 580.0);
     CGFloat bw = duas ? MIN(540.0, sz.width * 0.76) : MIN(320.0, sz.width * 0.74);
-    CGFloat headerH = 78.0;
+    CGFloat headerH = 92.0;
     CGFloat rowH = duas ? 38.0 : 42.0;
     CGFloat gap = 10.0;
     int linhas = duas ? 6 : 11;
@@ -1056,19 +1082,18 @@ static void BKToggleMenu(void)
     tt.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [head addSubview:tt];
 
-    UILabel *st = [[UILabel alloc] initWithFrame:CGRectMake(0, 22, 300, 40)];
-    st.font = [UIFont monospacedSystemFontOfSize:10.5 weight:UIFontWeightSemibold];
-    st.textColor = UIColor.whiteColor;
-    st.numberOfLines = 2;
+    UILabel *st = [[UILabel alloc] initWithFrame:CGRectMake(0, 22, 300, 56)];
+    st.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightSemibold];
+    st.numberOfLines = 3;
     st.textAlignment = NSTextAlignmentCenter;
-    st.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
+    st.backgroundColor = [UIColor colorWithWhite:0 alpha:0.60];
     st.layer.cornerRadius = 8;
     st.clipsToBounds = YES;
     st.adjustsFontSizeToFitWidth = YES;
-    st.minimumScaleFactor = 0.55;
+    st.minimumScaleFactor = 0.5;
     st.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    st.text = BKStatusText();
     [head addSubview:st];
+    st.tag = 79;
 
     NSArray *titles = @[@"Editor", @"Sens -", @"Sens +", @"Ligar", @"Testar",
                         @"Dump", @"Recarregar", @"Limpar teclas", @"Limpar tudo",
@@ -1087,6 +1112,18 @@ static void BKToggleMenu(void)
     [root addSubview:box];
     gMenuWindow.hidden = NO;
     BKMenuLayout();
+    BKRefreshStatus();
+}
+
+static void BKRefreshStatus(void)
+{
+    if (!gMenuWindow || gMenuWindow.hidden) return;
+    UILabel *st = (UILabel *)[gMenuWindow.rootViewController.view viewWithTag:79];
+    if (!st) return;
+    long age = BKStatusAge();
+    st.text = [NSString stringWithFormat:@"%@\na=%@", BKStatusText(), BKAppText()];
+    st.textColor = (age >= 0 && age <= 5) ? UIColor.whiteColor
+                                          : [UIColor colorWithRed:1 green:0.35 blue:0.35 alpha:1];
 }
 
 #pragma mark - Bolinha
@@ -1246,6 +1283,7 @@ static void BKOverlayInit(void)
         if (gBallWindow && gBallWindow.hidden) gBallWindow.hidden = NO;
         BKRelayout();
         BKSyncApp();
+        BKRefreshStatus();
         if (!gFpsNow && [BKReadCfg()[@"CursorOn"] boolValue]) {
             if (!gCursorWindow) BKPtrShow(YES);
         }

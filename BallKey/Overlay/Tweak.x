@@ -35,6 +35,7 @@ static CGRect BKSpace(void);
 static UIWindowScene *BKMainScene(void);
 static void BKLayoutEditor(void);
 static void BKMenuLayout(void);
+static void BKRefreshStatus(void);
 static NSMutableDictionary *BKReadCfg(void);
 static void BKToggleMenu(void);
 static void BKSetEnabled(BOOL on);
@@ -44,6 +45,8 @@ static void BKLimpar(BOOL tudo);
 static void BKStopCapture(void);
 static NSString *BKPath(NSString *name);
 static void BKSyncApp(void);
+static long BKStatusAge(void);
+static NSString *BKAppText(void);
 
 @interface BKPassWindow : UIWindow
 @end
@@ -165,7 +168,6 @@ static BOOL BKGetDump(void)
     return n ? [n boolValue] : NO;
 }
 
-// Onde o motor deveria estar instalado.
 static NSString *BKLibCheck(void)
 {
     NSArray *ps = @[@"/var/jb/usr/lib/TweakInject/BallKeyEngine.dylib",
@@ -1092,8 +1094,8 @@ static void BKToggleMenu(void)
     st.adjustsFontSizeToFitWidth = YES;
     st.minimumScaleFactor = 0.5;
     st.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    [head addSubview:st];
     st.tag = 79;
+    [head addSubview:st];
 
     NSArray *titles = @[@"Editor", @"Sens -", @"Sens +", @"Ligar", @"Testar",
                         @"Dump", @"Recarregar", @"Limpar teclas", @"Limpar tudo",

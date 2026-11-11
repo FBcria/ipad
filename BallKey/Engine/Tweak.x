@@ -32,6 +32,9 @@ static const int kBKTypePointer = 17;
 #define kBKSlotAim 10
 #define kBKPressNs 60ull
 #define kBKSeenMax 24
+#define kBKNotifyLoad "com.wjf.ballkey.reload"
+#define kBKNotifyTest "com.wjf.ballkey.test"
+#define kBKNotifyCap  "com.wjf.ballkey.capture"
 
 static NSString *gBaseDir = nil;
 static NSString *gLogBuf = nil;
@@ -903,6 +906,16 @@ __attribute__((constructor)) static void BKInitC(void)
         BKMark(@"engine_io.txt");
         gSendClient = gIO.ClientCreate(kCFAllocatorDefault);
         BKAppend(gSendClient ? @"I send=1" : @"I send=0");
+
+        static int nt1 = 0, nt2 = 0, nt3 = 0;
+        notify_register_dispatch(kBKNotifyLoad, &nt1, dispatch_get_main_queue(),
+            ^(int t) { (void)t; BKLoadConfig(); });
+        notify_register_dispatch(kBKNotifyTest, &nt2, dispatch_get_main_queue(),
+            ^(int t) { (void)t; BKSelfTest(); });
+        notify_register_dispatch(kBKNotifyCap, &nt3, dispatch_get_main_queue(),
+            ^(int t) { (void)t; BKArmCapture(); });
+        BKAppend(@"I notify=1");
+
         @try {
             gListenClient = BKNewListen();
             if (!gListenClient) BKAppend(@"! listen");

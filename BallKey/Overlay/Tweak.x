@@ -66,6 +66,8 @@ static BKMarkerView *gPending = nil;
 static NSTimer *gCapTimer = nil;
 static NSTimer *gCursorTimer = nil;
 
+static void BKPlaceMarker(BKMarkerView *m);
+
 static double BKClamp01(double v)
 {
     if (v < 0.02) return 0.02;
@@ -378,6 +380,29 @@ static void BKPlaceMarker(BKMarkerView *m)
     m.frame = CGRectMake(m.nx * sz.width - side / 2, m.ny * sz.height - side / 2, side, side);
 }
 
+@implementation BKMarkerView
+
+- (void)bkPan:(UIPanGestureRecognizer *)g
+{
+    if (!gCanvas) return;
+    CGPoint p = [g locationInView:gCanvas];
+    CGSize sz = gCanvas.bounds.size;
+    if (sz.width < 1.0 || sz.height < 1.0) return;
+    self.nx = BKClamp01(p.x / sz.width);
+    self.ny = BKClamp01(p.y / sz.height);
+    BKPlaceMarker(self);
+}
+
+- (void)bkLong:(UILongPressGestureRecognizer *)g
+{
+    if (g.state != UIGestureRecognizerStateBegan) return;
+    if (gPending == self) BKStopCapture();
+    [gMarkers removeObject:self];
+    [self removeFromSuperview];
+}
+
+@end
+
 static void BKStopCapture(void)
 {
     [gCapTimer invalidate];
@@ -432,32 +457,6 @@ static void BKStartCapture(BKMarkerView *m)
         } @catch (NSException *e) { }
     }];
 }
-
-@interface BKMarkerView (BKGestures)
-@end
-
-@implementation BKMarkerView (BKGestures)
-
-- (void)bkPan:(UIPanGestureRecognizer *)g
-{
-    if (!gCanvas) return;
-    CGPoint p = [g locationInView:gCanvas];
-    CGSize sz = gCanvas.bounds.size;
-    if (sz.width < 1.0 || sz.height < 1.0) return;
-    self.nx = BKClamp01(p.x / sz.width);
-    self.ny = BKClamp01(p.y / sz.height);
-    BKPlaceMarker(self);
-}
-
-- (void)bkLong:(UILongPressGestureRecognizer *)g
-{
-    if (g.state != UIGestureRecognizerStateBegan) return;
-    if (gPending == self) BKStopCapture();
-    [gMarkers removeObject:self];
-    [self removeFromSuperview];
-}
-
-@end
 
 static BKMarkerView *BKMakeMarker(NSString *type, double nx, double ny, NSString *enc)
 {
@@ -685,7 +684,6 @@ forControlEvents:UIControlEventTouchUpInside];
     gBanner.hidden = YES;
     [root addSubview:gBanner];
 
-    // marcadores já salvos
     NSMutableDictionary *cfg = BKReadCfg();
     NSString *bundle = gFrontBundle;
     NSDictionary *profiles = cfg[@"Profiles"];

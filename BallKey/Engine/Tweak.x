@@ -162,6 +162,12 @@ static void BKStatus(void);
 static void BKLoadConfig(void);
 static void BKOnEventRaw(BKIOHIDEventRef event, int src);
 static void BKFrontTick(void);
+static void BKPtrWrite(void);
+static void BKCursorMove(double dx, double dy);
+static void BKFpsMove(double dx, double dy);
+static void BKPtrButtons(int mask);
+static void BKHandleKey(int usage, BOOL down);
+static void BKHandleButton(int b, BOOL down);
 
 static uint64_t BKNow(void) { return mach_absolute_time() / 1000000ull; }
 
@@ -500,7 +506,7 @@ static BOOL BKHookHandleEvent(id self, SEL cmd, BKIOHIDEventRef e, id ne)
 static void BKHookEnqueue(id self, SEL cmd, BKIOHIDEventRef e)
 {
     BKOnEventRaw(e, 3);
-    if (origEnqueue) origEnqueue(self, cmd, e);
+    if (origEnqueueHID) origEnqueueHID(self, cmd, e);
 }
 
 static void BKHookDistribute(id self, SEL cmd, BKIOHIDEventRef e)

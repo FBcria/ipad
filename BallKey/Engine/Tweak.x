@@ -14,12 +14,6 @@ typedef void *BKIOHIDEventRef;
 
 typedef struct {
     BKIOHIDEventSystemClientRef (*ClientCreate)(CFAllocatorRef);
-    BKIOHIDEventSystemClientRef (*ClientCreateType)(CFAllocatorRef, uint32_t, CFDictionaryRef);
-    void (*SetMatching)(BKIOHIDEventSystemClientRef, CFDictionaryRef);
-    void (*SetQueue)(BKIOHIDEventSystemClientRef, dispatch_queue_t);
-    void (*ScheduleRL)(BKIOHIDEventSystemClientRef, CFRunLoopRef, CFStringRef);
-    void (*RegisterCB)(BKIOHIDEventSystemClientRef, void *, void *, void *);
-    void (*Activate)(BKIOHIDEventSystemClientRef);
     void (*Dispatch)(BKIOHIDEventSystemClientRef, BKIOHIDEventRef);
     int  (*GetType)(BKIOHIDEventRef);
     int  (*GetInt)(BKIOHIDEventRef, uint32_t);
@@ -36,6 +30,7 @@ typedef struct {
         double, double, double, double, double, uint8_t, uint8_t, uint32_t);
 } BKIO;
 
+#define kBKBuildTag             @"b25"
 #define kBKPrefDomain           CFSTR("com.wjf.ballkey")
 #define kBKConfigFile           "/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 #define kBKNotifyReload         "com.wjf.ballkey.reload"
@@ -50,12 +45,8 @@ typedef struct {
 #define kBKSenderID             0x8000000817319372ull
 #define kBKMaxFinger            10
 
-#define kBKFieldX               (11u << 16 | 0u)
-#define kBKFieldY               (11u << 16 | 1u)
 #define kBKFieldBtnMask         (11u << 16 | 3u)
 #define kBKFieldHandMask        (11u << 16 | 7u)
-#define kBKFieldRange           (11u << 16 | 8u)
-#define kBKFieldTouch           (11u << 16 | 9u)
 #define kBKFieldMajorR          0xb0014u
 #define kBKFieldMinorR          0xb0015u
 #define kBKFieldDisplayInt      0xb0019u
@@ -120,7 +111,6 @@ static BOOL gDump = NO;
 static BOOL gFps = NO;
 static double gFpsSens = 1.0;
 static int gFpsKey = kBKDefaultFpsKey;
-static double gFpsX = 0.5, gFpsY = 0.5;
 static double gFireX = 0.86, gFireY = 0.62;
 static double gAdsX = 0.95, gAdsY = 0.50;
 static double gAimX = 0.5, gAimY = 0.5;
@@ -231,15 +221,12 @@ static void BKNotifyUserActivity(void)
     last = now;
     Class c = objc_getClass("BKUserEventTimer");
     if (!c) return;
-    SEL s1 = @selector(userEventOccurred);
-    SEL s2 = @selector(userEventOccurredOnDisplay:);
     id timer = ((id (*)(id, SEL))objc_msgSend)(c, @selector(sharedInstance));
     if (!timer) return;
+    SEL s1 = @selector(userEventOccurred);
     if ([timer respondsToSelector:s1]) ((void (*)(id, SEL))objc_msgSend)(timer, s1);
-    else if ([timer respondsToSelector:s2]) ((void (*)(id, SEL, id))objc_msgSend)(timer, s2, nil);
 }
 
-// No app a orientacao vem da propria janela; no SpringBoard do frontmost.
 static int BKCurrentOrient(void)
 {
     if (gOrientOverride > 0) return gOrientOverride;
@@ -364,7 +351,7 @@ static void BKFlushNow(void)
     [gEnding removeAllObjects];
 
     gIO.SetInt(hand, kBKFieldHandMask, (int)hmask);
-    gIO.SetInt(hand, kBKFieldTouch, anyDown ? 1 : 0);
+    gIO.SetInt(hand, (11u << 16 | 9u), anyDown ? 1 : 0);
     gIO.SetSender(hand, kBKSenderID);
 
     CFRetain(hand);
@@ -594,8 +581,8 @@ static void BKInstallHooks(void)
     }
 
     gHooksReady = YES;
-    NSString *line = [NSString stringWithFormat:@"msf=%d msm=%d rep=%@",
-        gMSHookFunction ? 1 : 0, gMSHookMessageEx ? 1 : 0, rep.length ? rep : @"-"];
+    NSString *line = [NSString stringWithFormat:@"v=%@ msf=%d msm=%d rep=%@",
+        kBKBuildTag, gMSHookFunction ? 1 : 0, gMSHookMessageEx ? 1 : 0, rep.length ? rep : @"-"];
     BKAppend([NSString stringWithFormat:@"H %@", line]);
     [line writeToFile:BKPath(@"bk_hooks.txt")
           atomically:NO encoding:NSUTF8StringEncoding error:nil];
@@ -720,8 +707,7 @@ static void BKGCStart(void)
                     if (rb) {
                         void (^bh)(id, float, float, float) = ^(id b, float v, float p, float t) {
                             (void)b; (void)p; (void)t;
-                            if (v > 0.5f) BKHandleButton(1, YES);
-                            else BKHandleButton(1, NO);
+                            BKHandleButton(1, v > 0.5f);
                         };
                         ((void (*)(id, SEL, id, id))objc_msgSend)(rb, @selector(setValue:forKey:),
                             bh, @"pressedChangedHandler");
@@ -934,8 +920,8 @@ static void BKFpsOff(void)
 
 static void BKStatus(void)
 {
-    NSString *s = [NSString stringWithFormat:@"e%d k%d p%d m%lu l%d h%d.%d.%d s%d g%d\na=%@ o%d\n",
-        (int)gEnabled, gKeySeen, gPtrSeen, (unsigned long)gPoints.count, gLstSeen,
+    NSString *s = [NSString stringWithFormat:@"v%@ e%d k%d p%d m%lu l%d h%d.%d.%d s%d g%d\na=%@ o%d\n",
+        kBKBuildTag, (int)gEnabled, gKeySeen, gPtrSeen, (unsigned long)gPoints.count, gLstSeen,
         gHookDispatch, gHookHandle, gHookEnqueue, gHookSelf, (int)gGCOn,
         gActiveBundle ?: @"-", BKCurrentOrient()];
     [s writeToFile:BKPath(@"bk_status.txt") atomically:NO encoding:NSUTF8StringEncoding error:nil];
@@ -982,8 +968,6 @@ static void BKLoadConfig(void)
     if ([cfg[@"Dump"] isKindOfClass:[NSNumber class]]) gDump = [cfg[@"Dump"] boolValue];
     if ([cfg[@"FpsSens"] isKindOfClass:[NSNumber class]]) gFpsSens = [cfg[@"FpsSens"] doubleValue];
     if ([cfg[@"FpsKey"] isKindOfClass:[NSNumber class]]) gFpsKey = [cfg[@"FpsKey"] intValue];
-    if ([cfg[@"FpsX"] isKindOfClass:[NSNumber class]]) gFpsX = [cfg[@"FpsX"] doubleValue];
-    if ([cfg[@"FpsY"] isKindOfClass:[NSNumber class]]) gFpsY = [cfg[@"FpsY"] doubleValue];
     if ([cfg[@"FireX"] isKindOfClass:[NSNumber class]]) gFireX = [cfg[@"FireX"] doubleValue];
     if ([cfg[@"FireY"] isKindOfClass:[NSNumber class]]) gFireY = [cfg[@"FireY"] doubleValue];
     if ([cfg[@"AdsX"] isKindOfClass:[NSNumber class]]) gAdsX = [cfg[@"AdsX"] doubleValue];

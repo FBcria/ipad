@@ -10,6 +10,6 @@ TWEAK_NAME = BallKeyEngine
 
 BallKeyEngine_FILES = Tweak.x
 BallKeyEngine_CFLAGS = -fobjc-arc -I$(THEOS_PROJECT_DIR)/common -I$(THEOS_PROJECT_DIR)/../common -I$(THEOS)/vendor/include
-BallKeyEngine_FRAMEWORKS = Foundation CoreGraphics
+BallKeyEngine_FRAMEWORKS = Foundation CoreGraphics GameController
 
 include $(THEOS_MAKE_PATH)/tweak.mk

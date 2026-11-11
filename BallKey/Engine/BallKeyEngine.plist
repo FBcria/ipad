@@ -8,6 +8,13 @@
 		<array>
 			<string>com.dts.freefireth</string>
 			<string>com.dts.freefiremax</string>
+			<string>com.dts.freefire</string>
+		</array>
+		<key>Executables</key>
+		<array>
+			<string>FreeFire</string>
+			<string>FreeFireMax</string>
+			<string>freefire</string>
 		</array>
 	</dict>
 </dict>

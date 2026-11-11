@@ -5,11 +5,8 @@
 #import <notify.h>
 #import <stdarg.h>
 
-#define kBKConfigPath @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
-#define kBKStatusPath @"/var/mobile/bk_status.txt"
-#define kBKPtrPath    @"/var/mobile/bk_ptr.txt"
-#define kBKCaptureReqPath @"/var/mobile/bk_capture.txt"
-#define kBKCaptureResPath @"/var/mobile/bk_capture_result.txt"
+#define kBKPrefDomain  CFSTR("com.wjf.ballkey")
+#define kBKConfigPath  @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 
 static UIWindow *gBallWindow = nil;
 static UIWindow *gMenuWindow = nil;
@@ -21,10 +18,12 @@ static UILabel *gBanner = nil;
 static UIView *gCursorView = nil;
 static NSMutableArray *gMarkers = nil;
 static NSString *gFrontBundle = nil;
+static NSString *gBaseDir = nil;
 static BOOL gEnabled = NO;
 static int gCloseTok = 0;
 static int gFpsTokOn = 0;
 static int gFpsTokOff = 0;
+static int gDirTok = 0;
 static CGPoint gBallPos = {0.06, 0.85};
 
 static int gLastOrient = 0;
@@ -42,6 +41,8 @@ static void BKSetSens(double v);
 static double BKGetSens(void);
 static void BKLimpar(BOOL tudo);
 static void BKStopCapture(void);
+static NSString *BKPath(NSString *name);
+static void BKSyncApp(void);
 
 @interface BKPassWindow : UIWindow
 @end
@@ -77,10 +78,27 @@ static double BKClamp01(double v)
     return v;
 }
 
+// Diretorio compartilhado com o motor (que roda dentro do jogo).
+static NSString *BKBase(void)
+{
+    if (gBaseDir) return gBaseDir;
+    CFStringRef v = CFPreferencesCopyAppValue(CFSTR("AppDir"), kBKPrefDomain);
+    NSString *d = (__bridge_transfer NSString *)v;
+    if ([d isKindOfClass:[NSString class]] && d.length) {
+        gBaseDir = [d hasSuffix:@"/"] ? d : [d stringByAppendingString:@"/"];
+    } else {
+        gBaseDir = @"/var/mobile/";
+    }
+    return gBaseDir;
+}
+
+static NSString *BKPath(NSString *name) { return [BKBase() stringByAppendingString:name]; }
+
 static void BKMark(NSString *name)
 {
-    [name writeToFile:[@"/var/mobile/bk_" stringByAppendingString:name]
-           atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [[NSString stringWithFormat:@"%.0f", [[NSDate date] timeIntervalSince1970]]
+        writeToFile:BKPath([@"bk_" stringByAppendingString:name])
+        atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
 static void BKLog(NSString *fmt, ...)
@@ -90,8 +108,8 @@ static void BKLog(NSString *fmt, ...)
     NSString *s = [[NSString alloc] initWithFormat:fmt arguments:ap];
     va_end(ap);
     NSData *d = [[NSString stringWithFormat:@"ov %@\n", s] dataUsingEncoding:NSUTF8StringEncoding];
-    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:@"/var/mobile/bk_debug.log"];
-    if (!fh) { [d writeToFile:@"/var/mobile/bk_debug.log" atomically:NO]; return; }
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:BKPath(@"bk_debug.log")];
+    if (!fh) { [d writeToFile:BKPath(@"bk_debug.log") atomically:NO]; return; }
     @try {
         [fh seekToEndOfFile];
         [fh writeData:d];
@@ -124,6 +142,11 @@ static UIWindowScene *BKMainScene(void)
 
 static NSMutableDictionary *BKReadCfg(void)
 {
+    CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("Config"), kBKPrefDomain);
+    if (v) {
+        NSDictionary *d = (__bridge_transfer NSDictionary *)v;
+        if ([d isKindOfClass:[NSDictionary class]]) return [d mutableCopy];
+    }
     return [[NSMutableDictionary dictionaryWithContentsOfFile:kBKConfigPath]
         ?: [NSMutableDictionary dictionary] mutableCopy];
 }
@@ -131,6 +154,8 @@ static NSMutableDictionary *BKReadCfg(void)
 static void BKWriteCfg(NSMutableDictionary *cfg)
 {
     [cfg writeToFile:kBKConfigPath atomically:YES];
+    CFPreferencesSetAppValue(CFSTR("Config"), (__bridge CFDictionaryRef)cfg, kBKPrefDomain);
+    CFPreferencesAppSynchronize(kBKPrefDomain);
     BKPost("com.wjf.ballkey.reload");
 }
 
@@ -142,17 +167,30 @@ static BOOL BKGetDump(void)
 
 static BOOL BKFile(NSString *n)
 {
-    return [[NSFileManager defaultManager] fileExistsAtPath:
-        [@"/var/mobile/" stringByAppendingString:n]];
+    return [[NSFileManager defaultManager] fileExistsAtPath:BKPath(n)];
 }
 
 static NSString *BKStatusText(void)
 {
-    NSString *st = [NSString stringWithContentsOfFile:kBKStatusPath
+    NSString *st = [NSString stringWithContentsOfFile:BKPath(@"bk_status.txt")
                                             encoding:NSUTF8StringEncoding error:nil];
     st = [st stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     NSString *motor = BKFile(@"bk_engine_ready.txt") ? @"mot:ok" : @"mot:NAO";
     return [NSString stringWithFormat:@"%@ %@", motor, st.length ? st : @"-"];
+}
+
+static void BKSyncApp(void)
+{
+    NSString *s = [NSString stringWithContentsOfFile:BKPath(@"bk_app.txt")
+                                           encoding:NSUTF8StringEncoding error:nil];
+    s = [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!s.length) return;
+    if ([s isEqualToString:gFrontBundle]) return;
+    gFrontBundle = s;
+    NSMutableDictionary *cfg = BKReadCfg();
+    cfg[@"ActiveBundle"] = s;
+    BKWriteCfg(cfg);
+    BKLog(@"app=%@", s);
 }
 
 static int BKFrontMostOrientation(void)
@@ -185,12 +223,10 @@ static int BKReadOrient(void)
 {
     NSNumber *ov = BKReadCfg()[@"OrientOverride"];
     int o = ov ? [ov intValue] : 0;
+    if (o < 1 || o > 4) o = BKDeviceOrientation();
     if (o < 1 || o > 4) o = BKFrontMostOrientation();
     if (o < 1 || o > 4) o = gLastOrient;
-    if (o < 1 || o > 4) o = BKDeviceOrientation();
-    if (o < 1 || o > 4) {
-        o = (gFrontBundle && ![gFrontBundle isEqualToString:@"com.apple.springboard"]) ? 3 : 1;
-    }
+    if (o < 1 || o > 4) o = 3;
     gLastOrient = o;
     return o;
 }
@@ -248,7 +284,6 @@ static UIWindow *BKMakeWindow(CGFloat level, BOOL pass)
 
 #pragma mark - Cursor
 
-// Converte coordenada nativa (retrato) para o espaco da orientacao atual.
 static void BKNativeToSpace(double nx, double ny, int orient, double *ox, double *oy)
 {
     double rx = nx, ry = ny;
@@ -305,7 +340,7 @@ static void BKMakeCursor(UIView *v)
 static void BKPtrPoll(void)
 {
     if (!gCursorView || !gCursorWindow || gCursorWindow.hidden) return;
-    NSString *s = [NSString stringWithContentsOfFile:kBKPtrPath
+    NSString *s = [NSString stringWithContentsOfFile:BKPath(@"bk_ptr.txt")
                                             encoding:NSUTF8StringEncoding error:nil];
     if (!s.length) return;
     NSArray *a = [s componentsSeparatedByString:@" "];
@@ -423,8 +458,8 @@ static void BKStopCapture(void)
     gCapTimer = nil;
     gPending = nil;
     if (gBanner) gBanner.hidden = YES;
-    [[NSFileManager defaultManager] removeItemAtPath:kBKCaptureReqPath error:nil];
-    [[NSFileManager defaultManager] removeItemAtPath:kBKCaptureResPath error:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:BKPath(@"bk_capture.txt") error:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:BKPath(@"bk_capture_result.txt") error:nil];
 }
 
 static void BKStartCapture(BKMarkerView *m)
@@ -435,17 +470,17 @@ static void BKStartCapture(BKMarkerView *m)
     gPending = m;
     if (gBanner) gBanner.hidden = NO;
 
-    [[NSFileManager defaultManager] removeItemAtPath:kBKCaptureResPath error:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:BKPath(@"bk_capture_result.txt") error:nil];
 
     NSString *nonce = [NSString stringWithFormat:@"%.0f", [[NSDate date] timeIntervalSince1970] * 1000.0];
-    [nonce writeToFile:kBKCaptureReqPath atomically:YES
+    [nonce writeToFile:BKPath(@"bk_capture.txt") atomically:YES
               encoding:NSUTF8StringEncoding error:nil];
     BKPost("com.wjf.ballkey.capture");
 
     gCapTimer = [NSTimer scheduledTimerWithTimeInterval:0.08 repeats:YES block:^(NSTimer *t) {
         @try {
             if (!gPending) { [t invalidate]; return; }
-            NSString *r = [NSString stringWithContentsOfFile:kBKCaptureResPath
+            NSString *r = [NSString stringWithContentsOfFile:BKPath(@"bk_capture_result.txt")
                                                     encoding:NSUTF8StringEncoding error:nil];
             r = [r stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
             if (r.length) {
@@ -463,8 +498,8 @@ static void BKStartCapture(BKMarkerView *m)
                     }
                 }
             }
-            if (![[NSFileManager defaultManager] fileExistsAtPath:kBKCaptureReqPath]) {
-                [nonce writeToFile:kBKCaptureReqPath atomically:YES
+            if (![[NSFileManager defaultManager] fileExistsAtPath:BKPath(@"bk_capture.txt")]) {
+                [nonce writeToFile:BKPath(@"bk_capture.txt") atomically:YES
                           encoding:NSUTF8StringEncoding error:nil];
                 BKPost("com.wjf.ballkey.capture");
             }
@@ -520,7 +555,6 @@ static void BKAddMarker(NSString *type, BOOL capture)
     if (capture) BKStartCapture(m);
 }
 
-// Se o app não é detectável (SpringBoard), usa o perfil coringa.
 static NSString *BKBundle(void)
 {
     if (gFrontBundle.length && ![gFrontBundle isEqualToString:@"com.apple.springboard"])
@@ -948,7 +982,6 @@ static void BKMenuLayout(void)
     CAGradientLayer *g = (CAGradientLayer *)[box.contentView.layer valueForKey:@"bkGrad"];
     if (!g) {
         g = [CAGradientLayer layer];
-        g.name = @"bkGrad";
         g.colors = @[(id)[UIColor colorWithRed:0 green:0.95 blue:1 alpha:1].CGColor,
                      (id)[UIColor colorWithRed:0.85 green:0.15 blue:1 alpha:1].CGColor];
         g.startPoint = CGPointMake(0, 0);
@@ -1126,56 +1159,6 @@ static void BKSetupBall(void)
 
 #pragma mark - Estado
 
-static void BKPollFrontmost(void)
-{
-    Class sbCls = objc_getClass("SpringBoard");
-    if (!sbCls) return;
-    id sb = ((id (*)(id, SEL))objc_msgSend)(sbCls, @selector(sharedApplication));
-    if (!sb) return;
-
-    id app = nil;
-    SEL s1 = @selector(_accessibilityFrontMostApplication);
-    SEL s2 = @selector(_frontMostApplication);
-    if ([sb respondsToSelector:s1]) app = ((id (*)(id, SEL))objc_msgSend)(sb, s1);
-    if (!app && [sb respondsToSelector:s2]) app = ((id (*)(id, SEL))objc_msgSend)(sb, s2);
-
-    if (!app) {
-        Class lsw = objc_getClass("LSApplicationWorkspace");
-        if (lsw) {
-            id ws = ((id (*)(id, SEL))objc_msgSend)(lsw, @selector(defaultWorkspace));
-            SEL s3 = @selector(frontmostApplication);
-            if (ws && [ws respondsToSelector:s3]) app = ((id (*)(id, SEL))objc_msgSend)(ws, s3);
-        }
-    }
-    if (!app) {
-        Class ctrl = objc_getClass("SBApplicationController");
-        if (ctrl) {
-            id c = ((id (*)(id, SEL))objc_msgSend)(ctrl, @selector(sharedInstance));
-            SEL s4 = @selector(allApplications);
-            if (c && [c respondsToSelector:s4]) {
-                NSArray *all = ((id (*)(id, SEL))objc_msgSend)(c, s4);
-                for (id a in all) {
-                    SEL s5 = @selector(isFrontmost);
-                    if ([a respondsToSelector:s5]
-                        && ((BOOL (*)(id, SEL))objc_msgSend)(a, s5)) { app = a; break; }
-                }
-            }
-        }
-    }
-    if (!app) return;
-
-    NSString *bid = ((id (*)(id, SEL))objc_msgSend)(app, @selector(bundleIdentifier));
-    if (![bid isKindOfClass:[NSString class]] || !bid.length) return;
-    if ([bid isEqualToString:gFrontBundle]) return;
-    if ([bid isEqualToString:@"com.apple.springboard"]) return;
-    gFrontBundle = bid;
-
-    NSMutableDictionary *cfg = BKReadCfg();
-    cfg[@"ActiveBundle"] = bid;
-    BKWriteCfg(cfg);
-    BKLog(@"app=%@", bid);
-}
-
 static void BKRelayout(void)
 {
     if (!gBallWindow || !gBallWindow.windowScene) return;
@@ -1243,6 +1226,12 @@ static void BKOverlayInit(void)
         }
     });
 
+    notify_register_dispatch("com.wjf.ballkey.appdir", &gDirTok, dispatch_get_main_queue(), ^(int t) {
+        (void)t;
+        gBaseDir = nil;
+        BKBase();
+    });
+
     __block int tries = 0;
     [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
         if (gBallWindow || ++tries > 30) {
@@ -1256,7 +1245,7 @@ static void BKOverlayInit(void)
         (void)t;
         if (gBallWindow && gBallWindow.hidden) gBallWindow.hidden = NO;
         BKRelayout();
-        BKPollFrontmost();
+        BKSyncApp();
         if (!gFpsNow && [BKReadCfg()[@"CursorOn"] boolValue]) {
             if (!gCursorWindow) BKPtrShow(YES);
         }

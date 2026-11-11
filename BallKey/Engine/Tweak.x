@@ -110,8 +110,10 @@ static NSMutableDictionary *gGen = nil;
 static NSMutableDictionary *gCur = nil;
 static NSMutableDictionary *gSlotOf = nil;
 static int gSlotOwner[kBKMaxFinger + 1];
+static uint64_t gIdentOf[kBKMaxFinger + 1];
 static uint64_t gIdentity = 1;
 static NSMutableString *gLogBuf = nil;
+static NSMutableArray *gPtrWins = nil;
 static BOOL gRotate = YES;
 static BOOL gFollowCursor = NO;
 static double gFollowSens = 1.0;
@@ -291,6 +293,19 @@ static void BKConvInv(double vx, double vy, int orient, double *ox, double *oy)
     *ox = BKClamp(rx);
     *oy = BKClamp(ry);
 }
+// Mesma rotação da posição, aplicada ao deslocamento do mouse.
+static void BKConvDelta(double dx, double dy, int orient, double *ox, double *oy)
+{
+    double rx = dx, ry = dy;
+    switch (orient) {
+        case 2: rx = -dx; ry = -dy; break;
+        case 3: rx = dy;  ry = -dx; break;
+        case 4: rx = -dy; ry = dx;  break;
+        default: break;
+    }
+    *ox = rx;
+    *oy = ry;
+}
 static int BKUsageFromKey(id k)
 {
     if (![k isKindOfClass:[NSString class]]) return 0;
@@ -305,6 +320,25 @@ static NSUInteger BKFindType(NSString *type)
         if ([t isKindOfClass:[NSString class]] && [t isEqualToString:type]) return i;
     }
     return (NSUInteger)-1;
+}
+static void BKPointerShow(BOOL show)
+{
+    if (!gPtrWins) gPtrWins = [NSMutableArray array];
+    if (!show) {
+        for (UIWindow *w in gPtrWins) w.hidden = NO;
+        [gPtrWins removeAllObjects];
+        return;
+    }
+    for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+        if (![s isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *w in ((UIWindowScene *)s).windows) {
+            NSString *cn = NSStringFromClass([w class]);
+            if (![cn containsString:@"Pointer"] && ![cn containsString:@"Cursor"] &&
+                ![cn containsString:@"Assistive"]) continue;
+            if (![gPtrWins containsObject:w]) [gPtrWins addObject:w];
+            w.hidden = YES;
+        }
+    }
 }
 static void BKLoadConfig(void)
 {
@@ -362,9 +396,9 @@ static void BKNotifyUserActivity(void)
     if ([timer respondsToSelector:s1]) ((void (*)(id, SEL))objc_msgSend)(timer, s1);
     else if ([timer respondsToSelector:s2]) ((void (*)(id, SEL, id))objc_msgSend)(timer, s2, nil);
 }
-// Teclado usa os dedos 1-14, mouse usa 15-20. Faixas fixas e separadas, e o dedo
-// só é ocupado enquanto o ponto está pressionado: tecla e mouse nunca dividem
-// índice de toque.
+// Teclado usa os dedos 1-14, mouse usa 15-20. A identidade do toque é criada uma
+// vez, na abertura do dedo, e mantida em todos os movimentos: é o que faz o
+// sistema enxergar um arrasto contínuo em vez de toques novos a cada evento.
 static int BKSlotFor(NSUInteger idx, int src)
 {
     NSNumber *n = gSlotOf[@(idx)];
@@ -374,10 +408,12 @@ static int BKSlotFor(NSUInteger idx, int src)
     for (int s = lo; s <= hi; s++) {
         if (gSlotOwner[s]) continue;
         gSlotOwner[s] = (int)idx + 1;
+        gIdentOf[s] = gIdentity++;
         gSlotOf[@(idx)] = @(s);
         return s;
     }
     gSlotOf[@(idx)] = @(lo);
+    gIdentOf[lo] = gIdentity++;
     return lo;
 }
 static void BKSlotFree(NSUInteger idx)
@@ -409,7 +445,7 @@ static void BKPost(double x, double y, int phase, int slot)
     if (slot < 1) slot = 1;
     if (slot > kBKMaxFinger) slot = kBKMaxFinger;
     uint32_t pIdx = (uint32_t)(kBKParentBase + slot);
-    uint32_t ident = (uint32_t)(gIdentity++);
+    uint32_t ident = (uint32_t)(gIdentOf[slot] ? gIdentOf[slot] : 1);
     @try {
     BKIOHIDEventRef parent = gIO.CreateDigitizer(kCFAllocatorDefault, mach_absolute_time(),
         kBKTransducerHand, pIdx, ident, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0);
@@ -564,11 +600,6 @@ static void BKHandleDir(NSDictionary *pt, int dir, BOOL down)
     BKUp(kBKIdxDir);
     gDirActive = NO;
 }
-// O dedo da mira pode andar pela tela toda. Só quando encosta na faixa da borda
-// ele volta para o ponto onde o arrasto começou (o marcador da trava), com
-// identidade nova: o jogo vê toque novo e a câmera segue girando no mesmo
-// sentido. Cruzar o analógico não atrapalha, porque o toque já nasceu na área
-// de câmera.
 static void BKFpsMove(double dx, double dy)
 {
     if (!gFps || (dx == 0 && dy == 0)) return;
@@ -576,10 +607,13 @@ static void BKFpsMove(double dx, double dy)
     uint64_t now = BKNowNs();
     if (dx == gLastMdx && dy == gLastMdy && (now - gLastMNs) < kBKMoveDedupNs) return;
     gLastMdx = dx; gLastMdy = dy; gLastMNs = now;
+    int o = BKCurrentOrient();
+    double sx = dx, sy = dy;
+    if (gRotate) BKConvDelta(dx, dy, o, &sx, &sy);
     double mx, my;
     BKEdges(&mx, &my);
-    double px = gAimX + dx * gFpsSens * kBKMoveFactor;
-    double py = gAimY + dy * gFpsSens * kBKMoveFactor;
+    double px = gAimX + sx * gFpsSens * kBKMoveFactor;
+    double py = gAimY + sy * gFpsSens * kBKMoveFactor;
     if (px < mx || px > 1.0 - mx || py < my || py > 1.0 - my) {
         BKUp(kBKIdxAim);
         gAimX = gSqX;
@@ -591,7 +625,7 @@ static void BKFpsMove(double dx, double dy)
     gAimX = BKClamp(px);
     gAimY = BKClamp(py);
     BKMove(kBKIdxAim, gAimX, gAimY);
-    BKAppendD([NSString stringWithFormat:@"F move dx=%.2f dy=%.2f x=%.3f y=%.3f", dx, dy, gAimX, gAimY]);
+    BKAppendD([NSString stringWithFormat:@"F move dx=%.2f dy=%.2f x=%.3f y=%.3f", sx, sy, gAimX, gAimY]);
 }
 static void BKFpsEnsure(void)
 {
@@ -625,6 +659,7 @@ static void BKFpsOn(void)
     gAimX = gSqX;
     gAimY = gSqY;
     BKDown(kBKIdxAim, gSqX, gSqY, 1);
+    BKPointerShow(YES);
     BKAppend([NSString stringWithFormat:@"F on inicio=%.3f,%.3f fogo=%.3f,%.3f mirar=%.3f,%.3f",
               gSqX, gSqY, gFireSX, gFireSY, gAdsSX, gAdsSY]);
     BKStatus();
@@ -638,11 +673,11 @@ static void BKFpsOff(void)
     if (gMirarDown) { gMirarDown = NO; BKUp(kBKIdxMirar); }
     BKUp(kBKIdxAim);
     for (int i = 0; i < kBKMaxBtn; i++) gBtnOwner[i] = 0;
+    BKPointerShow(NO);
     BKAppend(@"F off");
     BKStatus();
 }
 static void BKFpsToggle(void) { if (gFps) BKFpsOff(); else BKFpsOn(); }
-// Só atira na trava. Fora dela o botão esquerdo não faz nada.
 static void BKFpsFire(BOOL down)
 {
     if (!gFps) return;
@@ -656,7 +691,6 @@ static void BKFpsFire(BOOL down)
         BKUp(kBKIdxFogo);
     }
 }
-// Um clique liga a mira, outro desliga.
 static void BKFpsAdsToggle(void)
 {
     if (!gFps) return;
@@ -713,7 +747,6 @@ static void BKHandleKey(int usage, BOOL down)
         NSDictionary *pt = gPoints[i];
         NSString *t = pt[@"Type"];
         if ([t isEqualToString:@"Dir"] || [t isEqualToString:@"Fps"]) continue;
-        if ([t isEqualToString:@"Fogo"] || [t isEqualToString:@"Mirar"]) continue;
         NSString *k = pt[@"Key"];
         if (![k isKindOfClass:[NSString class]] || ![k isEqualToString:key]) continue;
         BKHandlePoint(pt, i, down);
@@ -781,10 +814,15 @@ static void BKButtonWatch(void)
         if (gEnabled && gPoints.count) BKHandleButton(i, NO);
     }
 }
+// Na trava o esquerdo é fogo e o direito alterna a mira. Fora da trava os dois
+// caem no mapeamento normal, então os marcadores Atirar/Mirar continuam
+// servindo de toque comum.
 static void BKHandleButton(int b, BOOL down)
 {
-    if (b == 0) { BKFpsFire(down); return; }
-    if (b == 1) { if (down) BKFpsAdsToggle(); return; }
+    if (gFps) {
+        if (b == 0) { BKFpsFire(down); return; }
+        if (b == 1) { if (down) BKFpsAdsToggle(); return; }
+    }
     if (b == 0 && gFollowCursor && down) { BKCursorTap(); return; }
     NSString *key = [NSString stringWithFormat:@"m:%d", b];
     for (NSUInteger i = 0; i < gPoints.count; i++) {
@@ -849,8 +887,8 @@ static BOOL BKTryCapture(int type, BKIOHIDEventRef ev)
     if (type == kBKTypePointer) {
         int st = (int)gIO.GetInt(ev, (17u << 16 | 3u));
         if (st != 1) return NO;
-        int num = (int)gIO.GetInt(ev, (17u << 16 | 2u));
-        if (num < 0 || num > 2) num = 0;
+        int f2 = (int)gIO.GetInt(ev, (17u << 16 | 2u));
+        int num = (f2 & 2) ? 1 : 0;
         BKCaptureSave(300 + num);
         return YES;
     }
@@ -979,10 +1017,10 @@ static void BKListenCB(void *target, void *refcon, void *queue, BKIOHIDEventRef 
         double dx = gIO.GetFloat(ev, (17u << 16 | 0u));
         double dy = gIO.GetFloat(ev, (17u << 16 | 1u));
         int st = (int)gIO.GetInt(ev, (17u << 16 | 3u));
-        int num = (int)gIO.GetInt(ev, (17u << 16 | 2u));
-        if (num < 0 || num > 2) num = 0;
+        int f2 = (int)gIO.GetInt(ev, (17u << 16 | 2u));
+        int num = (f2 & 2) ? 1 : 0;
         gSawPtr = YES;
-        BKAppendD([NSString stringWithFormat:@"M17 dx=%d dy=%d s=%d b=%d", (int)dx, (int)dy, st, num]);
+        BKAppendD([NSString stringWithFormat:@"M17 dx=%d dy=%d s=%d f2=%d", (int)dx, (int)dy, st, f2]);
         if (st == 1) { BKButtonEvent(num, YES, 17); return; }
         if (st == 2) { BKButtonEvent(num, NO, 17); return; }
         if (dx != 0 || dy != 0) {
@@ -1038,6 +1076,7 @@ static void BKEngineInit(void)
     gKeyDown = [NSMutableDictionary dictionary];
     gKeyLast3 = [NSMutableDictionary dictionary];
     gLogBuf = [NSMutableString new];
+    gPtrWins = [NSMutableArray array];
     gSendQ = dispatch_queue_create("com.wjf.ballkey.send", DISPATCH_QUEUE_SERIAL);
     dispatch_set_target_queue(gSendQ, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0));
     BKAppend(@"I init");
@@ -1068,8 +1107,13 @@ static void BKEngineInit(void)
         dispatch_source_set_timer(src, dispatch_time(DISPATCH_TIME_NOW, 100ull * NSEC_PER_MSEC),
                                   100ull * NSEC_PER_MSEC, 20ull * NSEC_PER_MSEC);
         dispatch_source_set_event_handler(src, ^{
-            @try { BKCaptureWatch(); BKButtonWatch(); BKFpsEnsure(); BKLogFlush(); }
-            @catch (NSException *e) { }
+            @try {
+                BKCaptureWatch();
+                BKButtonWatch();
+                BKFpsEnsure();
+                if (gFps) BKPointerShow(YES);
+                BKLogFlush();
+            } @catch (NSException *e) { }
         });
         dispatch_resume(src);
     }

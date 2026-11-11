@@ -45,6 +45,7 @@ typedef struct {
 #define kBKChildIdentity        3
 #define kBKChildIndex           1
 #define kBKMaxFinger            10
+#define kBKKeyPoolMax           5
 #define kBKFieldHandMask        (11u << 16 | 7u)
 #define kBKFieldRange           (11u << 16 | 8u)
 #define kBKFieldTouch           (11u << 16 | 9u)
@@ -77,8 +78,7 @@ typedef struct {
 #define kBKMoveDead             0.4
 #define kBKMoveDedupNs          4000000ull
 #define kBKJumpMax              200.0
-#define kBKEdge                 0.05
-#define kBKRecenter             0.34
+#define kBKSquarePt             40.0
 #define kBKPtrScale             3000.0
 #define kBKKey3GraceNs          80000000ull
 #define kBKTravaGuardNs         250000000ull
@@ -121,6 +121,7 @@ static int gFpsKey = kBKDefaultFpsKey;
 static double gFpsX = 0.5, gFpsY = 0.5;
 static double gFireX = 0.83, gFireY = 0.66;
 static double gAdsX = 0.95, gAdsY = 0.53;
+static double gSqX = 0.5, gSqY = 0.5;
 static double gAimX = 0.5, gAimY = 0.5;
 static BOOL gFireSet = NO, gAdsSet = NO;
 static BOOL gFogoDown = NO, gMirarDown = NO, gAdsDown = NO;
@@ -255,6 +256,19 @@ static int BKCurrentOrient(void)
     return 3;
 }
 static double BKClamp(double v) { if (v < 0) return 0; if (v > 1) return 1; return v; }
+static void BKSquare(double *hx, double *hy)
+{
+    UIScreen *s = [UIScreen mainScreen];
+    CGFloat sc = s.nativeScale > 0 ? s.nativeScale : s.scale;
+    double w = s.nativeBounds.size.width / (sc > 0 ? sc : 1.0);
+    double h = s.nativeBounds.size.height / (sc > 0 ? sc : 1.0);
+    if (w < 1.0 || h < 1.0) { w = 414; h = 736; }
+    if (w > h) { double t = w; w = h; h = t; }
+    int o = BKCurrentOrient();
+    if (o == 3 || o == 4) { double t = w; w = h; h = t; }
+    *hx = kBKSquarePt / w;
+    *hy = kBKSquarePt / h;
+}
 static void BKConvInv(double vx, double vy, int orient, double *ox, double *oy)
 {
     double rx = vx, ry = vy;
@@ -324,8 +338,8 @@ static void BKLoadConfig(void)
     [gKeyDown removeAllObjects];
     [gKeyLast3 removeAllObjects];
     gFpsToggleNs = 0;
-    gAimX = gFpsX;
-    gAimY = gFpsY;
+    gSqX = 0.5; gSqY = 0.5;
+    gAimX = 0.5; gAimY = 0.5;
     if (!gEnabled) BKReleaseAll();
     BKStatus();
     BKAppend([NSString stringWithFormat:@"C en=%d b=%@ n=%lu key=%d fogo=%d mirar=%d",
@@ -343,18 +357,22 @@ static void BKNotifyUserActivity(void)
     if ([timer respondsToSelector:s1]) ((void (*)(id, SEL))objc_msgSend)(timer, s1);
     else if ([timer respondsToSelector:s2]) ((void (*)(id, SEL, id))objc_msgSend)(timer, s2, nil);
 }
-static int BKSlotFor(NSUInteger idx)
+// Teclado usa os dedos 1-5, mouse usa 6-10. Faixas fixas e separadas: os dois
+// nunca disputam o mesmo índice de toque.
+static int BKSlotFor(NSUInteger idx, int src)
 {
     NSNumber *n = gSlotOf[@(idx)];
     if (n) return [n intValue];
-    for (int s = 1; s <= kBKMaxFinger; s++) {
+    int lo = src ? kBKKeyPoolMax + 1 : 1;
+    int hi = src ? kBKMaxFinger : kBKKeyPoolMax;
+    for (int s = lo; s <= hi; s++) {
         if (gSlotOwner[s]) continue;
         gSlotOwner[s] = (int)idx + 1;
         gSlotOf[@(idx)] = @(s);
         return s;
     }
-    gSlotOf[@(idx)] = @1;
-    return 1;
+    gSlotOf[@(idx)] = @(lo);
+    return lo;
 }
 static void BKSlotFree(NSUInteger idx)
 {
@@ -416,13 +434,13 @@ static void BKSendLast(NSNumber *idx)
     NSNumber *sn = gSlotOf[idx];
     BKPost([a[0] doubleValue], [a[1] doubleValue], kBKPhaseEnded, sn ? [sn intValue] : 1);
 }
-static void BKDown(NSUInteger idx, double nx, double ny)
+static void BKDown(NSUInteger idx, double nx, double ny, int src)
 {
     if ([gDown[@(idx)] boolValue]) return;
     nx = BKClamp(nx); ny = BKClamp(ny);
     gDown[@(idx)] = @YES;
     gCur[@(idx)] = @[ @(nx), @(ny) ];
-    BKPost(nx, ny, kBKPhaseBegan, BKSlotFor(idx));
+    BKPost(nx, ny, kBKPhaseBegan, BKSlotFor(idx, src));
 }
 static void BKMove(NSUInteger idx, double nx, double ny)
 {
@@ -440,10 +458,10 @@ static void BKUp(NSUInteger idx)
     [gCur removeObjectForKey:@(idx)];
     BKSlotFree(idx);
 }
-static void BKTap(NSUInteger idx, double nx, double ny)
+static void BKTap(NSUInteger idx, double nx, double ny, int src)
 {
     if ([gDown[@(idx)] boolValue]) BKUp(idx);
-    BKDown(idx, nx, ny);
+    BKDown(idx, nx, ny, src);
     NSNumber *gen = @([gGen[@(idx)] intValue] + 1);
     gGen[@(idx)] = gen;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, kBKPhaseDelayUs * 1000ull),
@@ -456,9 +474,9 @@ static void BKTap(NSUInteger idx, double nx, double ny)
         });
     });
 }
-static void BKHold(NSUInteger idx, double nx, double ny, int ms)
+static void BKHold(NSUInteger idx, double nx, double ny, int ms, int src)
 {
-    BKDown(idx, nx, ny);
+    BKDown(idx, nx, ny, src);
     NSNumber *gen = @([gGen[@(idx)] intValue] + 1);
     gGen[@(idx)] = gen;
     if (ms < 60) ms = 60;
@@ -483,8 +501,8 @@ static void BKReleaseAll(void)
     gMirarDown = NO;
     gAdsDown = NO;
     for (int i = 0; i < kBKMaxBtn; i++) gBtnOwner[i] = 0;
-    gAimX = gFpsX;
-    gAimY = gFpsY;
+    gSqX = 0.5; gSqY = 0.5;
+    gAimX = 0.5; gAimY = 0.5;
 }
 static void BKPonto(NSDictionary *pt, double *ox, double *oy)
 {
@@ -519,7 +537,7 @@ static void BKHandleDir(NSDictionary *pt, int dir, BOOL down)
                 BKPar(pt, k, &gDirPX[i], &gDirPY[i]);
                 gDirHeld[i] = NO;
             }
-            BKDown(kBKIdxDir, gDirCX, gDirCY);
+            BKDown(kBKIdxDir, gDirCX, gDirCY, 0);
         }
         gDirHeld[dir] = YES;
         BKMove(kBKIdxDir, (gDirPX[dir] - gDirCX) * gDirSens + gDirCX,
@@ -539,6 +557,9 @@ static void BKHandleDir(NSDictionary *pt, int dir, BOOL down)
     BKUp(kBKIdxDir);
     gDirActive = NO;
 }
+// O dedo da mira vive dentro de um quadradinho. Ao encostar na borda ele salta
+// para o centro e o arrasto continua: a câmera segue girando no mesmo sentido,
+// 360° sem fim, sem voltar para a posição anterior.
 static void BKFpsMove(double dx, double dy)
 {
     if (!gFps || (dx == 0 && dy == 0)) return;
@@ -546,30 +567,21 @@ static void BKFpsMove(double dx, double dy)
     uint64_t now = BKNowNs();
     if (dx == gLastMdx && dy == gLastMdy && (now - gLastMNs) < kBKMoveDedupNs) return;
     gLastMdx = dx; gLastMdy = dy; gLastMNs = now;
-    double nx = gAimX + dx * gFpsSens * kBKMoveFactor;
-    double ny = gAimY + dy * gFpsSens * kBKMoveFactor;
-    int o = BKCurrentOrient();
-    double px, py;
-    if (gRotate) BKConvInv(nx, ny, o, &px, &py);
-    else { px = BKClamp(nx); py = BKClamp(ny); }
-    if (px < kBKEdge || px > 1.0 - kBKEdge || py < kBKEdge || py > 1.0 - kBKEdge) {
+    double hx, hy;
+    BKSquare(&hx, &hy);
+    double px = gAimX + dx * gFpsSens * kBKMoveFactor;
+    double py = gAimY + dy * gFpsSens * kBKMoveFactor;
+    if (fabs(px - gSqX) > hx || fabs(py - gSqY) > hy) {
         BKUp(kBKIdxAim);
-        double rx = px, ry = py;
-        if (px < kBKEdge) rx = px + kBKRecenter;
-        else if (px > 1.0 - kBKEdge) rx = px - kBKRecenter;
-        if (py < kBKEdge) ry = py + kBKRecenter;
-        else if (py > 1.0 - kBKEdge) ry = py - kBKRecenter;
-        rx = BKClamp(rx); ry = BKClamp(ry);
-        double bx = rx, by = ry;
-        if (gRotate) BKConv(rx, ry, o, &bx, &by);
-        else { bx = rx; by = ry; }
-        gAimX = bx; gAimY = by;
-        BKDown(kBKIdxAim, rx, ry);
-        BKAppend([NSString stringWithFormat:@"F recuo x=%.3f y=%.3f", bx, by]);
+        gAimX = gSqX;
+        gAimY = gSqY;
+        BKDown(kBKIdxAim, gSqX, gSqY, 1);
+        if (gFpsMoveLog < 40) { gFpsMoveLog++; BKAppend(@"F pulo"); }
         return;
     }
-    gAimX = nx; gAimY = ny;
-    BKMove(kBKIdxAim, px, py);
+    gAimX = BKClamp(px);
+    gAimY = BKClamp(py);
+    BKMove(kBKIdxAim, gAimX, gAimY);
     if (gFpsMoveLog < 40) {
         gFpsMoveLog++;
         BKAppend([NSString stringWithFormat:@"F move dx=%.2f dy=%.2f x=%.3f y=%.3f", dx, dy, gAimX, gAimY]);
@@ -579,9 +591,9 @@ static void BKFpsEnsure(void)
 {
     if (!gFps) return;
     if ([gDown[@(kBKIdxAim)] boolValue]) return;
-    double px = gAimX, py = gAimY;
-    if (gRotate) BKConvInv(gAimX, gAimY, BKCurrentOrient(), &px, &py);
-    BKDown(kBKIdxAim, px, py);
+    gAimX = gSqX;
+    gAimY = gSqY;
+    BKDown(kBKIdxAim, gSqX, gSqY, 1);
     if (gFpsRepor < 30) { gFpsRepor++; BKAppend(@"F repor"); }
 }
 static void BKFpsOn(void)
@@ -591,13 +603,14 @@ static void BKFpsOn(void)
     gFpsMoveLog = 0;
     gFpsRepor = 0;
     BKUp(kBKIdxCursor);
-    gAimX = gFpsX;
-    gAimY = gFpsY;
-    double px = gFpsX, py = gFpsY;
-    if (gRotate) BKConvInv(gFpsX, gFpsY, BKCurrentOrient(), &px, &py);
-    BKDown(kBKIdxAim, px, py);
-    BKAppend([NSString stringWithFormat:@"F on ponto=%.3f,%.3f fogo=%.3f,%.3f mirar=%.3f,%.3f",
-              gFpsX, gFpsY, gFireX, gFireY, gAdsX, gAdsY]);
+    int o = BKCurrentOrient();
+    if (gRotate) BKConvInv(gFpsX, gFpsY, o, &gSqX, &gSqY);
+    else { gSqX = BKClamp(gFpsX); gSqY = BKClamp(gFpsY); }
+    gAimX = gSqX;
+    gAimY = gSqY;
+    BKDown(kBKIdxAim, gSqX, gSqY, 1);
+    BKAppend([NSString stringWithFormat:@"F on centro=%.3f,%.3f fogo=%.3f,%.3f mirar=%.3f,%.3f",
+              gSqX, gSqY, gFireX, gFireY, gAdsX, gAdsY]);
     BKStatus();
 }
 static void BKFpsOff(void)
@@ -621,7 +634,7 @@ static void BKFpsFire(BOOL down)
         gFogoDown = YES;
         double px = gFireX, py = gFireY;
         if (gRotate) BKConvInv(gFireX, gFireY, BKCurrentOrient(), &px, &py);
-        BKDown(kBKIdxFogo, px, py);
+        BKDown(kBKIdxFogo, px, py, 1);
     } else {
         if (!gFogoDown) return;
         gFogoDown = NO;
@@ -635,7 +648,7 @@ static void BKFpsAdsToggle(void)
     gAdsDown = YES;
     double px = gAdsX, py = gAdsY;
     if (gRotate) BKConvInv(gAdsX, gAdsY, BKCurrentOrient(), &px, &py);
-    BKDown(kBKIdxAds, px, py);
+    BKDown(kBKIdxAds, px, py, 1);
 }
 static void BKCursorMove(double dx, double dy)
 {
@@ -646,17 +659,19 @@ static void BKCursorTap(void)
 {
     double px = gCx, py = gCy;
     if (gRotate) BKConvInv(gCx, gCy, BKCurrentOrient(), &px, &py);
-    BKTap(kBKIdxCursor, px, py);
+    BKTap(kBKIdxCursor, px, py, 1);
 }
 static void BKHandlePoint(NSDictionary *pt, NSUInteger idx, BOOL down)
 {
     NSString *type = pt[@"Type"] ?: @"Tap";
+    NSString *k = pt[@"Key"];
+    int src = ([k isKindOfClass:[NSString class]] && [k hasPrefix:@"m:"]) ? 1 : 0;
     double nx, ny;
     BKPonto(pt, &nx, &ny);
-    if ([type isEqualToString:@"Tap"]) { if (down) BKTap(idx, nx, ny); }
-    else if ([type isEqualToString:@"Press"]) { if (down) BKDown(idx, nx, ny); else BKUp(idx); }
+    if ([type isEqualToString:@"Tap"]) { if (down) BKTap(idx, nx, ny, src); }
+    else if ([type isEqualToString:@"Press"]) { if (down) BKDown(idx, nx, ny, src); else BKUp(idx); }
     else if ([type isEqualToString:@"Hold"]) {
-        if (down) BKHold(idx, nx, ny, pt[@"HoldMs"] ? [pt[@"HoldMs"] intValue] : 400);
+        if (down) BKHold(idx, nx, ny, pt[@"HoldMs"] ? [pt[@"HoldMs"] intValue] : 400, src);
     }
 }
 static int BKDirOfKey(NSString *key)
@@ -979,7 +994,7 @@ static void BKProbe(void)
             double px = x, py = y;
             if (gRotate) BKConvInv(x, y, BKCurrentOrient(), &px, &py);
             BKAppend([NSString stringWithFormat:@"P %d vis=%.3f,%.3f pn=%.3f,%.3f", i, x, y, px, py]);
-            BKTap(90 + (NSUInteger)i, px, py);
+            BKTap(90 + (NSUInteger)i, px, py, 1);
             if (i == 9) BKAppend(@"P fim");
         });
     }
@@ -994,7 +1009,7 @@ static void BKTestCenter(void)
             double px = 0.5, py = 0.5;
             if (gRotate) BKConvInv(0.5, 0.5, BKCurrentOrient(), &px, &py);
             BKAppend([NSString stringWithFormat:@"T %d pn=%.3f,%.3f", i, px, py]);
-            BKTap(kBKIdxCursor + 9, px, py);
+            BKTap(kBKIdxCursor + 9, px, py, 1);
         });
     }
 }

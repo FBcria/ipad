@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 40
     steps:
       - name: Checkout
@@ -18,15 +18,24 @@ jobs:
       - name: Dependências
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxml2 libxml2-dev libtinfo6 dpkg-dev make curl git jq
+          sudo apt-get install -y \
+            libxml2 libxml2-dev libtinfo6 dpkg-dev make curl git jq \
+            libncurses-dev libssl-dev libplist-dev libpng-dev libjpeg-dev \
+            libtiff-dev libwebp-dev zlib1g-dev liblzma-dev \
+            libcurl4-openssl-dev swig pkg-config clang lld
 
       - name: Instalar Theos
         run: |
-          set -e
           export THEOS=$HOME/theos
+          set +e
           bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            echo "::warning::instalador do Theos saiu com $rc, seguindo para a verificação"
+          fi
           echo "THEOS=$THEOS" >> $GITHUB_ENV
-
+          
       - name: Aplicar fork RootHide
         run: |
           set -e

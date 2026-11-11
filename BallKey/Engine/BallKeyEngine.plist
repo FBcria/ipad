@@ -4,9 +4,10 @@
 <dict>
 	<key>Filter</key>
 	<dict>
-		<key>Executables</key>
+		<key>Bundles</key>
 		<array>
-			<string>SpringBoard</string>
+			<string>com.dts.freefireth</string>
+			<string>com.dts.freefiremax</string>
 		</array>
 	</dict>
 </dict>

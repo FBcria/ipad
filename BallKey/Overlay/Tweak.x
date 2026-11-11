@@ -17,7 +17,7 @@ static UIWindow *gEditWindow = nil;
 static UIWindow *gCursorWindow = nil;
 static UIView *gBall = nil;
 static UIView *gCanvas = nil;
-static UIView *gBanner = nil;
+static UILabel *gBanner = nil;
 static UIView *gCursorView = nil;
 static NSMutableArray *gMarkers = nil;
 static NSString *gFrontBundle = nil;
@@ -35,6 +35,11 @@ static CGRect BKSpace(void);
 static UIWindowScene *BKMainScene(void);
 static void BKLayoutEditor(void);
 static NSMutableDictionary *BKReadCfg(void);
+static void BKToggleMenu(void);
+static void BKSetEnabled(BOOL on);
+static void BKSetSens(double v);
+static double BKGetSens(void);
+static void BKLimpar(BOOL tudo);
 
 @interface BKPassWindow : UIWindow
 @end
@@ -419,7 +424,6 @@ static void BKStartCapture(BKMarkerView *m)
                     }
                 }
             }
-            // o engine apagou o pedido? rearma uma vez
             if (![[NSFileManager defaultManager] fileExistsAtPath:kBKCaptureReqPath]) {
                 [nonce writeToFile:kBKCaptureReqPath atomically:YES
                           encoding:NSUTF8StringEncoding error:nil];
@@ -577,7 +581,6 @@ static void BKCloseEditor(void)
 - (void)bkMenuTap:(UIButton *)b;
 - (void)bkPan:(UIPanGestureRecognizer *)g;
 - (void)bkTap:(UITapGestureRecognizer *)g;
-- (void)bkCursor:(UIButton *)b;
 @end
 
 static void BKLayoutEditor(void)
@@ -809,11 +812,6 @@ forControlEvents:UIControlEventTouchUpInside];
 {
     (void)g;
     BKToggleMenu();
-}
-
-- (void)bkCursor:(UIButton *)b
-{
-    (void)b;
 }
 
 @end

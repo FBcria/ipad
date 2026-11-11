@@ -30,7 +30,7 @@ typedef struct {
         double, double, double, double, double, uint8_t, uint8_t, uint32_t);
 } BKIO;
 
-#define kBKBuildTag             @"b25"
+#define kBKBuildTag             @"b28"
 #define kBKPrefDomain           CFSTR("com.wjf.ballkey")
 #define kBKConfigFile           "/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 #define kBKNotifyReload         "com.wjf.ballkey.reload"
@@ -98,6 +98,7 @@ static NSString *gBaseDir = nil;
 static NSArray *gPoints = nil;
 static BOOL gEnabled = NO;
 static NSString *gActiveBundle = nil;
+static BOOL gInSpring = NO;
 static NSMutableDictionary *gDown = nil;
 static NSMutableDictionary *gGen = nil;
 static NSMutableDictionary *gSlotOf = nil;
@@ -520,9 +521,7 @@ static void *BKSubstrateSym(const char *name)
             "libsubstrate.dylib",
             "libhooker.dylib",
             "/usr/lib/libellekit.dylib",
-            "/usr/lib/libsubstrate.dylib",
-            "/var/jb/usr/lib/libellekit.dylib",
-            "/var/jb/usr/lib/libsubstrate.dylib"
+            "/usr/lib/libsubstrate.dylib"
         };
         for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]) && !h; i++) {
             h = dlopen(paths[i], RTLD_LAZY);
@@ -980,19 +979,22 @@ static void BKLoadConfig(void)
     gEnabled = enabled;
 
     NSString *own = [[NSBundle mainBundle] bundleIdentifier];
-    if (!own.length) own = cfg[@"ActiveBundle"];
+    if (!own.length || [own isEqualToString:@"com.apple.springboard"]) {
+        gInSpring = YES;
+        own = [cfg[@"ActiveBundle"] isKindOfClass:[NSString class]] ? cfg[@"ActiveBundle"] : nil;
+    }
     gActiveBundle = own;
     gPoints = BKResolvePoints(cfg, own);
 
-    if (own.length) {
+    if (!gInSpring && own.length) {
         [own writeToFile:BKPath(@"bk_app.txt")
               atomically:NO encoding:NSUTF8StringEncoding error:nil];
     }
 
     if (!enabled && wasEnabled) { BKReleaseAll(); if (gFps) BKFpsOff(); }
     if (enabled && gPoints.count) BKMark(@"engine_armed.txt");
-    BKAppend([NSString stringWithFormat:@"L en=%d app=%@ pts=%lu",
-        (int)enabled, own ?: @"-", (unsigned long)gPoints.count]);
+    BKAppend([NSString stringWithFormat:@"L en=%d app=%@ pts=%lu sp=%d",
+        (int)enabled, own ?: @"-", (unsigned long)gPoints.count, (int)gInSpring]);
     BKStatus();
 }
 

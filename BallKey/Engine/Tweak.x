@@ -598,10 +598,9 @@ static void BKStatus(void)
     @try {
         gStatN++;
         NSString *s = [NSString stringWithFormat:
-            @"e%d k%d p%d m%d a=%@ o%d ct=%d/%d plf=%@ sf=%d age=%llus",
+            @"e%d k%d p%d m%d a=%@ o%d ct=%d/%d plf=%@ sf=%d",
             gEvSeen, gKeySeen, gPtrSeen, gPtrMask, BKAppAt(),
-            gAct[kBKSlotAim].on, gCapType, gSendType, BKFilterOK(), gSafe ? 1 : 0,
-            (unsigned long long)0];
+            gAct[kBKSlotAim].on, gCapType, gSendType, BKFilterOK(), gSafe ? 1 : 0];
         [s writeToFile:BKPath(@"bk_engine_status.txt") atomically:NO
               encoding:NSUTF8StringEncoding error:nil];
     } @catch (NSException *e) { }
@@ -679,7 +678,7 @@ static void BKListenCB(void *t, void *r, void *s, BKIOHIDEventRef e)
     } @catch (NSException *e2) { }
 }
 
-static BKIOHIDEventSystemClientRef BKNewListen(NSDictionary *match, id *keep, int *got)
+static BKIOHIDEventSystemClientRef BKNewListen(NSDictionary *match, id __strong *keep, int *got)
 {
     BKIOHIDEventSystemClientRef c = BKNewClient(1, match, got);
     if (!c) return NULL;

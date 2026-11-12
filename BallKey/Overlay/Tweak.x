@@ -188,6 +188,41 @@ static void BKWriteInt(NSString *p, int n)
     } @catch (NSException *e) { }
 }
 
+static void BKPost(const char *name) { notify_post(name); }
+
+static NSMutableDictionary *BKConfig(void)
+{
+    NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:kBKConfigPath];
+    if (!d) d = [NSMutableDictionary dictionary];
+    if (![d objectForKey:@"Profiles"]) [d setObject:[NSMutableDictionary dictionary] forKey:@"Profiles"];
+    if (![d objectForKey:@"Enabled"]) [d setObject:[NSNumber numberWithBool:YES] forKey:@"Enabled"];
+    if (![d objectForKey:@"CursorSpeed"]) [d setObject:[NSNumber numberWithDouble:1.6] forKey:@"CursorSpeed"];
+    return d;
+}
+
+static void BKSaveConfig(NSDictionary *cfg)
+{
+    @try {
+        [[NSFileManager defaultManager] createDirectoryAtPath:@"/var/mobile/Library/Preferences"
+                                 withIntermediateDirectories:YES attributes:nil error:nil];
+        [cfg writeToFile:kBKConfigPath atomically:YES];
+        BKPost(kBKNotifyLoad);
+    } @catch (NSException *e) { }
+}
+
+static NSMutableArray *BKProfile(NSMutableDictionary *cfg)
+{
+    NSMutableDictionary *profiles = [cfg objectForKey:@"Profiles"];
+    NSString *ab = [cfg objectForKey:@"ActiveBundle"];
+    if (![ab isKindOfClass:[NSString class]] || !ab.length) ab = @"*";
+    NSMutableArray *arr = [profiles objectForKey:ab];
+    if (![arr isKindOfClass:[NSMutableArray class]]) {
+        arr = [NSMutableArray array];
+        [profiles setObject:arr forKey:ab];
+    }
+    return arr;
+}
+
 static NSString *BKJbroot(void)
 {
     @try {

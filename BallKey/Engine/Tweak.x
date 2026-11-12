@@ -13,7 +13,7 @@
 typedef struct __IOHIDEvent *BKIOHIDEventRef;
 typedef struct __IOHIDEventSystemClient *BKIOHIDEventSystemClientRef;
 
-const char BKEngineTag[] = "b38";
+const char BKEngineTag[] = "b39";
 
 #define kBKSenderID 0x8000000817319372ULL
 static const int kBKTypeKeyExtra = 1;
@@ -75,12 +75,9 @@ typedef BKIOHIDEventRef (*BKFingerFn)(CFAllocatorRef, uint64_t, uint32_t, uint32
     uint32_t, double, double, double, double, double, double, BOOL, uint32_t);
 typedef BKIOHIDEventRef (*BKHandFn)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t,
     uint32_t, uint32_t, double, double, double, double, double, double, BOOL, uint32_t);
-typedef void (*BKSetInfoFn)(BKIOHIDEventRef, BKIOHIDEventSystemClientRef, BOOL,
-    uint32_t, uint32_t, uint32_t, uint32_t, double, double);
 
 static BKFingerFn fFingerEvent = NULL;
 static BKHandFn fHandEvent = NULL;
-static BKSetInfoFn fSetInfo = NULL;
 
 static BKIOHIDEventSystemClientRef gSendClient = NULL;
 static BKIOHIDEventSystemClientRef gPtrClient = NULL;
@@ -226,11 +223,6 @@ static BOOL BKInitIO(void)
         fFingerEvent = (BKFingerFn)dlsym(k, "IOHIDEventCreateDigitizerFingerEvent");
         if (!fFingerEvent) fFingerEvent = (BKFingerFn)dlsym(k, "IOHIDEventCreateDigitizerFingerEventWithQuality");
         fHandEvent = (BKHandFn)dlsym(k, "IOHIDEventCreateDigitizerEvent");
-        fSetInfo = (BKSetInfoFn)dlsym(RTLD_DEFAULT, "BKSHIDEventSetDigitizerInfo");
-        if (!fSetInfo) {
-            void *b = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_LAZY);
-            if (b) fSetInfo = (BKSetInfoFn)dlsym(b, "BKSHIDEventSetDigitizerInfo");
-        }
     } @catch (NSException *e) { return NO; }
     return (gIO.ClientCreate != NULL && gIO.GetType != NULL && gIO.Dispatch != NULL);
 }
@@ -278,17 +270,13 @@ static void BKFinger(int slot, int phase, double x, double y)
             (uint32_t)slot, (uint32_t)slot, mask, 0, x, y, 0.0, 1.0, 0.0, 0.0, touch, 0);
         if (!finger) return;
 
-        if (gIO.SetInt) {
-            gIO.SetInt(finger, kBKFieldDispInt, 1);
-            if (fSetInfo) fSetInfo(finger, gSendClient, YES, 0, 0, 0, 0, x, y);
-        }
+        if (gIO.SetInt) gIO.SetInt(finger, kBKFieldDispInt, 1);
 
         if (fHandEvent && gIO.Append) {
             BKIOHIDEventRef hand = fHandEvent(kCFAllocatorDefault, ts, kBKHandType,
                 0, 0, mask, 0, x, y, 0.0, 1.0, 0.0, 0.0, touch, 0);
             if (hand) {
                 if (gIO.SetInt) gIO.SetInt(hand, kBKFieldDispInt, 1);
-                if (fSetInfo) fSetInfo(hand, gSendClient, YES, 0, 0, 0, 0, x, y);
                 gIO.Append(hand, finger, 0);
                 CFRelease(finger);
                 BKSend(hand);
@@ -710,10 +698,6 @@ static void BKInit(void)
         if (!BKInitIO()) { BKAppend(@"! io"); BKStatus(); return; }
         BKMark(@"engine_io.txt");
 
-        gSendClient = BKNewClient(2, nil, &gSendType);
-        if (!gSendClient) gSendClient = BKNewClient(0, nil, &gSendType);
-        BKAppend(@"I send=%d", gSendType);
-
         static int nt1 = 0, nt2 = 0, nt3 = 0;
         notify_register_dispatch(kBKNotifyLoad, &nt1, dispatch_get_main_queue(),
             ^(int t) { (void)t; BKLoadConfig(); });
@@ -725,7 +709,7 @@ static void BKInit(void)
         BKLoadConfig();
 
         if (gSafe) {
-            BKAppend(@"I safe sem captura");
+            BKAppend(@"I safe sem clientes");
         } else {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(400 * NSEC_PER_MSEC)),
                            dispatch_get_main_queue(), ^{
@@ -736,6 +720,15 @@ static void BKInit(void)
                               gPtrClient ? 1 : 0, gKeyClient ? 1 : 0);
                     if (gPtrClient || gKeyClient) BKMark(@"engine_listen.txt");
                     gReady = YES;
+                } @catch (NSException *e) { }
+            });
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1500 * NSEC_PER_MSEC)),
+                           dispatch_get_main_queue(), ^{
+                @try {
+                    gSendClient = BKNewClient(2, nil, &gSendType);
+                    if (!gSendClient) gSendClient = BKNewClient(0, nil, &gSendType);
+                    BKAppend(@"I send=%d", gSendType);
+                    BKStatus();
                 } @catch (NSException *e) { }
             });
         }
@@ -758,8 +751,8 @@ static void BKInit(void)
                         }
                         BKMark(@"engine_ok.txt");
                     }
-                    if (tick % 4 == 0) BKStatus();
-                    if (tick % 30 == 0) BKLoadConfig();
+                    if (tick % 8 == 0) BKStatus();
+                    if (tick % 40 == 0) BKLoadConfig();
                     if (tick % 5 == 0) BKFrontTick();
                 } @catch (NSException *e) { }
             });

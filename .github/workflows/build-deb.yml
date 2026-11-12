@@ -108,24 +108,28 @@ jobs:
       - name: Empacotar tipa
         run: |
           set -e
-          APP=$(find BallKeyApp/.theos/obj -maxdepth 4 -type d -name "*.app" | head -1)
-          if [ -z "$APP" ]; then
-            APP=$(find BallKeyApp/.theos/_ -maxdepth 8 -type d -name "*.app" | head -1)
-          fi
-          test -n "$APP" || { echo "app nao gerado"; find BallKeyApp/.theos -maxdepth 6; exit 1; }
+          BIN=$(find BallKeyApp/.theos/obj -maxdepth 4 -type f -name "BallKeyApp" | head -1)
+          test -n "$BIN" || { echo "binario nao gerado"; find BallKeyApp/.theos -maxdepth 6; exit 1; }
           DEB=$(ls "${{ steps.mk.outputs.dir }}"/packages/*.deb | head -1)
           test -n "$DEB" || { echo "deb nao encontrado"; exit 1; }
-          NAME=$(basename "$APP")
-          BIN="${NAME%.app}"
-          rm -rf Payload && mkdir -p Payload
-          cp -R "$APP" Payload/
-          cp "$DEB" "Payload/$NAME/"
+
+          rm -rf Payload
+          mkdir -p Payload/BallKeyApp.app
+          cp "$BIN" Payload/BallKeyApp.app/BallKeyApp
+          cp BallKeyApp/Info.plist Payload/BallKeyApp.app/Info.plist
+          cp "$DEB" Payload/BallKeyApp.app/
+          chmod +x Payload/BallKeyApp.app/BallKeyApp
+
+          test -f Payload/BallKeyApp.app/Info.plist || { echo "Info.plist ausente"; exit 1; }
+          test -f Payload/BallKeyApp.app/$(basename "$DEB") || { echo "deb ausente no bundle"; exit 1; }
+
           if [ -x "$THEOS/bin/ldid" ]; then
-            "$THEOS/bin/ldid" -S BallKeyApp/entitlements.plist "Payload/$NAME/$BIN" || true
+            "$THEOS/bin/ldid" -SBallKeyApp/entitlements.plist Payload/BallKeyApp.app/BallKeyApp
           fi
+
           zip -qr "BallKey-${{ steps.ver.outputs.version }}.tipa" Payload
           rm -rf Payload
-          ls -la ./*.tipa
+          unzip -l "BallKey-${{ steps.ver.outputs.version }}.tipa"
 
       - name: Artifact
         uses: actions/upload-artifact@v4

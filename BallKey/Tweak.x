@@ -246,16 +246,22 @@ static BOOL BKLandscape(void)
     @catch (id e) {}
     return NO;
 }
+static BOOL BKNeedsRotation(void)
+{
+    CGSize b = UIScreen.mainScreen.bounds.size;
+    if (b.width < 1 || b.height < 1) return NO;
+    return (b.width < b.height) && BKLandscape();
+}
 CGSize BKSize(void)
 {
-    CGSize p = UIScreen.mainScreen.bounds.size;
-    if (p.width < 40 || p.height < 40) {
+    CGSize b = UIScreen.mainScreen.bounds.size;
+    if (b.width < 40 || b.height < 40) {
         UIWindowScene *s = BKScene();
-        if (s) p = s.coordinateSpace.bounds.size;
+        if (s) b = s.coordinateSpace.bounds.size;
     }
-    if (p.width < 40 || p.height < 40) return CGSizeMake(414, 736);
-    CGFloat w = MIN(p.width, p.height), h = MAX(p.width, p.height);
-    return BKLandscape() ? CGSizeMake(h, w) : CGSizeMake(w, h);
+    if (b.width < 40 || b.height < 40) return CGSizeMake(414, 736);
+    if (b.width > b.height) return b;
+    return BKLandscape() ? CGSizeMake(b.height, b.width) : b;
 }
 static CGFloat BKAngle(void)
 {
@@ -265,7 +271,7 @@ static CGFloat BKAngle(void)
 }
 static CGAffineTransform BKStageT(void)
 {
-    return BKLandscape() ? CGAffineTransformMakeRotation(BKAngle()) : CGAffineTransformIdentity;
+    return BKNeedsRotation() ? CGAffineTransformMakeRotation(BKAngle()) : CGAffineTransformIdentity;
 }
 static void BKLog(NSString *fmt, ...)
 {
@@ -1449,9 +1455,9 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     CGFloat L = b.size.width;
     CGFloat S = b.size.height;
 
-    CGFloat mx = MAX(10.0, L * 0.03);
-    _topM = MAX(8.0, S * 0.03);
-    CGFloat botM = MAX(8.0, S * 0.04);
+    CGFloat mx = MAX(14.0, L * 0.075);
+    _topM = MAX(10.0, S * 0.06);
+    CGFloat botM = MAX(10.0, S * 0.09);
     CGFloat aw = L - 2 * mx;
     CGFloat ah = S - _topM - botM;
 

@@ -5,17 +5,16 @@
 #import <notify.h>
 #import <dlfcn.h>
 
-#define kBKBuildTag    @"b39"
+#define kBKBuildTag    @"b40"
 #define kBKConfigPath  @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 #define kBKNotifyLoad  "com.wjf.ballkey.reload"
 #define kBKNotifyTest  "com.wjf.ballkey.test"
 #define kBKNotifyCap   "com.wjf.ballkey.capture"
 #define kBKOffFile     @"/var/mobile/bk_off.txt"
+#define kBKOnFile      @"/var/mobile/bk_on.txt"
 #define kBKOSafeFile   @"/var/mobile/bk_overlay_safe.txt"
 #define kBKOTryFile    @"/var/mobile/bk_ot.txt"
 #define kBKTagBall     9001
-#define kBKLib1        @"/var/jb/usr/lib/TweakInject/BallKeyEngine.dylib"
-#define kBKLib2        @"/var/jb/Library/MobileSubstrate/DynamicLibraries/BallKeyEngine.dylib"
 
 #define kBKNeon  [UIColor colorWithRed:0.15 green:0.98 blue:0.85 alpha:1.0]
 #define kBKNeon2 [UIColor colorWithRed:0.45 green:0.35 blue:1.00 alpha:1.0]
@@ -100,6 +99,8 @@ static void BKAppend(NSString *fmt, ...);
 static BOOL BKExists(NSString *p);
 static int BKReadInt(NSString *p);
 static void BKWriteInt(NSString *p, int n);
+static NSString *BKJbroot(void);
+static NSString *BKEnginePath(void);
 static void BKLoadEngine(void);
 static void BKPost(const char *name);
 static NSMutableDictionary *BKConfig(void);
@@ -117,7 +118,7 @@ static void BKCapturePoll(void);
 static void BKAddMarker(NSString *kind, int code, double nx, double ny);
 static void BKRemoveMarkerAt(int idx);
 static void BKSaveMarkers(void);
-static UIWindow *BKMakeWindow(CGFloat level, BOOL blocks);
+static UIWindow *BKMakeWindow(CGRect frame, CGFloat level, BOOL blocks);
 static void BKBuildBall(void);
 static void BKBuildCursor(void);
 static void BKStartTimer(void);
@@ -187,51 +188,52 @@ static void BKWriteInt(NSString *p, int n)
     } @catch (NSException *e) { }
 }
 
-static void BKPost(const char *name) { notify_post(name); }
-
-static NSMutableDictionary *BKConfig(void)
-{
-    NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:kBKConfigPath];
-    if (!d) d = [NSMutableDictionary dictionary];
-    if (![d objectForKey:@"Profiles"]) [d setObject:[NSMutableDictionary dictionary] forKey:@"Profiles"];
-    if (![d objectForKey:@"Enabled"]) [d setObject:[NSNumber numberWithBool:YES] forKey:@"Enabled"];
-    if (![d objectForKey:@"CursorSpeed"]) [d setObject:[NSNumber numberWithDouble:1.6] forKey:@"CursorSpeed"];
-    return d;
-}
-
-static void BKSaveConfig(NSDictionary *cfg)
+static NSString *BKJbroot(void)
 {
     @try {
-        [[NSFileManager defaultManager] createDirectoryAtPath:@"/var/mobile/Library/Preferences"
-                                 withIntermediateDirectories:YES attributes:nil error:nil];
-        [cfg writeToFile:kBKConfigPath atomically:YES];
-        BKPost(kBKNotifyLoad);
+        NSString *dir = @"/var/containers/Bundle/Application";
+        NSArray *a = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
+        for (NSString *n in a) {
+            if ([n hasPrefix:@".jbroot-"]) return [dir stringByAppendingPathComponent:n];
+        }
     } @catch (NSException *e) { }
+    return nil;
 }
 
-static NSMutableArray *BKProfile(NSMutableDictionary *cfg)
+static NSString *BKEnginePath(void)
 {
-    NSMutableDictionary *profiles = [cfg objectForKey:@"Profiles"];
-    NSString *ab = [cfg objectForKey:@"ActiveBundle"];
-    if (![ab isKindOfClass:[NSString class]] || !ab.length) ab = @"*";
-    NSMutableArray *arr = [profiles objectForKey:ab];
-    if (![arr isKindOfClass:[NSMutableArray class]]) {
-        arr = [NSMutableArray array];
-        [profiles setObject:arr forKey:ab];
+    NSMutableArray *c = [NSMutableArray array];
+    @try {
+        Dl_info info;
+        if (dladdr((void *)&BKEnginePath, &info) && info.dli_fname) {
+            NSString *self0 = [NSString stringWithUTF8String:info.dli_fname];
+            if (self0.length) {
+                [c addObject:[[self0 stringByDeletingLastPathComponent]
+                    stringByAppendingPathComponent:@"BallKeyEngine.dylib"]];
+            }
+        }
+        NSString *root = BKJbroot();
+        if (root) {
+            [c addObject:[root stringByAppendingPathComponent:@"usr/lib/TweakInject/BallKeyEngine.dylib"]];
+            [c addObject:[root stringByAppendingPathComponent:@"Library/MobileSubstrate/DynamicLibraries/BallKeyEngine.dylib"]];
+        }
+        [c addObject:@"/var/jb/usr/lib/TweakInject/BallKeyEngine.dylib"];
+        [c addObject:@"/var/jb/Library/MobileSubstrate/DynamicLibraries/BallKeyEngine.dylib"];
+    } @catch (NSException *e) { }
+    for (NSString *p in c) {
+        if (BKExists(p)) return p;
     }
-    return arr;
+    return nil;
 }
 
 static void BKLoadEngine(void)
 {
     if (gEngineLoaded) return;
-    if (gLoadTries > 30) return;
+    if (gLoadTries > 40) return;
     gLoadTries++;
     @try {
-        if (BKExists(kBKOffFile)) return;
-        NSString *cand = nil;
-        if (BKExists(kBKLib1)) cand = kBKLib1;
-        else if (BKExists(kBKLib2)) cand = kBKLib2;
+        if (BKExists(kBKOffFile) || !BKExists(kBKOnFile)) return;
+        NSString *cand = BKEnginePath();
         if (!cand) return;
         void *h = dlopen([cand UTF8String], RTLD_LAZY);
         if (h) { gEngineLoaded = YES; BKAppend(@"E dlopen ok %@", cand); }
@@ -476,19 +478,13 @@ static UIButton *BKButton(NSString *title, SEL sel, UIColor *color)
     return b;
 }
 
-static UIWindow *BKMakeWindow(CGFloat level, BOOL blocks)
+static UIWindow *BKMakeWindow(CGRect frame, CGFloat level, BOOL blocks)
 {
-    UIWindowScene *scene = nil;
-    @try {
-        for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-            if ([s isKindOfClass:[UIWindowScene class]]) { scene = (UIWindowScene *)s; break; }
-        }
-    } @catch (NSException *e) { }
-    UIWindow *w = scene ? [[UIWindow alloc] initWithWindowScene:scene]
-                        : [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    UIWindow *w = [[UIWindow alloc] initWithFrame:frame];
     w.windowLevel = level;
     w.backgroundColor = [UIColor clearColor];
     w.rootViewController = [[BKRootVC alloc] init];
+    w.rootViewController.view.frame = frame;
     if (blocks) {
         w.rootViewController.view.backgroundColor = kBKPanel;
         ((BKRootView *)w.rootViewController.view).blocksAll = YES;
@@ -501,7 +497,8 @@ static void BKOpenMenu(void)
     if (gMenuOpen) return;
     gMenuOpen = YES;
     @try {
-        if (!gMenuWin) gMenuWin = BKMakeWindow(UIWindowLevelAlert + 2002, YES);
+        if (!gMenuWin) gMenuWin = BKMakeWindow([UIScreen mainScreen].bounds,
+                                               UIWindowLevelAlert + 2002, YES);
         UIViewController *vc = gMenuWin.rootViewController;
         for (UIView *v in vc.view.subviews) [v removeFromSuperview];
 
@@ -600,7 +597,8 @@ static void BKOpenEditor(NSString *kind, int code)
     gMenuOpen = NO;
     if (gMenuWin) gMenuWin.hidden = YES;
     @try {
-        if (!gEditWin) gEditWin = BKMakeWindow(UIWindowLevelAlert + 2003, YES);
+        if (!gEditWin) gEditWin = BKMakeWindow([UIScreen mainScreen].bounds,
+                                               UIWindowLevelAlert + 2003, YES);
         UIViewController *vc = gEditWin.rootViewController;
         for (UIView *v in vc.view.subviews) [v removeFromSuperview];
 
@@ -764,14 +762,11 @@ static void BKCloseEditor(void)
 
 static void BKBuildBall(void)
 {
-    gBallWin = BKMakeWindow(UIWindowLevelAlert + 2000, NO);
+    gBallWin = BKMakeWindow(CGRectMake(20, 120, 60, 60),
+                            UIWindowLevelAlert + 2000, NO);
 
-    gBallWin.frame = CGRectMake(20, 120, 60, 60);
-    gBallWin.rootViewController.view.frame = gBallWin.bounds;
-
-    gBall = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 52, 52)];
+    gBall = [[UIView alloc] initWithFrame:CGRectMake(4, 4, 52, 52)];
     gBall.tag = kBKTagBall;
-    gBall.center = CGPointMake(30, 30);
     gBall.backgroundColor = [UIColor colorWithRed:0.03 green:0.07 blue:0.10 alpha:0.90];
     gBall.layer.cornerRadius = 26;
     gBall.layer.borderColor = kBKNeon.CGColor;
@@ -796,7 +791,8 @@ static void BKBuildBall(void)
 
 static void BKBuildCursor(void)
 {
-    gCursorWin = BKMakeWindow(UIWindowLevelAlert + 2001, NO);
+    gCursorWin = BKMakeWindow([UIScreen mainScreen].bounds,
+                              UIWindowLevelAlert + 2001, NO);
     gCursorWin.userInteractionEnabled = NO;
 
     gCursor = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 18, 18)];
@@ -873,14 +869,15 @@ __attribute__((constructor)) static void BKOverlayInit(void)
                 int n = BKReadInt(kBKOTryFile) + 1;
                 BKWriteInt(kBKOTryFile, n);
                 BOOL off = BKExists(kBKOffFile);
+                BOOL on = BKExists(kBKOnFile);
                 if (n > 3) {
                     [@"" writeToFile:kBKOSafeFile atomically:NO encoding:NSUTF8StringEncoding error:nil];
                 }
                 BOOL safe = BKExists(kBKOSafeFile);
-                BKAppend(@"O boot n=%d off=%d osf=%d", n, off, safe);
+                BKAppend(@"O boot n=%d off=%d osf=%d on=%d", n, off, safe, on);
 
-                if (off || (safe && n > 3)) {
-                    BKMark(@"overlay_safe.txt");
+                if (off || !on || (safe && n > 3)) {
+                    BKMark(@"overlay_gated.txt");
                     return;
                 }
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(900 * NSEC_PER_MSEC)),

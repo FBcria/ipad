@@ -4,66 +4,55 @@
 #import <GameController/GameController.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
+#import <string.h>
+#import <mach/mach.h>
 #import <mach/mach_time.h>
+#import <mach/vm_prot.h>
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
 #import <mach-o/nlist.h>
-#import <mach/vm_prot.h>
+
+#ifndef INDIRECT_SYMBOL_LOCAL
+#define INDIRECT_SYMBOL_LOCAL 0x80000000
+#endif
+#ifndef INDIRECT_SYMBOL_ABS
+#define INDIRECT_SYMBOL_ABS 0x40000000
+#endif
 
 typedef struct __IOHIDEvent *IOHIDEventRef;
 typedef double IOHIDFloat;
 typedef uint64_t BKAbsTime;
 typedef uint32_t IOOptionBits;
 #define kFieldDigIsDisplayIntegrated 0xB0019u
-
 #define BK_FINGERS 10
-#define BK_FBASE   40
+#define BK_FBASE 40
 #define DW 1180.0
 #define DH 760.0
 
-#pragma mark - prototypes
-
 CGSize BKSize(void);
-void   BKRelayout(void);
-void   BKSetInputGated(BOOL g);
-void   BKSetEditorOpen(BOOL open);
-void   BKCursorSet(BOOL on);
-BOOL   BKCursorOn(void);
-void   BKApplySettings(void);
-void   BKReleaseAll(void);
-NSMutableArray *BKMarks(void);
-void   BKRedrawMarkers(void);
-void   BKSaveMarks(void);
-void   BKReloadMarks(void);
-void   BKPointerDelta(double dx, double dy);
-void   BKButtonDown(int btn, BOOL down);
-void   BKKeyUsage(int usage, BOOL down);
-int    BKSelectedMarker(void);
-void   BKSelectMarker(int idx);
-void   BKMenuOpen(void);
-void   BKMenuClose(void);
-void   BKEditorOpenUI(void);
-void   BKUISetCanvas(UIView *v);
-UIColor *BKUIColorFor(NSString *t);
-NSString *BKNameFor(NSString *t);
-NSString *BKShortFor(NSString *t);
+void BKRelayout(void); void BKSetInputGated(BOOL g); void BKSetEditorOpen(BOOL open);
+void BKCursorSet(BOOL on); BOOL BKCursorOn(void); void BKApplySettings(void); void BKReleaseAll(void);
+NSMutableArray *BKMarks(void); void BKRedrawMarkers(void); void BKSaveMarks(void); void BKReloadMarks(void);
+void BKPointerDelta(double dx, double dy); void BKButtonDown(int btn, BOOL down); void BKKeyUsage(int usage, BOOL down);
+int BKSelectedMarker(void); void BKSelectMarker(int idx); void BKMenuOpen(void); void BKMenuClose(void);
+void BKEditorOpenUI(void); void BKUISetCanvas(UIView *v);
+UIColor *BKUIColorFor(NSString *t); NSString *BKNameFor(NSString *t); NSString *BKShortFor(NSString *t);
 
-typedef NS_ENUM(NSInteger, BKCurve)    { BKCurveLinear = 0, BKCurveSoft, BKCurveFast };
+typedef NS_ENUM(NSInteger, BKCurve) { BKCurveLinear = 0, BKCurveSoft, BKCurveFast };
 typedef NS_ENUM(NSInteger, BKRecenter) { BKRecenterManual = 0, BKRecenterAuto, BKRecenterOnRelease };
 typedef NS_ENUM(NSInteger, BKFireMode) { BKFireModeSingle = 0, BKFireModeRepeat, BKFireModeMultiply };
-typedef NS_ENUM(NSInteger, BKTapMode)  { BKTapModeFixed = 0, BKTapModeHold, BKTapModeToggle };
-typedef NS_ENUM(NSInteger, BKJoyCenter){ BKJoyCenterAverage = 0, BKJoyCenterFixed, BKJoyCenterRandom };
+typedef NS_ENUM(NSInteger, BKTapMode) { BKTapModeFixed = 0, BKTapModeHold, BKTapModeToggle };
+typedef NS_ENUM(NSInteger, BKJoyCenter) { BKJoyCenterAverage = 0, BKJoyCenterFixed, BKJoyCenterRandom };
 
-static NSString *const kCursor=@"cursor", *const kSens=@"sens", *const kCurve=@"curve",
- *const kSmooth=@"smooth", *const kYRatio=@"yRatio", *const kFovCircle=@"fovCircle",
- *const kLockRadius=@"lockRadius", *const kRecenter=@"recenter", *const kHideCursor=@"hideCursor",
- *const kCursorSize=@"cursorSize", *const kMarkSize=@"markSize", *const kMarkOpacity=@"markOpacity",
- *const kMarkLabels=@"markLabels", *const kSnapGrid=@"snapGrid", *const kShowMarks=@"showMarks",
- *const kFireMode=@"fireMode", *const kTapMode=@"tapMode", *const kRepeatCount=@"repeatCount",
- *const kHoldAim=@"holdAim", *const kNormDiag=@"normDiag", *const kJoySpeed=@"joySpeed",
- *const kJoyCenter=@"joyCenter", *const kRepeatDelay=@"repeatDelay", *const kMenuOpacity=@"menuOpacity",
- *const kUiScale=@"uiScale", *const kAutoProfile=@"autoProfile", *const kJoyFx=@"joyFx",
- *const kJoyFy=@"joyFy", *const kHideRec=@"hideRec";
+static NSString *const kCursor=@"cursor", *const kSens=@"sens", *const kCurve=@"curve", *const kSmooth=@"smooth",
+ *const kYRatio=@"yRatio", *const kFovCircle=@"fovCircle", *const kLockRadius=@"lockRadius", *const kRecenter=@"recenter",
+ *const kHideCursor=@"hideCursor", *const kCursorSize=@"cursorSize", *const kMarkSize=@"markSize",
+ *const kMarkOpacity=@"markOpacity", *const kMarkLabels=@"markLabels", *const kSnapGrid=@"snapGrid",
+ *const kShowMarks=@"showMarks", *const kFireMode=@"fireMode", *const kTapMode=@"tapMode",
+ *const kRepeatCount=@"repeatCount", *const kHoldAim=@"holdAim", *const kNormDiag=@"normDiag",
+ *const kJoySpeed=@"joySpeed", *const kJoyCenter=@"joyCenter", *const kRepeatDelay=@"repeatDelay",
+ *const kMenuOpacity=@"menuOpacity", *const kUiScale=@"uiScale", *const kAutoProfile=@"autoProfile",
+ *const kJoyFx=@"joyFx", *const kJoyFy=@"joyFy", *const kHideRec=@"hideRec";
 
 @interface BKUI : NSObject
 + (void)show; + (void)hide; + (void)relayout; + (void)openEditor; + (void)closeEditor;
@@ -71,35 +60,26 @@ static NSString *const kCursor=@"cursor", *const kSens=@"sens", *const kCurve=@"
 - (void)layoutAll;
 @end
 
-#pragma mark - settings store
-
 @interface BKCore : NSObject
 + (instancetype)shared;
 - (void)load; - (void)save; - (void)resetDefaults;
-- (BOOL)boolForKey:(NSString *)k def:(BOOL)d;
-- (void)setBool:(BOOL)v forKey:(NSString *)k;
-- (double)doubleForKey:(NSString *)k def:(double)d;
-- (void)setDouble:(double)v forKey:(NSString *)k;
-- (NSInteger)intForKey:(NSString *)k def:(NSInteger)d;
-- (void)setInt:(NSInteger)v forKey:(NSString *)k;
-- (NSMutableArray *)marks;
-- (void)setMarks:(NSArray *)a;
-- (NSArray<NSString *> *)profileNames;
-- (void)saveProfile:(NSString *)n;
-- (void)loadProfile:(NSString *)n;
-- (void)deleteProfile:(NSString *)n;
+- (BOOL)boolForKey:(NSString *)k def:(BOOL)d; - (void)setBool:(BOOL)v forKey:(NSString *)k;
+- (double)doubleForKey:(NSString *)k def:(double)d; - (void)setDouble:(double)v forKey:(NSString *)k;
+- (NSInteger)intForKey:(NSString *)k def:(NSInteger)d; - (void)setInt:(NSInteger)v forKey:(NSString *)k;
+- (NSMutableArray *)marks; - (void)setMarks:(NSArray *)a;
+- (NSArray<NSString *> *)profileNames; - (void)saveProfile:(NSString *)n;
+- (void)loadProfile:(NSString *)n; - (void)deleteProfile:(NSString *)n;
 @property (nonatomic, copy) void (^onChange)(NSString *key);
 @end
 
 static NSDictionary *BKDefaults(void)
 {
-    return @{kCursor:@NO, kSens:@1.0, kCurve:@(BKCurveLinear), kSmooth:@0, kYRatio:@100,
-             kFovCircle:@YES, kLockRadius:@70, kRecenter:@(BKRecenterOnRelease), kHideCursor:@NO,
-             kCursorSize:@30, kMarkSize:@26, kMarkOpacity:@30, kMarkLabels:@YES, kSnapGrid:@NO,
-             kShowMarks:@NO, kFireMode:@(BKFireModeSingle), kTapMode:@(BKTapModeHold),
-             kRepeatCount:@4, kHoldAim:@YES, kNormDiag:@YES, kJoySpeed:@7,
-             kJoyCenter:@(BKJoyCenterAverage), kRepeatDelay:@60, kMenuOpacity:@96,
-             kUiScale:@100, kAutoProfile:@YES, kJoyFx:@0.15, kJoyFy:@0.72, kHideRec:@NO};
+    return @{kCursor:@NO, kSens:@1.0, kCurve:@(BKCurveLinear), kSmooth:@0, kYRatio:@100, kFovCircle:@YES,
+             kLockRadius:@70, kRecenter:@(BKRecenterOnRelease), kHideCursor:@NO, kCursorSize:@30, kMarkSize:@26,
+             kMarkOpacity:@30, kMarkLabels:@YES, kSnapGrid:@NO, kShowMarks:@NO, kFireMode:@(BKFireModeSingle),
+             kTapMode:@(BKTapModeHold), kRepeatCount:@4, kHoldAim:@YES, kNormDiag:@YES, kJoySpeed:@7,
+             kJoyCenter:@(BKJoyCenterAverage), kRepeatDelay:@60, kMenuOpacity:@96, kUiScale:@100,
+             kAutoProfile:@YES, kJoyFx:@0.15, kJoyFy:@0.72, kHideRec:@NO};
 }
 
 static NSArray *BKDefaultMarks(void)
@@ -135,8 +115,7 @@ static NSArray *BKDefaultMarks(void)
     if ([d[@"settings"] isKindOfClass:NSDictionary.class]) [_s addEntriesFromDictionary:d[@"settings"]];
     [_m removeAllObjects];
     if ([d[@"marks"] isKindOfClass:NSArray.class])
-        for (NSDictionary *x in d[@"marks"])
-            if ([x isKindOfClass:NSDictionary.class]) [_m addObject:[x mutableCopy]];
+        for (NSDictionary *x in d[@"marks"]) if ([x isKindOfClass:NSDictionary.class]) [_m addObject:[x mutableCopy]];
     if (!_m.count) for (NSDictionary *x in BKDefaultMarks()) [_m addObject:[x mutableCopy]];
 }
 - (void)save { [@{@"settings":_s, @"marks":_m} writeToFile:_cfg atomically:YES]; }
@@ -189,39 +168,29 @@ static NSArray *BKDefaultMarks(void)
 }
 @end
 
-#pragma mark - globals
-
-static BKCore *gCore;
-static BKUI *gUI;
-static NSString *gLog;
-static UIWindow *gBallWin, *gCursorWin;
-static UIView *gBall, *gCursor, *gCanvas;
+static BKCore *gCore; static BKUI *gUI; static NSString *gLog;
+static UIWindow *gBallWin, *gCursorWin; static UIView *gBall, *gCursor, *gCanvas;
 static NSMutableArray *gMarkViews;
 static BOOL gMenuOpen, gEditOpen, gCursorOn, gGated, gFps, gFpsHeld;
 static BOOL gHidOk, gGcMouse, gGcKey, gCursorDown, gLastValid;
-static int  gFpsIdx = -1, gSelIdx = -1, gInjecting, gPtrMask;
-static int  gFingerOwner[BK_FINGERS];
-static int  gHoldKey[512];
+static int gFpsIdx = -1, gSelIdx = -1, gInjecting, gPtrMask;
+static int gFingerOwner[BK_FINGERS]; static int gHoldKey[512];
 static double gCx, gCy, gLastX, gLastY;
 static double gFingerX[BK_FINGERS], gFingerY[BK_FINGERS];
 static dispatch_source_t gTick, gFireTimer;
-static int  gFireIdx = -1, gFireTaps = 0;
-static BOOL gFireOn;
-static uint32_t gIdent = 1;
+static int gFireIdx = -1, gFireTaps = 0; static BOOL gFireOn; static uint32_t gIdent = 1;
 
 static IOHIDEventRef (*pCreateFinger)(CFAllocatorRef,BKAbsTime,uint32_t,uint32_t,uint32_t,
     IOHIDFloat,IOHIDFloat,IOHIDFloat,IOHIDFloat,IOHIDFloat,Boolean,Boolean,IOOptionBits);
 static IOHIDEventRef (*pCreateDigitizer)(CFAllocatorRef,uint64_t,uint32_t,uint32_t,uint32_t,
-    uint32_t,double,double,double,double,double,Boolean,Boolean,IOOptionBits);
+    uint32_t,uint32_t,double,double,double,double,double,Boolean,Boolean,IOOptionBits);
 static void (*pAppend)(IOHIDEventRef,IOHIDEventRef,IOOptionBits);
 static void (*pSetDigitizerInfo)(IOHIDEventRef,uint32_t,Boolean,Boolean,CFStringRef,double,float);
 static void (*pSetInt)(IOHIDEventRef,uint32_t,int64_t);
-static int  (*pGetType)(IOHIDEventRef);
+static int (*pGetType)(IOHIDEventRef);
 static double (*pGetFloat)(IOHIDEventRef,uint32_t);
 static int64_t (*pGetInt)(IOHIDEventRef,uint32_t);
 static void (*origEnq)(id,SEL,IOHIDEventRef);
-
-#pragma mark - pass-through window
 
 @interface BKPassWindow : UIWindow @end
 @implementation BKPassWindow
@@ -236,16 +205,10 @@ static void (*origEnq)(id,SEL,IOHIDEventRef);
 
 @interface BKHostVC : UIViewController @end
 @implementation BKHostVC
-- (void)viewDidLayoutSubviews
-{
-    [super viewDidLayoutSubviews];
-    if (gUI) [gUI layoutAll];
-}
+- (void)viewDidLayoutSubviews { [super viewDidLayoutSubviews]; if (gUI) [gUI layoutAll]; }
 - (BOOL)prefersStatusBarHidden { return YES; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 @end
-
-#pragma mark - infra
 
 static UIWindowScene *BKScene(void)
 {
@@ -256,14 +219,12 @@ static UIWindowScene *BKScene(void)
         if ([s isKindOfClass:UIWindowScene.class]) return (UIWindowScene *)s;
     return nil;
 }
-
 CGSize BKSize(void)
 {
     UIWindowScene *s = BKScene();
     if (s) return s.coordinateSpace.bounds.size;
     return UIScreen.mainScreen.bounds.size;
 }
-
 static void BKLog(NSString *fmt, ...)
 {
     if (!gLog) return;
@@ -275,11 +236,8 @@ static void BKLog(NSString *fmt, ...)
     if (!h) [line writeToFile:gLog atomically:NO encoding:NSUTF8StringEncoding error:nil];
     else { @try { [h seekToEndOfFile]; [h writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; [h closeFile]; } @catch (id e) {} }
 }
-
 static double BKClamp(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
 static double BKNum(NSString *k, double d) { return [gCore doubleForKey:k def:d]; }
-
-#pragma mark - cursor placement
 
 // A janela fica sempre em tela cheia; so a seta se move. A ponta e o gCx/gCy.
 static void BKPlaceCursor(void)
@@ -290,21 +248,13 @@ static void BKPlaceCursor(void)
     [gCursor setNeedsDisplay];
 }
 
-#pragma mark - finger pool
-
 static int BKFingerTake(int owner)
 {
     for (int i = 0; i < BK_FINGERS; i++) if (!gFingerOwner[i]) { gFingerOwner[i] = owner + 1; return BK_FBASE + i; }
     return -1;
 }
-static void BKFingerFree(int f)
-{
-    if (f >= BK_FBASE && f < BK_FBASE + BK_FINGERS) gFingerOwner[f - BK_FBASE] = 0;
-}
+static void BKFingerFree(int f) { if (f >= BK_FBASE && f < BK_FBASE + BK_FINGERS) gFingerOwner[f - BK_FBASE] = 0; }
 
-#pragma mark - injection
-
-// contextID da janela do jogo: e o que amarra o toque ao display certo.
 static uint32_t BKContextID(void)
 {
     static uint32_t cached;
@@ -315,8 +265,7 @@ static uint32_t BKContextID(void)
         for (UIWindow *c in ((UIWindowScene *)s).windows) {
             if (c == gBallWin || c == gCursorWin) continue;
             if (c.windowLevel != UIWindowLevelNormal) continue;
-            w = c;
-            break;
+            w = c; break;
         }
         if (w) break;
     }
@@ -326,20 +275,16 @@ static uint32_t BKContextID(void)
     return cached;
 }
 
-// Evento pai de mao + subevento de dedo + info de digitador, igual ao driver real.
 static void BKInject(int finger, double x, double y, BOOL down, BOOL move)
 {
     if (!pCreateFinger || !pCreateDigitizer || !origEnq) return;
     uint32_t mask = move ? 4 : 3;
-    Boolean rng = down;
-    Boolean tch = down;
+    Boolean rng = down, tch = down;
     uint64_t t = mach_absolute_time();
 
-    IOHIDEventRef parent = pCreateDigitizer(kCFAllocatorDefault, t, 2, 0, 0, mask,
-                                            0, 0, 0, 0, 0, 0, rng, tch, 0);
+    IOHIDEventRef parent = pCreateDigitizer(kCFAllocatorDefault, t, 2, 0, 0, mask, 0, 0, 0, 0, 0, 0, rng, tch, 0);
     if (!parent) return;
-    IOHIDEventRef sub = pCreateFinger(kCFAllocatorDefault, t, gIdent++, (uint32_t)finger,
-                                      mask, x, y, 0.0, 0.0, 0.0, rng, tch, 0);
+    IOHIDEventRef sub = pCreateFinger(kCFAllocatorDefault, t, gIdent++, (uint32_t)finger, mask, x, y, 0.0, 0.0, 0.0, rng, tch, 0);
     if (!sub) { CFRelease(parent); return; }
 
     if (pSetInt) pSetInt(sub, kFieldDigIsDisplayIntegrated, 1);
@@ -349,8 +294,7 @@ static void BKInject(int finger, double x, double y, BOOL down, BOOL move)
     if (pSetDigitizerInfo) pSetDigitizerInfo(parent, BKContextID(), false, false, NULL, 0, 0);
 
     gInjecting++;
-    @try { origEnq(UIApplication.sharedApplication, @selector(_enqueueHIDEvent:), parent); }
-    @catch (id e) {}
+    @try { origEnq(UIApplication.sharedApplication, @selector(_enqueueHIDEvent:), parent); } @catch (id e) {}
     gInjecting--;
     CFRelease(parent);
 
@@ -359,7 +303,6 @@ static void BKInject(int finger, double x, double y, BOOL down, BOOL move)
     }
 }
 
-// Dedo real fica no vidro e nao cai duas vezes no mesmo pixel.
 static void BKTapAt(double x, double y)
 {
     int f = BKFingerTake(900);
@@ -367,7 +310,6 @@ static void BKTapAt(double x, double y)
     double jx = ((double)arc4random_uniform(1200) / 1000.0) - 0.6;
     double jy = ((double)arc4random_uniform(1200) / 1000.0) - 0.6;
     double px = x + jx, py = y + jy;
-
     BKInject(f, px, py, YES, NO);
     uint64_t hold = 40000 + arc4random_uniform(30000);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, hold * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
@@ -389,8 +331,6 @@ void BKReleaseAll(void)
     if (gCursorDown) { BKInject(31, gCx, gCy, NO, NO); gCursorDown = NO; }
     gFps = gFpsHeld = NO;
 }
-
-#pragma mark - cursor
 
 void BKCursorSet(BOOL on)
 {
@@ -449,13 +389,10 @@ void BKPointerDelta(double dx, double dy)
     }
     BKPlaceCursor();
     if (gCursorDown) {
-        // ruido sub-pixel: dedo parado nunca fica perfeitamente imovel
         double n = ((double)arc4random_uniform(400) / 1000.0) - 0.2;
         BKInject(31, gCx + n, gCy - n, YES, YES);
     }
 }
-
-#pragma mark - fire
 
 static void BKFireArm(void)
 {
@@ -464,7 +401,6 @@ static void BKFireArm(void)
     dispatch_source_set_timer(gFireTimer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(ms * NSEC_PER_MSEC)),
                               DISPATCH_TIME_FOREVER, 2 * NSEC_PER_MSEC);
 }
-
 static void BKFireStop(void)
 {
     gFireOn = NO;
@@ -472,7 +408,6 @@ static void BKFireStop(void)
     if ([gCore boolForKey:kHoldAim def:YES]) BKButtonDown(2, NO);
     gFireIdx = -1;
 }
-
 static void BKFireTick(void)
 {
     if (!gFireOn || gFireIdx < 0 || gFireIdx >= (int)BKMarks().count) return;
@@ -484,7 +419,6 @@ static void BKFireTick(void)
         gFireTaps >= [gCore intForKey:kRepeatCount def:4]) { BKFireStop(); return; }
     BKFireArm();
 }
-
 static void BKFireStart(int idx)
 {
     if (gFireIdx == idx && gFireOn &&
@@ -507,8 +441,6 @@ static void BKFireStart(int idx)
     if ([gCore intForKey:kTapMode def:BKTapModeHold] == BKTapModeFixed) BKFireTick();
 }
 
-#pragma mark - markers
-
 static void BKMarkerPress(int idx, BOOL down)
 {
     if (idx < 0 || idx >= (int)BKMarks().count) return;
@@ -517,10 +449,7 @@ static void BKMarkerPress(int idx, BOOL down)
     CGSize s = BKSize();
     double x = [m[@"x"] doubleValue] * s.width, y = [m[@"y"] doubleValue] * s.height;
 
-    if ([t isEqualToString:@"Tap"] || [t isEqualToString:@"Click"]) {
-        if (down) BKTapAt(x, y);
-        return;
-    }
+    if ([t isEqualToString:@"Tap"] || [t isEqualToString:@"Click"]) { if (down) BKTapAt(x, y); return; }
     if ([t isEqualToString:@"Fire"]) { if (down) BKFireStart(idx); else BKFireStop(); return; }
     if ([t isEqualToString:@"Fps"]) {
         if (down) {
@@ -542,8 +471,6 @@ static void BKMarkerPress(int idx, BOOL down)
         BKFingerFree(f);
     }
 }
-
-#pragma mark - capture
 
 static void BKCaptureEvent(IOHIDEventRef ev)
 {
@@ -568,7 +495,6 @@ static void BKCaptureEvent(IOHIDEventRef ev)
         }
     }
 }
-
 static void BKEnq(id self, SEL cmd, IOHIDEventRef ev)
 {
     if (gInjecting == 0) @try { BKCaptureEvent(ev); } @catch (id e) {}
@@ -609,8 +535,6 @@ void BKKeyUsage(int usage, BOOL down)
     }
 }
 
-#pragma mark - joystick
-
 static void BKJoystick(void)
 {
     int dirs[64], n = 0, pad = -1;
@@ -634,14 +558,11 @@ static void BKJoystick(void)
         by = [BKMarks()[pad][@"y"] doubleValue];
     } else if ([gCore intForKey:kJoyCenter def:BKJoyCenterAverage] == BKJoyCenterFixed) {
         bx = BKNum(kJoyFx, sx / n); by = BKNum(kJoyFy, sy / n);
-    } else {
-        bx = sx / n; by = sy / n;
-    }
+    } else { bx = sx / n; by = sy / n; }
     if ([gCore intForKey:kJoyCenter def:BKJoyCenterAverage] == BKJoyCenterRandom) {
         bx += ((double)arc4random_uniform(1000) / 1000.0 - 0.5) * 0.02;
         by += ((double)arc4random_uniform(1000) / 1000.0 - 0.5) * 0.02;
     }
-
     double vx = 0, vy = 0;
     for (int i = 0; i < n; i++) {
         if (!gHoldKey[dirs[i]]) continue;
@@ -661,8 +582,6 @@ static void BKJoystick(void)
     if (gCursorDown) BKInject(31, gCx, gCy, YES, YES);
 }
 
-#pragma mark - devices
-
 static void BKAttachMouse(void)
 {
     GCMouse *m = GCMouse.current;
@@ -674,7 +593,6 @@ static void BKAttachMouse(void)
     m.mouseInput.rightButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) { BKButtonDown(2, p); };
     m.mouseInput.middleButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) { BKButtonDown(3, p); };
 }
-
 static void BKAttachKey(void)
 {
     GCKeyboard *k = [GCKeyboard coalescedKeyboard];
@@ -685,7 +603,6 @@ static void BKAttachKey(void)
         BKKeyUsage((int)code, pressed);
     };
 }
-
 static void BKInstall(void)
 {
     void *h = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
@@ -700,13 +617,10 @@ static void BKInstall(void)
     }
     void *b = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_LAZY);
     if (b) pSetDigitizerInfo = dlsym(b, "BKSHIDEventSetDigitizerInfo");
-
     gHidOk = (pCreateFinger != NULL && pCreateDigitizer != NULL);
     Method m = class_getInstanceMethod(UIApplication.class, @selector(_enqueueHIDEvent:));
     if (m) { origEnq = (void *)method_getImplementation(m); method_setImplementation(m, (IMP)BKEnq); }
 }
-
-#pragma mark - overlay views
 
 static UIWindow *BKWin(UIWindowLevel lv, BOOL passThrough)
 {
@@ -755,13 +669,11 @@ static UIWindow *BKWin(UIWindowLevel lv, BOOL passThrough)
     [p addLineToPoint:CGPointMake(w * 0.48, h * 0.52)];
     [p addLineToPoint:CGPointMake(w * 0.80, h * 0.52)];
     [p closePath];
-
     CGContextRef c = UIGraphicsGetCurrentContext();
     CGContextSetShadowWithColor(c, CGSizeMake(0.5, 1.2), 2.0, [UIColor colorWithWhite:0 alpha:0.55].CGColor);
     CGContextSetFillColorWithColor(c, UIColor.whiteColor.CGColor);
     CGContextAddPath(c, p.CGPath);
     CGContextFillPath(c);
-
     CGContextSetShadowWithColor(c, CGSizeZero, 0, NULL);
     CGContextSetStrokeColorWithColor(c, [UIColor colorWithWhite:0.08 alpha:1].CGColor);
     CGContextSetLineWidth(c, MAX(1.0, h * 0.045));
@@ -796,10 +708,8 @@ static UIWindow *BKWin(UIWindowLevel lv, BOOL passThrough)
 - (void)bkPick:(UITapGestureRecognizer *)g { BKSelectMarker((int)self.tag - 300); }
 @end
 
-#pragma mark - engine api
-
 NSMutableArray *BKMarks(void) { return [gCore marks]; }
-int  BKSelectedMarker(void) { return gSelIdx; }
+int BKSelectedMarker(void) { return gSelIdx; }
 void BKSetInputGated(BOOL g) { gGated = g; }
 void BKUISetCanvas(UIView *v) { gCanvas = v; }
 
@@ -832,7 +742,6 @@ void BKRedrawMarkers(void)
         NSDictionary *m = BKMarks()[i];
         UIColor *c = BKUIColorFor(m[@"t"]);
         BOOL isPad = [m[@"t"] isEqualToString:@"Pad"];
-
         BKMarkView *v = [[BKMarkView alloc] initWithFrame:CGRectMake(0, 0, d, d)];
         v.center = CGPointMake([m[@"x"] doubleValue] * s.width, [m[@"y"] doubleValue] * s.height);
         v.backgroundColor = [c colorWithAlphaComponent:isPad ? 0.10 : BKNum(kMarkOpacity, 30) / 100.0];
@@ -840,7 +749,6 @@ void BKRedrawMarkers(void)
         v.layer.borderWidth = isPad ? 1.0 : 1.5;
         v.layer.cornerRadius = d / 2;
         v.tag = 300 + i;
-
         UILabel *in = [UILabel new];
         in.frame = v.bounds;
         in.text = BKShortFor(m[@"t"]);
@@ -850,7 +758,6 @@ void BKRedrawMarkers(void)
         in.adjustsFontSizeToFitWidth = YES;
         in.userInteractionEnabled = NO;
         [v addSubview:in];
-
         if (labels) {
             UILabel *out = [UILabel new];
             out.text = BKNameFor(m[@"t"]);
@@ -879,7 +786,6 @@ void BKApplySettings(void)
     if (gCanvas) BKRedrawMarkers();
     [BKUI relayout];
 }
-
 void BKRelayout(void)
 {
     CGSize s = BKSize();
@@ -891,11 +797,9 @@ void BKRelayout(void)
     BKPlaceCursor();
     [BKUI relayout];
 }
-
 void BKMenuOpen(void) { gMenuOpen = YES; [BKUI show]; BKReleaseAll(); }
 void BKMenuClose(void) { gMenuOpen = NO; [BKUI hide]; }
 void BKEditorOpenUI(void) { [BKUI openEditor]; }
-
 void BKSetEditorOpen(BOOL open)
 {
     if (open == gEditOpen) return;
@@ -903,57 +807,55 @@ void BKSetEditorOpen(BOOL open)
     if (!open) { gCanvas = nil; gMarkViews = nil; gSelIdx = -1; BKReleaseAll(); }
 }
 
-#pragma mark - design tokens
-
 static UIColor *BKHex(NSUInteger h, CGFloat a)
 {
     return [UIColor colorWithRed:((h >> 16) & 255) / 255.0 green:((h >> 8) & 255) / 255.0
                             blue:(h & 255) / 255.0 alpha:a];
 }
-#define ACC   BKHex(0xFF6A2B, 1)
-#define ACCD  BKHex(0xFF6A2B, 0.16)
+#define ACC BKHex(0xFF6A2B, 1)
+#define ACCD BKHex(0xFF6A2B, 0.16)
 #define PANEL BKHex(0x0D1119, 1)
-#define SIDE  BKHex(0x070A10, 1)
-#define ROW   BKHex(0x141A24, 1)
+#define SIDE BKHex(0x070A10, 1)
+#define ROW BKHex(0x141A24, 1)
 #define STROK BKHex(0x1E2634, 1)
-#define TXT   BKHex(0xE8ECF4, 1)
-#define DIM   BKHex(0x8A94A6, 1)
-#define OKC   BKHex(0x2FD07A, 1)
-#define BADC  BKHex(0xFF5A5A, 1)
+#define TXT BKHex(0xE8ECF4, 1)
+#define DIM BKHex(0x8A94A6, 1)
+#define OKC BKHex(0x2FD07A, 1)
+#define BADC BKHex(0xFF5A5A, 1)
 
 UIColor *BKUIColorFor(NSString *t)
 {
-    if ([t isEqualToString:@"Tap"])   return BKHex(0x2FA8FF, 1);
+    if ([t isEqualToString:@"Tap"]) return BKHex(0x2FA8FF, 1);
     if ([t isEqualToString:@"Click"]) return BKHex(0x35D6C8, 1);
     if ([t isEqualToString:@"Press"]) return BKHex(0x2FD07A, 1);
-    if ([t isEqualToString:@"Dir"])   return BKHex(0xA06BFF, 1);
-    if ([t isEqualToString:@"Pad"])   return BKHex(0x7A85A0, 1);
-    if ([t isEqualToString:@"Fps"])   return BKHex(0xFF4A7A, 1);
-    if ([t isEqualToString:@"Ads"])   return BKHex(0xFF9B2B, 1);
+    if ([t isEqualToString:@"Dir"]) return BKHex(0xA06BFF, 1);
+    if ([t isEqualToString:@"Pad"]) return BKHex(0x7A85A0, 1);
+    if ([t isEqualToString:@"Fps"]) return BKHex(0xFF4A7A, 1);
+    if ([t isEqualToString:@"Ads"]) return BKHex(0xFF9B2B, 1);
     return BKHex(0xFF5A3A, 1);
 }
 NSString *BKNameFor(NSString *t)
 {
-    if ([t isEqualToString:@"Tap"])   return @"Toque";
+    if ([t isEqualToString:@"Tap"]) return @"Toque";
     if ([t isEqualToString:@"Click"]) return @"Clique";
     if ([t isEqualToString:@"Press"]) return @"Pressionar";
-    if ([t isEqualToString:@"Dir"])   return @"Direcional";
-    if ([t isEqualToString:@"Pad"])   return @"Centro";
-    if ([t isEqualToString:@"Fps"])   return @"Fps";
-    if ([t isEqualToString:@"Ads"])   return @"Mirar";
-    if ([t isEqualToString:@"Fire"])  return @"Atirar";
+    if ([t isEqualToString:@"Dir"]) return @"Direcional";
+    if ([t isEqualToString:@"Pad"]) return @"Centro";
+    if ([t isEqualToString:@"Fps"]) return @"Fps";
+    if ([t isEqualToString:@"Ads"]) return @"Mirar";
+    if ([t isEqualToString:@"Fire"]) return @"Atirar";
     return t;
 }
 NSString *BKShortFor(NSString *t)
 {
-    if ([t isEqualToString:@"Tap"])   return @"T";
+    if ([t isEqualToString:@"Tap"]) return @"T";
     if ([t isEqualToString:@"Click"]) return @"C";
     if ([t isEqualToString:@"Press"]) return @"P";
-    if ([t isEqualToString:@"Dir"])   return @"D";
-    if ([t isEqualToString:@"Pad"])   return @"+";
-    if ([t isEqualToString:@"Fps"])   return @"F";
-    if ([t isEqualToString:@"Ads"])   return @"M";
-    if ([t isEqualToString:@"Fire"])  return @"A";
+    if ([t isEqualToString:@"Dir"]) return @"D";
+    if ([t isEqualToString:@"Pad"]) return @"+";
+    if ([t isEqualToString:@"Fps"]) return @"F";
+    if ([t isEqualToString:@"Ads"]) return @"M";
+    if ([t isEqualToString:@"Fire"]) return @"A";
     return t;
 }
 
@@ -1000,8 +902,6 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
         }
     }];
 }
-
-#pragma mark - widgets
 
 @interface BKToggle : UIControl
 @property (nonatomic) BOOL on;
@@ -1129,13 +1029,8 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 - (void)pick:(UIButton *)b { if (self.onPick) self.onPick(b.tag); [self removeFromSuperview]; }
 @end
 
-#pragma mark - panel
-
 @interface BKUI () <UIScrollViewDelegate>
-- (void)present;
-- (void)dismiss;
-- (void)buildChrome;
-- (void)tabTap:(UIControl *)c;
+- (void)present; - (void)dismiss; - (void)buildChrome; - (void)tabTap:(UIControl *)c;
 - (void)setTab:(NSInteger)tab animated:(BOOL)animated;
 - (UILabel *)label:(NSString *)t size:(CGFloat)sz color:(UIColor *)c bold:(BOOL)b;
 - (UIView *)shell:(CGFloat)h;
@@ -1151,25 +1046,14 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 - (void)buttonRow:(NSString *)title color:(UIColor *)c y:(CGFloat)y host:(UIView *)host action:(SEL)sel;
 - (void)section:(NSString *)t y:(CGFloat)y host:(UIView *)host;
 - (UIView *)buildTab:(NSInteger)tab;
-- (void)openEditorTap;
-- (void)clearMarksTap;
-- (void)reloadMarksTap;
-- (void)centerJoyTap;
-- (void)saveProfileTap;
-- (void)useProfileTap:(UIButton *)b;
-- (void)delProfileTap:(UIButton *)b;
-- (void)resetTap;
-- (void)logTap;
-- (void)tickStatus;
-- (void)presentEditor;
+- (void)openEditorTap; - (void)clearMarksTap; - (void)reloadMarksTap; - (void)centerJoyTap;
+- (void)saveProfileTap; - (void)useProfileTap:(UIButton *)b; - (void)delProfileTap:(UIButton *)b;
+- (void)resetTap; - (void)logTap; - (void)tickStatus; - (void)presentEditor;
+- (UIButton *)miniChip:(NSString *)t color:(UIColor *)c frame:(CGRect)f;
 - (UIButton *)chip:(NSString *)t color:(UIColor *)c frame:(CGRect)f;
-- (void)editorAdd:(UIButton *)b;
-- (void)editorDelete:(UIButton *)b;
-- (void)editorSave;
-- (void)editorCancel;
-- (void)dismissEditor;
-- (void)editorGotKey:(int)u;
-- (void)refreshEditorStatus;
+- (void)editorAdd:(UIButton *)b; - (void)editorDelete:(UIButton *)b;
+- (void)editorSave; - (void)editorCancel; - (void)dismissEditor;
+- (void)editorGotKey:(int)u; - (void)refreshEditorStatus;
 @end
 
 @interface BKUI ()
@@ -1270,26 +1154,20 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     CGRect b = _win.bounds;
     if (b.size.width < 40 || b.size.height < 40) return;
     _dim.frame = b;
-
     UIEdgeInsets in = _win.safeAreaInsets;
-    CGFloat availW = b.size.width - in.left - in.right - 24;
-    CGFloat availH = b.size.height - in.top - in.bottom - 24;
-    CGFloat fit = MIN(availW / DW, availH / DH);
+    CGFloat fit = MIN((b.size.width - in.left - in.right - 24) / DW,
+                      (b.size.height - in.top - in.bottom - 24) / DH);
     CGFloat k = fit * MIN(1.0, _userScale / 100.0);
-
     _box.transform = CGAffineTransformMakeScale(k, k);
     _box.center = CGPointMake(b.size.width / 2, b.size.height / 2 + (in.top - in.bottom) / 2);
     _box.alpha = [gCore doubleForKey:kMenuOpacity def:96] / 100.0;
 }
-
-#pragma mark chrome
 
 - (void)buildChrome
 {
     _sidebar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 210, DH)];
     _sidebar.backgroundColor = SIDE;
     [_box addSubview:_sidebar];
-
     UIImageView *logo = [[UIImageView alloc] initWithImage:BKIcon(@"cursor", 30, ACC)];
     logo.frame = CGRectMake(30, 34, 30, 30);
     [_sidebar addSubview:logo];
@@ -1347,7 +1225,6 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
                         options:UIViewAnimationOptionAllowUserInteraction animations:^{
         self->_pill.center = CGPointMake(2, 130 + tab * 108 + 23);
     } completion:nil];
-
     if (same) return;
 
     UIView *old = _content;
@@ -1375,8 +1252,6 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     }
 }
 
-#pragma mark row builders
-
 - (UILabel *)label:(NSString *)t size:(CGFloat)sz color:(UIColor *)c bold:(BOOL)b
 {
     UILabel *l = [UILabel new];
@@ -1385,7 +1260,6 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     l.font = [UIFont systemFontOfSize:sz weight:b ? UIFontWeightSemibold : UIFontWeightRegular];
     return l;
 }
-
 - (UIView *)shell:(CGFloat)h
 {
     UIView *r = [[UIView alloc] initWithFrame:CGRectMake(0, 0, DW - 210 - 76, h)];
@@ -1394,7 +1268,6 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     [_rows addObject:r];
     return r;
 }
-
 - (UIView *)header:(NSString *)title icon:(NSString *)icon note:(NSArray *)note host:(UIView *)host
 {
     UIView *h = [[UIView alloc] initWithFrame:CGRectMake(0, 0, host.bounds.size.width, 150)];
@@ -1409,7 +1282,6 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     [x setImage:BKIcon(@"x", 22, ACC) forState:UIControlStateNormal];
     [x addTarget:self action:@selector(closeTap) forControlEvents:UIControlEventTouchUpInside];
     [h addSubview:x];
-
     NSMutableAttributedString *a = [NSMutableAttributedString new];
     for (NSDictionary *p in note)
         [a appendAttributedString:[[NSAttributedString alloc] initWithString:p[@"t"] attributes:@{
@@ -1422,7 +1294,6 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     [h addSubview:n];
     return h;
 }
-
 - (void)closeTap { [BKUI hide]; }
 
 - (void)toggleRow:(NSString *)title key:(NSString *)key y:(CGFloat)y host:(UIView *)host
@@ -1543,7 +1414,6 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     [r addSubview:b];
     [host addSubview:r];
 }
-
 - (void)section:(NSString *)t y:(CGFloat)y host:(UIView *)host
 {
     UILabel *l = [self label:t size:13 color:DIM bold:YES];
@@ -1551,8 +1421,6 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     l.alpha = 0.8;
     [host addSubview:l];
 }
-
-#pragma mark tabs
 
 - (UIView *)buildTab:(NSInteger)tab
 {
@@ -1699,14 +1567,10 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     return sv;
 }
 
-#pragma mark actions
-
 - (void)openEditorTap
 {
     [BKUI hide];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 220 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        BKEditorOpenUI();
-    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 220 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ BKEditorOpenUI(); });
 }
 - (void)clearMarksTap { [gCore setMarks:@[]]; BKRedrawMarkers(); [self setTab:1 animated:NO]; }
 - (void)reloadMarksTap { BKReloadMarks(); [self setTab:1 animated:NO]; }
@@ -1776,8 +1640,6 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
         s.width, s.height, [gCore doubleForKey:kUiScale def:100]];
     _statusLbl.textColor = BKCursorOn() ? OKC : DIM;
 }
-
-#pragma mark editor
 
 - (void)presentEditor
 {
@@ -1874,7 +1736,6 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     b.layer.cornerRadius = 8;
     return b;
 }
-
 - (UIButton *)chip:(NSString *)t color:(UIColor *)c frame:(CGRect)f { return [self miniChip:t color:c frame:f]; }
 
 - (void)editorAdd:(UIButton *)b
@@ -1900,7 +1761,6 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
         BKSelectMarker(padIdx);
         return;
     }
-
     [BKMarks() addObject:[@{@"t":type, @"x":@0.5, @"y":@0.5, @"c":@0} mutableCopy]];
     BKRedrawMarkers();
     BKSelectMarker((int)BKMarks().count - 1);
@@ -1946,10 +1806,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     _statusLbl.text = [NSString stringWithFormat:@"%@ selecionado — aperte uma tecla", BKNameFor(BKMarks()[i][@"t"])];
     _statusLbl.textColor = ACC;
 }
-
 @end
-
-#pragma mark - stealth
 
 static const char *(*o_dyld_name)(uint32_t);
 static const struct mach_header *(*o_dyld_hdr)(uint32_t);
@@ -1957,7 +1814,6 @@ static uint32_t (*o_dyld_count)(void);
 static int (*o_dladdr)(const void *, Dl_info *);
 
 static BOOL BKSelf(const char *n) { return n && strstr(n, "BallKey") != NULL; }
-
 static uint32_t h_count(void)
 {
     uint32_t c = o_dyld_count ? o_dyld_count() : 0;
@@ -1992,10 +1848,10 @@ static int h_dladdr(const void *a, Dl_info *i)
 
 typedef struct { const char *name; void *repl; void **orig; } BKTarget;
 static BKTarget gTargets[] = {
-    {"_dyld_image_count",       (void *)h_count,   (void **)&o_dyld_count},
-    {"_dyld_get_image_name",    (void *)h_name,    (void **)&o_dyld_name},
-    {"_dyld_get_image_header",  (void *)h_hdr,     (void **)&o_dyld_hdr},
-    {"dladdr",                  (void *)h_dladdr,  (void **)&o_dladdr},
+    {"_dyld_image_count", (void *)h_count, (void **)&o_dyld_count},
+    {"_dyld_get_image_name", (void *)h_name, (void **)&o_dyld_name},
+    {"_dyld_get_image_header", (void *)h_hdr, (void **)&o_dyld_hdr},
+    {"dladdr", (void *)h_dladdr, (void **)&o_dladdr},
 };
 #define BK_TCOUNT (sizeof(gTargets) / sizeof(gTargets[0]))
 
@@ -2021,7 +1877,6 @@ static void BKApplyChained(const struct mach_header_64 *mh)
     const struct load_command *lc = (const struct load_command *)(base + sizeof(*mh));
     const struct bk_chain_fx *fx = NULL;
     const uint8_t *le = NULL;
-
     for (uint32_t i = 0; i < mh->ncmds; i++) {
         if (lc->cmd == LC_SEGMENT_64) {
             const struct segment_command_64 *sg = (const struct segment_command_64 *)lc;
@@ -2070,7 +1925,6 @@ static void BKApplyLegacy(const struct mach_header_64 *mh)
     const struct load_command *lc = (const struct load_command *)(base + sizeof(*mh));
     const struct symtab_command *st = NULL;
     const struct dysymtab_command *dys = NULL;
-
     for (uint32_t i = 0; i < mh->ncmds; i++) {
         if (lc->cmd == LC_SYMTAB) st = (const struct symtab_command *)lc;
         else if (lc->cmd == LC_DYSYMTAB) dys = (const struct dysymtab_command *)lc;
@@ -2089,7 +1943,6 @@ static void BKApplyLegacy(const struct mach_header_64 *mh)
             const struct section_64 *sc = (const struct section_64 *)(sg + 1);
             for (uint32_t j = 0; j < sg->nsects; j++, sc++) {
                 if (strcmp(sc->sectname, "__la_symbol_ptr") && strcmp(sc->sectname, "__nl_symbol_ptr")) continue;
-                if (sc->flags & 0x2) { }
                 uint32_t n = sc->size / sizeof(void *);
                 void **ptrs = (void **)(base + sc->offset);
                 for (uint32_t k = 0; k < n; k++) {
@@ -2126,8 +1979,6 @@ static void BKStealth(void)
     if (chained) BKApplyChained(mh);
     else BKApplyLegacy(mh);
 }
-
-#pragma mark - boot
 
 static void BKStart(void)
 {

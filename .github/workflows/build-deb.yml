@@ -29,7 +29,7 @@ jobs:
       - name: Dependências
         if: steps.tc.outputs.cache-hit != 'true'
         run: |
-          PACOTES="libxml2 libxml2-dev libtinfo6 dpkg-dev make curl git jq clang lld pkg-config libplist-dev"
+          PACOTES="libxml2 libxml2-dev libtinfo6 dpkg-dev make curl git jq clang lld pkg-config libplist-dev zip"
           APT="sudo apt-get -o Acquire::Retries=2 -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
           for i in 1 2; do
             timeout 120 $APT update || true
@@ -66,6 +66,7 @@ jobs:
           test -d "$THEOS/makefiles" || { echo "theos ausente"; exit 1; }
           test -d "$THEOS/sdks" || { echo "sdks ausentes"; exit 1; }
           command -v clang >/dev/null || { echo "clang ausente"; exit 1; }
+          command -v zip >/dev/null || sudo apt-get install -y zip
 
       - name: Localizar Makefile
         id: mk
@@ -97,11 +98,39 @@ jobs:
           make -C "${{ steps.mk.outputs.dir }}" clean
           make -C "${{ steps.mk.outputs.dir }}" package FINALPACKAGE=1
 
+      - name: Build app instalador
+        run: |
+          set -e
+          test -f BallKeyApp/Makefile || { echo "BallKeyApp ausente"; exit 1; }
+          make -C BallKeyApp clean
+          make -C BallKeyApp package FINALPACKAGE=1
+
+      - name: Empacotar tipa
+        run: |
+          set -e
+          APP=$(find BallKeyApp/.theos/_ -maxdepth 6 -type d -name "*.app" | head -1)
+          test -n "$APP" || { echo "app nao gerado"; find BallKeyApp/.theos -maxdepth 5; exit 1; }
+          DEB=$(ls "${{ steps.mk.outputs.dir }}"/packages/*.deb | head -1)
+          test -n "$DEB" || { echo "deb nao encontrado"; exit 1; }
+          NAME=$(basename "$APP")
+          BIN="${NAME%.app}"
+          rm -rf Payload && mkdir -p Payload
+          cp -R "$APP" Payload/
+          cp "$DEB" "Payload/$NAME/"
+          if [ -x "$THEOS/bin/ldid" ]; then
+            "$THEOS/bin/ldid" -S BallKeyApp/entitlements.plist "Payload/$NAME/$BIN" || true
+          fi
+          zip -qr "BallKey-${{ steps.ver.outputs.version }}.tipa" Payload
+          rm -rf Payload
+          ls -la ./*.tipa
+
       - name: Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ballkey-${{ steps.ver.outputs.version }}-${{ github.run_number }}
-          path: ${{ steps.mk.outputs.dir }}/packages/*.deb
+          path: |
+            ${{ steps.mk.outputs.dir }}/packages/*.deb
+            *.tipa
           if-no-files-found: error
 
       - name: Release
@@ -109,7 +138,9 @@ jobs:
         with:
           tag_name: v${{ steps.ver.outputs.version }}-${{ github.run_number }}
           name: BallKey v${{ steps.ver.outputs.version }} (${{ github.run_number }})
-          files: ${{ steps.mk.outputs.dir }}/packages/*.deb
+          files: |
+            ${{ steps.mk.outputs.dir }}/packages/*.deb
+            *.tipa
 
       - name: Podar releases antigas
         env:

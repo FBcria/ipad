@@ -60,7 +60,6 @@ static NSString *const kCursor=@"cursor", *const kSens=@"sens", *const kCurve=@"
  *const kUiScale=@"uiScale", *const kAutoProfile=@"autoProfile", *const kJoyFx=@"joyFx",
  *const kJoyFy=@"joyFy", *const kHideRec=@"hideRec";
 
-@class BKUI;
 @interface BKUI : NSObject
 + (void)show; + (void)hide; + (void)relayout; + (void)openEditor; + (void)closeEditor;
 + (void)editorKey:(int)usage; + (void)editorSelectionChanged;
@@ -316,7 +315,7 @@ void BKCursorSet(BOOL on)
 }
 BOOL BKCursorOn(void) { return gCursorOn; }
 
-static double BKCurve(double v)
+static double BKCurveValue(double v)
 {
     switch ([gCore intForKey:kCurve def:BKCurveSoft]) {
         case BKCurveLinear: return v;
@@ -333,8 +332,8 @@ void BKPointerDelta(double dx, double dy)
     if (!gCursorOn) return;
     CGSize s = BKSize();
     double sens = BKNum(kSens, 1.7) * 0.55;
-    dx = BKCurve(dx * sens);
-    dy = BKCurve(dy * sens * (BKNum(kYRatio, 100) / 100.0));
+    dx = BKCurveValue(dx * sens);
+    dy = BKCurveValue(dy * sens * (BKNum(kYRatio, 100) / 100.0));
 
     if (gFps && gFpsHeld) {
         double bx = s.width * 0.5, by = s.height * 0.5;
@@ -971,14 +970,52 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 static BKUI *gUI;
 
 @interface BKUI () <UIScrollViewDelegate>
+- (void)present;
+- (void)dismiss;
+- (void)layoutAll;
+- (void)buildChrome;
+- (void)tabTap:(UIControl *)c;
+- (void)setTab:(NSInteger)tab animated:(BOOL)animated;
+- (UILabel *)label:(NSString *)t size:(CGFloat)sz color:(UIColor *)c bold:(BOOL)b;
+- (UIView *)shell:(CGFloat)h;
+- (UIView *)header:(NSString *)title icon:(NSString *)icon note:(NSArray *)note host:(UIView *)host;
+- (void)closeTap;
+- (void)toggleRow:(NSString *)title key:(NSString *)key y:(CGFloat)y host:(UIView *)host;
+- (void)tgChanged:(BKToggle *)t;
+- (void)sliderRow:(NSString *)title key:(NSString *)key min:(double)mn max:(double)mx
+                y:(CGFloat)y host:(UIView *)host fmt:(NSString *(^)(double))fmt;
+- (void)slChanged:(BKSlider *)s;
+- (void)dropRow:(NSString *)title key:(NSString *)key options:(NSArray *)opts y:(CGFloat)y host:(UIView *)host;
+- (void)dropTap:(UIButton *)b;
+- (void)buttonRow:(NSString *)title color:(UIColor *)c y:(CGFloat)y host:(UIView *)host action:(SEL)sel;
+- (void)section:(NSString *)t y:(CGFloat)y host:(UIView *)host;
+- (UIView *)buildTab:(NSInteger)tab;
+- (void)openEditorTap;
+- (void)clearMarksTap;
+- (void)reloadMarksTap;
+- (void)centerJoyTap;
+- (void)saveProfileTap;
+- (void)useProfileTap:(UIButton *)b;
+- (void)delProfileTap:(UIButton *)b;
+- (void)resetTap;
+- (void)logTap;
+- (void)tickStatus;
+- (void)presentEditor;
+- (UIButton *)chip:(NSString *)t color:(UIColor *)c frame:(CGRect)f;
+- (void)editorAdd:(UIButton *)b;
+- (void)editorDelete:(UIButton *)b;
+- (void)editorSave;
+- (void)editorCancel;
+- (void)dismissEditor;
+- (void)editorGotKey:(int)u;
+- (void)refreshEditorStatus;
 @end
 
 @interface BKUI ()
 {
     UIWindow *_win;
-    UIView *_dim, *_box, *_content, *_sidebar, *_pill;
+    UIView *_dim, *_box, *_content, *_sidebar, *_pill, *_inner;
     UIScrollView *_scroll;
-    UIView *_inner;
     NSMutableArray *_rows;
     UILabel *_statusLbl;
     NSInteger _tab;
@@ -992,7 +1029,7 @@ static BKUI *gUI;
 + (void)show { if (!gUI) gUI = [BKUI new]; [gUI present]; }
 + (void)hide { [gUI dismiss]; }
 + (void)relayout { [gUI layoutAll]; }
-+ (void)openEditor { [gUI presentEditor]; }
++ (void)openEditor { if (!gUI) gUI = [BKUI new]; [gUI presentEditor]; }
 + (void)closeEditor { [gUI dismissEditor]; }
 + (void)editorKey:(int)u { [gUI editorGotKey:u]; }
 + (void)editorSelectionChanged { [gUI refreshEditorStatus]; }
@@ -1041,7 +1078,7 @@ static BKUI *gUI;
     [UIView animateWithDuration:0.42 delay:0 usingSpringWithDamping:0.78 initialSpringVelocity:0.9
                         options:UIViewAnimationOptionAllowUserInteraction animations:^{
         self->_box.transform = CGAffineTransformIdentity;
-        self->_box.alpha = 1;
+        self->_box.alpha = [gCore doubleForKey:kMenuOpacity def:96] / 100.0;
         self->_dim.alpha = 1;
     } completion:nil];
 
@@ -1633,10 +1670,11 @@ static BKUI *gUI;
     }
     top.transform = CGAffineTransformMakeTranslation(0, -150);
     bar.transform = CGAffineTransformMakeTranslation(0, 82);
-    [UIView animateWithDuration:0.34 delay:0 usingSpringWithDamping:0.85 initialSpringVelocity:0.6 animations:^{
+    [UIView animateWithDuration:0.34 delay:0 usingSpringWithDamping:0.85 initialSpringVelocity:0.6
+                        options:UIViewAnimationOptionAllowUserInteraction animations:^{
         top.transform = CGAffineTransformIdentity;
         bar.transform = CGAffineTransformIdentity;
-    }];
+    } completion:nil];
 }
 
 - (UIButton *)chip:(NSString *)t color:(UIColor *)c frame:(CGRect)f
@@ -1711,7 +1749,6 @@ static BKUI *gUI;
 static void BKStart(void)
 {
     gCore = [BKCore shared];
-    gCore.onChange = ^(NSString *k) { };
     NSString *base = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
                       stringByAppendingPathComponent:@"BallKey"];
     [NSFileManager.defaultManager createDirectoryAtPath:base withIntermediateDirectories:YES attributes:nil error:nil];

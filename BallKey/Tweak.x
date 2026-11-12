@@ -1316,16 +1316,20 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
 - (CGRect)stageBounds
 {
-    CGRect r = CGRectZero;
-    UIView *sv = _box.superview;
-    if (sv) r = sv.bounds;
-    if (r.size.width < 120 || r.size.height < 120) {
-        CGSize s = BKSize();
-        r = CGRectMake(0, 0, MAX(r.size.width, s.width), MAX(r.size.height, s.height));
-    }
-    if (r.size.width < 120 || r.size.height < 120) {
-        CGSize s = UIScreen.mainScreen.bounds.size;
-        r = CGRectMake(0, 0, MAX(r.size.width, s.width), MAX(r.size.height, s.height));
+    CGSize scr = BKSize();
+    if (scr.width < 40 || scr.height < 40) scr = UIScreen.mainScreen.bounds.size;
+
+    CGRect wf = _win.frame;
+    if (fabs(wf.size.width - scr.width) > 1 || fabs(wf.size.height - scr.height) > 1)
+        _win.frame = CGRectMake(0, 0, scr.width, scr.height);
+
+    CGRect r = _win.bounds;
+
+    UIView *root = _win.rootViewController.view;
+    if (root && (fabs(root.frame.size.width - r.size.width) > 1 ||
+                 fabs(root.frame.size.height - r.size.height) > 1)) {
+        root.autoresizingMask = UIViewAutoresizingNone;
+        root.frame = r;
     }
     return r;
 }
@@ -1337,14 +1341,16 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     CGRect b = [self stageBounds];
     if (b.size.width < 40 || b.size.height < 40) return;
 
-    if (fabs(_win.frame.size.width - b.size.width) > 1 || fabs(_win.frame.size.height - b.size.height) > 1)
-        _win.frame = b;
     _dim.frame = b;
 
-    CGFloat mx = MAX(16.0, b.size.width * 0.07);
-    CGFloat my = MAX(12.0, b.size.height * 0.11);
-    CGFloat aw = b.size.width - 2 * mx;
-    CGFloat ah = b.size.height - 2 * my;
+    CGFloat L = MAX(b.size.width, b.size.height);
+    CGFloat S = MIN(b.size.width, b.size.height);
+
+    CGFloat mx = MAX(16.0, L * 0.07);
+    CGFloat topM = MAX(14.0, S * 0.07);
+    CGFloat botM = MAX(12.0, S * 0.10);
+    CGFloat aw = L - 2 * mx;
+    CGFloat ah = S - topM - botM;
 
     CGFloat dh = BK_DH;
     CGFloat dw = BK_DH * 1.6;
@@ -1359,7 +1365,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
     _fit = fit * MIN(1.0, _userScale / 100.0);
     _box.transform = [self fitT];
-    _box.center = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b));
+    _box.center = CGPointMake(CGRectGetMidX(b), b.origin.y + topM + (dh * _fit) / 2);
     _box.alpha = [gCore doubleForKey:kMenuOpacity def:96] / 100.0;
 }
 

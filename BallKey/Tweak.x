@@ -1213,6 +1213,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 - (void)editorGotKey:(int)u; - (void)refreshEditorStatus;
 - (void)rebuildCanvas;
 - (CGAffineTransform)fitT;
+- (CGRect)stageBounds;
 @end
 
 @interface BKUI ()
@@ -1313,29 +1314,40 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
 - (CGAffineTransform)fitT { return CGAffineTransformMakeScale(_fit, _fit); }
 
+- (CGRect)stageBounds
+{
+    CGRect r = CGRectZero;
+    UIView *sv = _box.superview;
+    if (sv) r = sv.bounds;
+    if (r.size.width < 120 || r.size.height < 120) {
+        CGSize s = BKSize();
+        r = CGRectMake(0, 0, MAX(r.size.width, s.width), MAX(r.size.height, s.height));
+    }
+    if (r.size.width < 120 || r.size.height < 120) {
+        CGSize s = UIScreen.mainScreen.bounds.size;
+        r = CGRectMake(0, 0, MAX(r.size.width, s.width), MAX(r.size.height, s.height));
+    }
+    return r;
+}
+
 - (void)layoutAll
 {
     if (!_win || !_box) return;
 
-    CGSize sc = BKSize();
-    CGRect b = CGRectMake(0, 0, sc.width, sc.height);
+    CGRect b = [self stageBounds];
     if (b.size.width < 40 || b.size.height < 40) return;
 
     if (fabs(_win.frame.size.width - b.size.width) > 1 || fabs(_win.frame.size.height - b.size.height) > 1)
         _win.frame = b;
     _dim.frame = b;
 
-    UIEdgeInsets in = _win.safeAreaInsets;
-    CGFloat L = MAX(b.size.width, b.size.height);
-    CGFloat S = MIN(b.size.width, b.size.height);
+    CGFloat mx = MAX(16.0, b.size.width * 0.07);
+    CGFloat my = MAX(12.0, b.size.height * 0.11);
+    CGFloat aw = b.size.width - 2 * mx;
+    CGFloat ah = b.size.height - 2 * my;
 
     CGFloat dh = BK_DH;
     CGFloat dw = BK_DH * 1.6;
-
-    CGFloat mx = MAX(16.0, L * 0.07);
-    CGFloat my = MAX(12.0, S * 0.11);
-    CGFloat aw = L - in.left - in.right - 2 * mx;
-    CGFloat ah = S - in.top - in.bottom - 2 * my;
     CGFloat fit = MIN(aw / dw, ah / dh);
     if (fit <= 0.05) fit = 0.05;
 
@@ -1343,11 +1355,11 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
         _builtW = dw; _builtH = dh;
         [self rebuildCanvas];
     }
-    _box.frame = CGRectMake(0, 0, dw, dh);
+    _box.bounds = CGRectMake(0, 0, dw, dh);
 
     _fit = fit * MIN(1.0, _userScale / 100.0);
     _box.transform = [self fitT];
-    _box.center = CGPointMake(b.size.width / 2, b.size.height / 2);
+    _box.center = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b));
     _box.alpha = [gCore doubleForKey:kMenuOpacity def:96] / 100.0;
 }
 
@@ -1361,7 +1373,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     [_content removeFromSuperview]; _content = nil;
     [_rows removeAllObjects];
     _inner = nil; _scroll = nil; _statusLbl = nil;
-    _box.frame = CGRectMake(0, 0, gDW, gDH);
+    _box.bounds = CGRectMake(0, 0, gDW, gDH);
     [self buildChrome];
     _tab = MAX(0, MIN(4, _tab));
     NSInteger t = _tab;

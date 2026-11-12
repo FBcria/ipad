@@ -446,10 +446,9 @@ static void BKInjectNorm(int finger, double fx, double fy, BOOL down, BOOL move)
 }
 static void BKInject(int finger, double x, double y, BOOL down, BOOL move)
 {
-    CGPoint n = BKToNat(CGPointMake(x, y));
-    CGSize scr = UIScreen.mainScreen.bounds.size;
-    if (scr.width < 1 || scr.height < 1) return;
-    BKInjectNorm(finger, n.x / scr.width, n.y / scr.height, down, move);
+    CGSize s = BKSize();
+    if (s.width < 1 || s.height < 1) return;
+    BKInjectNorm(finger, x / s.width, y / s.height, down, move);
 }
 
 static void BKTapAt(double x, double y)
@@ -479,9 +478,7 @@ void BKReleaseAll(void)
             gFingerOwner[i] = 0;
         }
         if (gCursorDown) {
-            CGPoint n = BKToNat(CGPointMake(gCx, gCy));
-            CGSize scr = UIScreen.mainScreen.bounds.size;
-            if (scr.width > 0 && scr.height > 0) BKInjectNorm(31, n.x / scr.width, n.y / scr.height, NO, NO);
+            BKInject(31, gCx, gCy, NO, NO);
             gCursorDown = NO;
         }
         gFps = gFpsHeld = NO;
@@ -1287,6 +1284,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
     _userScale = [gCore doubleForKey:kUiScale def:100];
     _tab = 0;
+    _builtW = 0; _builtH = 0;
     [self layoutAll];
 
     _box.transform = CGAffineTransformMakeScale(_fit * 0.92, _fit * 0.92);
@@ -1330,14 +1328,15 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     _dim.frame = b;
 
     UIEdgeInsets in = _win.safeAreaInsets;
-    CGFloat ratio = b.size.width / MAX(1.0, b.size.height);
-    CGFloat dw = (ratio >= 1.0) ? BK_DH * ratio : BK_DH;
-    CGFloat dh = (ratio >= 1.0) ? BK_DH : BK_DH / ratio;
+    CGFloat L = MAX(b.size.width, b.size.height);
+    CGFloat S = MIN(b.size.width, b.size.height);
+    CGFloat dw = BK_DH * (L / S);
+    CGFloat dh = BK_DH;
 
-    CGFloat mx = MAX(16.0, b.size.width * 0.05);
-    CGFloat my = MAX(12.0, b.size.height * 0.06);
-    CGFloat aw = b.size.width - in.left - in.right - 2 * mx;
-    CGFloat ah = b.size.height - in.top - in.bottom - 2 * my;
+    CGFloat mx = MAX(16.0, L * 0.05);
+    CGFloat my = MAX(12.0, S * 0.06);
+    CGFloat aw = L - in.left - in.right - 2 * mx;
+    CGFloat ah = S - in.top - in.bottom - 2 * my;
     CGFloat fit = MIN(aw / dw, ah / dh);
     if (fit <= 0.05) fit = 0.05;
 
@@ -1345,6 +1344,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
         _builtW = dw; _builtH = dh;
         [self rebuildCanvas];
     }
+    _box.frame = CGRectMake(0, 0, dw, dh);
 
     _fit = fit * MIN(1.0, _userScale / 100.0);
     _box.transform = [self fitT];
@@ -1841,10 +1841,11 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     if (!_statusLbl) return;
     CGSize s = BKSize();
     _statusLbl.text = [NSString stringWithFormat:
-        @"cursor     %@\nsens       %.2f\nmarcadores %lu\nmodo       %@\ntela       %.0fx%.0f\nescala     %.0f%%",
+        @"cursor     %@\nsens       %.2f\nmarcadores %lu\nmodo       %@\ntela       %.0fx%.0f\npainel     %.0fx%.0f\nescala     %.0f%%",
         BKCursorOn() ? @"LIGADO" : @"desligado", [gCore doubleForKey:kSens def:1.0],
         (unsigned long)BKMarks().count, BKCursorOn() ? @"cursor" : @"parado",
-        s.width, s.height, [gCore doubleForKey:kUiScale def:100]];
+        s.width, s.height, _builtW * _fit, _builtH * _fit,
+        [gCore doubleForKey:kUiScale def:100]];
     _statusLbl.textColor = BKCursorOn() ? OKC : DIM;
 }
 

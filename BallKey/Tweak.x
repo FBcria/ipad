@@ -1186,7 +1186,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 - (void)pick:(UIButton *)b { if (self.onPick) self.onPick(b.tag); [self removeFromSuperview]; }
 @end
 
-@interface BKUI () <UIScrollViewDelegate>
+@interface BKUI () <UIScrollViewDelegate, UIGestureRecognizerDelegate>
 - (void)present; - (void)dismiss; - (void)buildChrome; - (void)tabTap:(UIControl *)c;
 - (void)setTab:(NSInteger)tab animated:(BOOL)animated;
 - (UILabel *)label:(NSString *)t size:(CGFloat)sz color:(UIColor *)c bold:(BOOL)b;
@@ -1214,6 +1214,8 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 - (void)rebuildCanvas;
 - (CGAffineTransform)fitT;
 - (CGRect)stageBounds;
+- (void)applyCenter;
+- (void)bkDrag:(UIPanGestureRecognizer *)g;
 @end
 
 @interface BKUI ()
@@ -1226,7 +1228,8 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     NSInteger _tab;
     CGFloat _userScale;
     NSTimer *_statusTimer;
-    CGFloat _builtW, _builtH, _fit;
+    CGFloat _builtW, _builtH, _fit, _topM;
+    CGPoint _boxOffset, _dragStart;
 }
 @end
 
@@ -1264,7 +1267,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     BKSetInputGated(YES);
 
     _dim = [[UIView alloc] initWithFrame:_win.bounds];
-    _dim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.28];
+    _dim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.35];
     _dim.userInteractionEnabled = NO;
     [_win.rootViewController.view addSubview:_dim];
 
@@ -1275,6 +1278,11 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     _box.layer.borderColor = STROK.CGColor;
     _box.clipsToBounds = YES;
     [_win.rootViewController.view addSubview:_box];
+
+    _boxOffset = CGPointZero;
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(bkDrag:)];
+    pan.delegate = self;
+    [_box addGestureRecognizer:pan];
 
     _userScale = [gCore doubleForKey:kUiScale def:100];
     _tab = 0;
@@ -1316,22 +1324,70 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
 - (CGRect)stageBounds
 {
-    CGSize scr = BKSize();
-    if (scr.width < 40 || scr.height < 40) scr = UIScreen.mainScreen.bounds.size;
+    CGRect wb = _win.bounds;
+    if (wb.size.width < 40 || wb.size.height < 40) {
+        CGSize scr = BKSize();
+        wb = CGRectMake(0, 0, scr.width, scr.height);
+    }
 
-    CGRect wf = _win.frame;
-    if (fabs(wf.size.width - scr.width) > 1 || fabs(wf.size.height - scr.height) > 1)
-        _win.frame = CGRectMake(0, 0, scr.width, scr.height);
-
-    CGRect r = _win.bounds;
+    CGFloat L = MAX(wb.size.width, wb.size.height);
+    CGFloat S = MIN(wb.size.width, wb.size.height);
 
     UIView *root = _win.rootViewController.view;
-    if (root && (fabs(root.frame.size.width - r.size.width) > 1 ||
-                 fabs(root.frame.size.height - r.size.height) > 1)) {
+    if (root) {
         root.autoresizingMask = UIViewAutoresizingNone;
-        root.frame = r;
+        CGFloat ang = 0;
+        if (wb.size.width < wb.size.height) {
+            UIDeviceOrientation o = UIDevice.currentDevice.orientation;
+            ang = (o == UIDeviceOrientationLandscapeLeft) ? -M_PI_2 : M_PI_2;
+        }
+        root.transform = CGAffineTransformMakeRotation(ang);
+        root.bounds = CGRectMake(0, 0, L, S);
+        root.center = CGPointMake(CGRectGetMidX(wb), CGRectGetMidY(wb));
     }
-    return r;
+    return CGRectMake(0, 0, L, S);
+}
+
+- (void)applyCenter
+{
+    if (!_box || _builtW < 1) return;
+    CGRect b = CGRectMake(0, 0, MAX(_win.bounds.size.width, _win.bounds.size.height),
+                          MIN(_win.bounds.size.width, _win.bounds.size.height));
+    if (b.size.width < 40 || b.size.height < 40) return;
+
+    CGFloat w = _builtW * _fit, h = _builtH * _fit;
+    CGFloat cx = CGRectGetMidX(b) + _boxOffset.x;
+    CGFloat cy = b.origin.y + _topM + h / 2 + _boxOffset.y;
+
+    CGFloat loX = b.origin.x + w / 2, hiX = CGRectGetMaxX(b) - w / 2;
+    CGFloat loY = b.origin.y + h / 2, hiY = CGRectGetMaxY(b) - h / 2;
+    if (hiX > loX) cx = MIN(MAX(cx, loX), hiX);
+    if (hiY > loY) cy = MIN(MAX(cy, loY), hiY);
+
+    _box.center = CGPointMake(cx, cy);
+}
+
+- (void)bkDrag:(UIPanGestureRecognizer *)g
+{
+    if (g.state == UIGestureRecognizerStateBegan) {
+        _dragStart = _boxOffset;
+    } else if (g.state == UIGestureRecognizerStateChanged) {
+        CGPoint d = [g translationInView:_box.superview];
+        _boxOffset = CGPointMake(_dragStart.x + d.x, _dragStart.y + d.y);
+        [self applyCenter];
+    }
+}
+
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)g
+{
+    if (![g isKindOfClass:UIPanGestureRecognizer.class]) return YES;
+    CGPoint p = [g locationInView:_box];
+    UIView *hit = [_box hitTest:p withEvent:nil];
+    while (hit && hit != _box) {
+        if ([hit isKindOfClass:UIControl.class]) return NO;
+        hit = hit.superview;
+    }
+    return YES;
 }
 
 - (void)layoutAll
@@ -1343,14 +1399,14 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
     _dim.frame = b;
 
-    CGFloat L = MAX(b.size.width, b.size.height);
-    CGFloat S = MIN(b.size.width, b.size.height);
+    CGFloat L = b.size.width;
+    CGFloat S = b.size.height;
 
     CGFloat mx = MAX(16.0, L * 0.07);
-    CGFloat topM = MAX(14.0, S * 0.07);
+    _topM = MAX(14.0, S * 0.07);
     CGFloat botM = MAX(12.0, S * 0.10);
     CGFloat aw = L - 2 * mx;
-    CGFloat ah = S - topM - botM;
+    CGFloat ah = S - _topM - botM;
 
     CGFloat dh = BK_DH;
     CGFloat dw = BK_DH * 1.6;
@@ -1365,7 +1421,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
     _fit = fit * MIN(1.0, _userScale / 100.0);
     _box.transform = [self fitT];
-    _box.center = CGPointMake(CGRectGetMidX(b), b.origin.y + topM + (dh * _fit) / 2);
+    [self applyCenter];
     _box.alpha = [gCore doubleForKey:kMenuOpacity def:96] / 100.0;
 }
 

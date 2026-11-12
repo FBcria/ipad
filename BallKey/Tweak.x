@@ -242,7 +242,7 @@ CGSize BKSize(void)
     if (s) { CGSize z = s.coordinateSpace.bounds.size; if (z.width > 1) return z; }
     return UIScreen.mainScreen.bounds.size;
 }
-static CGFloat BKAngle(void)
+static __attribute__((unused)) CGFloat BKAngle(void)
 {
     UIDeviceOrientation o = UIDevice.currentDevice.orientation;
     if (o == UIDeviceOrientationLandscapeLeft) return -M_PI_2;
@@ -790,7 +790,7 @@ static void BKHook(void)
 static UIWindow *BKWin(UIWindowLevel lv, BOOL passThrough)
 {
     UIWindowScene *sc = BKScene();
-    CGSize sp = UIScreen.mainScreen.bounds.size;
+    CGSize sp = BKSize();
     UIWindow *w = sc ? [[UIWindow alloc] initWithWindowScene:sc]
                      : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     if (passThrough) object_setClass(w, [BKPassWindow class]);
@@ -1261,7 +1261,8 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
 - (void)present
 {
-    CGSize sp = UIScreen.mainScreen.bounds.size;
+    CGSize sp = BKSize();
+    if (sp.width < 40 || sp.height < 40) sp = UIScreen.mainScreen.bounds.size;
     UIWindowScene *sc = BKScene();
     _win = sc ? [[UIWindow alloc] initWithWindowScene:sc]
               : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
@@ -1331,30 +1332,29 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
 - (CGRect)stageBounds
 {
-    CGSize sp = UIScreen.mainScreen.bounds.size;
-    CGFloat W = MIN(sp.width, sp.height);
-    CGFloat H = MAX(sp.width, sp.height);
-    if (W < 40 || H < 40) { W = 375; H = 667; }
+    CGSize s = BKSize();
+    if (s.width < 40 || s.height < 40) s = UIScreen.mainScreen.bounds.size;
+    if (s.width < 40 || s.height < 40) s = CGSizeMake(414, 736);
 
     CGRect wf = _win.frame;
-    if (fabs(wf.size.width - W) > 1 || fabs(wf.size.height - H) > 1)
-        _win.frame = CGRectMake(0, 0, W, H);
+    if (fabs(wf.size.width - s.width) > 1 || fabs(wf.size.height - s.height) > 1)
+        _win.frame = CGRectMake(0, 0, s.width, s.height);
 
     UIView *root = _win.rootViewController.view;
     if (root) {
         root.autoresizingMask = UIViewAutoresizingNone;
-        root.transform = CGAffineTransformMakeRotation(BKAngle());
-        root.bounds = CGRectMake(0, 0, H, W);
-        root.center = CGPointMake(W / 2, H / 2);
+        root.transform = CGAffineTransformIdentity;
+        root.bounds = CGRectMake(0, 0, s.width, s.height);
+        root.center = CGPointMake(s.width / 2, s.height / 2);
     }
-    return CGRectMake(0, 0, H, W);
+    return CGRectMake(0, 0, s.width, s.height);
 }
 
 - (void)applyCenter
 {
     if (!_box || _builtW < 1) return;
-    CGSize sp = UIScreen.mainScreen.bounds.size;
-    CGFloat W = MIN(sp.width, sp.height), H = MAX(sp.width, sp.height);
+    CGRect b = [self stageBounds];
+    CGFloat W = b.size.width, H = b.size.height;
     if (W < 40 || H < 40) return;
 
     CGFloat w = _builtW * _fit, h = _builtH * _fit;
@@ -1926,15 +1926,15 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
 - (void)presentEditor
 {
-    CGSize sp = UIScreen.mainScreen.bounds.size;
-    CGFloat W = MIN(sp.width, sp.height), H = MAX(sp.width, sp.height);
-    CGSize s = CGSizeMake(H, W);
+    CGSize s = BKSize();
+    if (s.width < 40 || s.height < 40) s = UIScreen.mainScreen.bounds.size;
+    if (s.width < 40 || s.height < 40) s = CGSizeMake(414, 736);
 
     UIWindowScene *sc = BKScene();
     _win = sc ? [[UIWindow alloc] initWithWindowScene:sc]
               : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     _win.windowLevel = UIWindowLevelAlert + 560;
-    _win.frame = CGRectMake(0, 0, W, H);
+    _win.frame = CGRectMake(0, 0, s.width, s.height);
     _win.backgroundColor = UIColor.clearColor;
     _win.rootViewController = [BKHostVC new];
     _win.hidden = NO;
@@ -1943,9 +1943,9 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
     UIView *r = _win.rootViewController.view;
     r.autoresizingMask = UIViewAutoresizingNone;
-    r.transform = CGAffineTransformMakeRotation(BKAngle());
+    r.transform = CGAffineTransformIdentity;
     r.bounds = CGRectMake(0, 0, s.width, s.height);
-    r.center = CGPointMake(W / 2, H / 2);
+    r.center = CGPointMake(s.width / 2, s.height / 2);
 
     UIView *canvas = [[UIView alloc] initWithFrame:r.bounds];
     [r addSubview:canvas];

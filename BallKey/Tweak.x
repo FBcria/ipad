@@ -1,16 +1,20 @@
-// BallKey 5.1 - mapeador de teclado e mouse para Free Fire - martidev333
+// BallKey 5.2 - mapeador de teclado e mouse para Free Fire - martidev333
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <GameController/GameController.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
 #import <mach/mach_time.h>
+#import <mach-o/dyld.h>
+#import <mach-o/loader.h>
+#import <mach-o/nlist.h>
+#import <mach/vm_prot.h>
 
 typedef struct __IOHIDEvent *IOHIDEventRef;
 typedef double IOHIDFloat;
 typedef uint64_t BKAbsTime;
 typedef uint32_t IOOptionBits;
-#define kFieldDigIsDisplayIntegrated 0x000B0046u
+#define kFieldDigIsDisplayIntegrated 0xB0019u
 
 #define BK_FINGERS 10
 #define BK_FBASE   40
@@ -203,9 +207,14 @@ static double gFingerX[BK_FINGERS], gFingerY[BK_FINGERS];
 static dispatch_source_t gTick, gFireTimer;
 static int  gFireIdx = -1, gFireTaps = 0;
 static BOOL gFireOn;
+static uint32_t gIdent = 1;
 
 static IOHIDEventRef (*pCreateFinger)(CFAllocatorRef,BKAbsTime,uint32_t,uint32_t,uint32_t,
     IOHIDFloat,IOHIDFloat,IOHIDFloat,IOHIDFloat,IOHIDFloat,Boolean,Boolean,IOOptionBits);
+static IOHIDEventRef (*pCreateDigitizer)(CFAllocatorRef,uint64_t,uint32_t,uint32_t,uint32_t,
+    uint32_t,double,double,double,double,double,Boolean,Boolean,IOOptionBits);
+static void (*pAppend)(IOHIDEventRef,IOHIDEventRef,IOOptionBits);
+static void (*pSetDigitizerInfo)(IOHIDEventRef,uint32_t,Boolean,Boolean,CFStringRef,double,float);
 static void (*pSetInt)(IOHIDEventRef,uint32_t,int64_t);
 static int  (*pGetType)(IOHIDEventRef);
 static double (*pGetFloat)(IOHIDEventRef,uint32_t);
@@ -272,14 +281,12 @@ static double BKNum(NSString *k, double d) { return [gCore doubleForKey:k def:d]
 
 #pragma mark - cursor placement
 
-// A ponta da seta fica exatamente no ponto do ponteiro, sem folga.
+// A janela fica sempre em tela cheia; so a seta se move. A ponta e o gCx/gCy.
 static void BKPlaceCursor(void)
 {
-    if (!gCursorWin || !gCursor) return;
+    if (!gCursor) return;
     double h = BKNum(kCursorSize, 30);
-    double w = h * 0.72;
-    gCursorWin.frame = CGRectMake(gCx - 1.0, gCy - 1.0, w, h);
-    gCursor.frame = gCursorWin.bounds;
+    gCursor.frame = CGRectMake(gCx, gCy, h * 0.72, h);
     [gCursor setNeedsDisplay];
 }
 
@@ -297,30 +304,76 @@ static void BKFingerFree(int f)
 
 #pragma mark - injection
 
+// contextID da janela do jogo: e o que amarra o toque ao display certo.
+static uint32_t BKContextID(void)
+{
+    static uint32_t cached;
+    if (cached) return cached;
+    UIWindow *w = nil;
+    for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
+        if (![s isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *c in ((UIWindowScene *)s).windows) {
+            if (c == gBallWin || c == gCursorWin) continue;
+            if (c.windowLevel != UIWindowLevelNormal) continue;
+            w = c;
+            break;
+        }
+        if (w) break;
+    }
+    if (!w) w = UIApplication.sharedApplication.keyWindow;
+    if (w && [w respondsToSelector:NSSelectorFromString(@"_contextId")])
+        cached = [[w valueForKey:@"_contextId"] unsignedIntValue];
+    return cached;
+}
+
+// Evento pai de mao + subevento de dedo + info de digitador, igual ao driver real.
 static void BKInject(int finger, double x, double y, BOOL down, BOOL move)
 {
-    if (!pCreateFinger || !origEnq) return;
-    uint32_t mask = move ? 4 : (down ? 3 : 0);
-    IOHIDEventRef ev = pCreateFinger(kCFAllocatorDefault, mach_absolute_time(),
-        (uint32_t)finger, (uint32_t)finger, mask, x, y, 0.0, down ? 1.0 : 0.0, 0.0,
-        down ? 1 : 0, down ? 1 : 0, 0);
-    if (!ev) return;
-    if (pSetInt) pSetInt(ev, kFieldDigIsDisplayIntegrated, 1);
+    if (!pCreateFinger || !pCreateDigitizer || !origEnq) return;
+    uint32_t mask = move ? 4 : 3;
+    Boolean rng = down;
+    Boolean tch = down;
+    uint64_t t = mach_absolute_time();
+
+    IOHIDEventRef parent = pCreateDigitizer(kCFAllocatorDefault, t, 2, 0, 0, mask,
+                                            0, 0, 0, 0, 0, 0, rng, tch, 0);
+    if (!parent) return;
+    IOHIDEventRef sub = pCreateFinger(kCFAllocatorDefault, t, gIdent++, (uint32_t)finger,
+                                      mask, x, y, 0.0, 0.0, 0.0, rng, tch, 0);
+    if (!sub) { CFRelease(parent); return; }
+
+    if (pSetInt) pSetInt(sub, kFieldDigIsDisplayIntegrated, 1);
+    pAppend(parent, sub, 0);
+    CFRelease(sub);
+    if (pSetInt) pSetInt(parent, kFieldDigIsDisplayIntegrated, 1);
+    if (pSetDigitizerInfo) pSetDigitizerInfo(parent, BKContextID(), false, false, NULL, 0, 0);
+
     gInjecting++;
-    @try { origEnq(UIApplication.sharedApplication, @selector(_enqueueHIDEvent:), ev); } @catch (id e) {}
+    @try { origEnq(UIApplication.sharedApplication, @selector(_enqueueHIDEvent:), parent); }
+    @catch (id e) {}
     gInjecting--;
-    CFRelease(ev);
+    CFRelease(parent);
+
     if (finger >= BK_FBASE && finger < BK_FBASE + BK_FINGERS) {
         gFingerX[finger - BK_FBASE] = x; gFingerY[finger - BK_FBASE] = y;
     }
 }
 
+// Dedo real fica no vidro e nao cai duas vezes no mesmo pixel.
 static void BKTapAt(double x, double y)
 {
     int f = BKFingerTake(900);
     if (f < 0) return;
-    BKInject(f, x, y, YES, NO); BKInject(f, x, y, YES, YES); BKInject(f, x, y, NO, NO);
-    BKFingerFree(f);
+    double jx = ((double)arc4random_uniform(1200) / 1000.0) - 0.6;
+    double jy = ((double)arc4random_uniform(1200) / 1000.0) - 0.6;
+    double px = x + jx, py = y + jy;
+
+    BKInject(f, px, py, YES, NO);
+    uint64_t hold = 40000 + arc4random_uniform(30000);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, hold * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        BKInject(f, px, py, NO, NO);
+        BKFingerFree(f);
+    });
 }
 
 void BKReleaseAll(void)
@@ -369,7 +422,6 @@ static double BKCurveValue(double v)
     }
 }
 
-// Eixo Y vem positivo para cima do HID, entao inverte uma vez so.
 void BKPointerDelta(double dx, double dy)
 {
     if (!gCursorOn) return;
@@ -396,10 +448,22 @@ void BKPointerDelta(double dx, double dy)
         gCy = BKClamp(gCy + dy, 2, s.height - 2);
     }
     BKPlaceCursor();
-    if (gCursorDown) BKInject(31, gCx, gCy, YES, YES);
+    if (gCursorDown) {
+        // ruido sub-pixel: dedo parado nunca fica perfeitamente imovel
+        double n = ((double)arc4random_uniform(400) / 1000.0) - 0.2;
+        BKInject(31, gCx + n, gCy - n, YES, YES);
+    }
 }
 
 #pragma mark - fire
+
+static void BKFireArm(void)
+{
+    if (!gFireOn || !gFireTimer) return;
+    double ms = BKNum(kRepeatDelay, 60) * (0.88 + (arc4random_uniform(240) / 1000.0));
+    dispatch_source_set_timer(gFireTimer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(ms * NSEC_PER_MSEC)),
+                              DISPATCH_TIME_FOREVER, 2 * NSEC_PER_MSEC);
+}
 
 static void BKFireStop(void)
 {
@@ -417,7 +481,8 @@ static void BKFireTick(void)
     BKTapAt([m[@"x"] doubleValue] * s.width, [m[@"y"] doubleValue] * s.height);
     gFireTaps++;
     if ([gCore intForKey:kTapMode def:BKTapModeHold] == BKTapModeFixed &&
-        gFireTaps >= [gCore intForKey:kRepeatCount def:4]) BKFireStop();
+        gFireTaps >= [gCore intForKey:kRepeatCount def:4]) { BKFireStop(); return; }
+    BKFireArm();
 }
 
 static void BKFireStart(int idx)
@@ -438,9 +503,7 @@ static void BKFireStart(int idx)
         dispatch_source_set_event_handler(gFireTimer, ^{ @try { BKFireTick(); } @catch (id e) {} });
         dispatch_resume(gFireTimer);
     }
-    uint64_t ms = (uint64_t)BKNum(kRepeatDelay, 60);
-    dispatch_source_set_timer(gFireTimer, dispatch_time(DISPATCH_TIME_NOW, ms * NSEC_PER_MSEC),
-                              ms * NSEC_PER_MSEC, 2 * NSEC_PER_MSEC);
+    BKFireArm();
     if ([gCore intForKey:kTapMode def:BKTapModeHold] == BKTapModeFixed) BKFireTick();
 }
 
@@ -628,12 +691,17 @@ static void BKInstall(void)
     void *h = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
     if (h) {
         pCreateFinger = dlsym(h, "IOHIDEventCreateDigitizerFingerEvent");
+        pCreateDigitizer = dlsym(h, "IOHIDEventCreateDigitizerEvent");
+        pAppend = dlsym(h, "IOHIDEventAppendEvent");
         pSetInt = dlsym(h, "IOHIDEventSetIntegerValue");
         pGetType = dlsym(h, "IOHIDEventGetType");
         pGetFloat = dlsym(h, "IOHIDEventGetFloatValue");
         pGetInt = dlsym(h, "IOHIDEventGetIntegerValue");
     }
-    gHidOk = (pCreateFinger != NULL);
+    void *b = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_LAZY);
+    if (b) pSetDigitizerInfo = dlsym(b, "BKSHIDEventSetDigitizerInfo");
+
+    gHidOk = (pCreateFinger != NULL && pCreateDigitizer != NULL);
     Method m = class_getInstanceMethod(UIApplication.class, @selector(_enqueueHIDEvent:));
     if (m) { origEnq = (void *)method_getImplementation(m); method_setImplementation(m, (IMP)BKEnq); }
 }
@@ -672,20 +740,20 @@ static UIWindow *BKWin(UIWindowLevel lv, BOOL passThrough)
 - (void)bkTap:(UITapGestureRecognizer *)g { BKMenuOpen(); }
 @end
 
-// Seta estilo Windows 11: ponta exatamente no canto superior esquerdo.
+// Seta estilo Windows 11 com a ponta exatamente em (0,0) do frame.
 @interface BKCursorView : UIView @end
 @implementation BKCursorView
 - (void)drawRect:(CGRect)r
 {
     CGFloat w = self.bounds.size.width, h = self.bounds.size.height;
     UIBezierPath *p = [UIBezierPath new];
-    [p moveToPoint:CGPointMake(w * 0.04, h * 0.02)];
-    [p addLineToPoint:CGPointMake(w * 0.04, h * 0.80)];
-    [p addLineToPoint:CGPointMake(w * 0.32, h * 0.60)];
-    [p addLineToPoint:CGPointMake(w * 0.50, h * 0.97)];
-    [p addLineToPoint:CGPointMake(w * 0.68, h * 0.90)];
-    [p addLineToPoint:CGPointMake(w * 0.50, h * 0.54)];
-    [p addLineToPoint:CGPointMake(w * 0.80, h * 0.54)];
+    [p moveToPoint:CGPointMake(0, 0)];
+    [p addLineToPoint:CGPointMake(0, h * 0.78)];
+    [p addLineToPoint:CGPointMake(w * 0.30, h * 0.58)];
+    [p addLineToPoint:CGPointMake(w * 0.48, h * 0.97)];
+    [p addLineToPoint:CGPointMake(w * 0.66, h * 0.90)];
+    [p addLineToPoint:CGPointMake(w * 0.48, h * 0.52)];
+    [p addLineToPoint:CGPointMake(w * 0.80, h * 0.52)];
     [p closePath];
 
     CGContextRef c = UIGraphicsGetCurrentContext();
@@ -817,6 +885,7 @@ void BKRelayout(void)
     CGSize s = BKSize();
     if (gBallWin) gBallWin.frame = CGRectMake(0, 0, s.width, s.height);
     if (gBall) gBall.center = CGPointMake(28, 44);
+    if (gCursorWin) gCursorWin.frame = CGRectMake(0, 0, s.width, s.height);
     if (gCanvas) { gCanvas.frame = CGRectMake(0, 0, s.width, s.height); BKRedrawMarkers(); }
     gCx = BKClamp(gCx, 2, s.width - 2); gCy = BKClamp(gCy, 2, s.height - 2);
     BKPlaceCursor();
@@ -1609,7 +1678,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
                     fmt:^NSString *(double v){ return [NSString stringWithFormat:@"%.0f%%", v]; }]; y += 104;
         [self buttonRow:@"Abrir log" color:DIM y:y host:host action:@selector(logTap)]; y += 76;
         [self buttonRow:@"Fechar" color:BADC y:y host:host action:@selector(closeTap)]; y += 76;
-        UILabel *cr = [self label:@"BallKey 5.1  •  martidev333\nMapeador de teclado e mouse" size:13 color:DIM bold:NO];
+        UILabel *cr = [self label:@"BallKey 5.2  •  martidev333\nMapeador de teclado e mouse" size:13 color:DIM bold:NO];
         cr.numberOfLines = 0;
         cr.textAlignment = NSTextAlignmentCenter;
         cr.frame = CGRectMake(0, y + 6, host.bounds.size.width, 44);
@@ -1730,7 +1799,6 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     BKUISetCanvas(canvas);
     BKRedrawMarkers();
 
-    // barra superior fina
     UIView *top = [[UIView alloc] initWithFrame:CGRectMake(0, 0, s.width, 52)];
     top.backgroundColor = [PANEL colorWithAlphaComponent:0.94];
     [r addSubview:top];
@@ -1760,7 +1828,6 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     [del addTarget:self action:@selector(editorDelete) forControlEvents:UIControlEventTouchUpInside];
     [top addSubview:del];
 
-    // barra inferior fina com atalhos roláveis
     UIView *bar = [[UIView alloc] initWithFrame:CGRectMake(0, s.height - 52, s.width, 52)];
     bar.backgroundColor = [PANEL colorWithAlphaComponent:0.94];
     [r addSubview:bar];
@@ -1882,6 +1949,184 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
 @end
 
+#pragma mark - stealth
+
+static const char *(*o_dyld_name)(uint32_t);
+static const struct mach_header *(*o_dyld_hdr)(uint32_t);
+static uint32_t (*o_dyld_count)(void);
+static int (*o_dladdr)(const void *, Dl_info *);
+
+static BOOL BKSelf(const char *n) { return n && strstr(n, "BallKey") != NULL; }
+
+static uint32_t h_count(void)
+{
+    uint32_t c = o_dyld_count ? o_dyld_count() : 0;
+    for (uint32_t i = 0; i < c; i++) if (BKSelf(o_dyld_name(i))) return c - 1;
+    return c;
+}
+static const char *h_name(uint32_t i)
+{
+    uint32_t c = o_dyld_count ? o_dyld_count() : 0, j = 0;
+    for (uint32_t k = 0; k < c; k++) {
+        const char *n = o_dyld_name(k);
+        if (BKSelf(n)) continue;
+        if (j++ == i) return n;
+    }
+    return NULL;
+}
+static const struct mach_header *h_hdr(uint32_t i)
+{
+    uint32_t c = o_dyld_count ? o_dyld_count() : 0, j = 0;
+    for (uint32_t k = 0; k < c; k++) {
+        if (BKSelf(o_dyld_name(k))) continue;
+        if (j++ == i) return o_dyld_hdr(k);
+    }
+    return NULL;
+}
+static int h_dladdr(const void *a, Dl_info *i)
+{
+    int r = o_dladdr ? o_dladdr(a, i) : 0;
+    if (r && i && BKSelf(i->dli_fname)) i->dli_fname = "/usr/lib/libSystem.B.dylib";
+    return r;
+}
+
+typedef struct { const char *name; void *repl; void **orig; } BKTarget;
+static BKTarget gTargets[] = {
+    {"_dyld_image_count",       (void *)h_count,   (void **)&o_dyld_count},
+    {"_dyld_get_image_name",    (void *)h_name,    (void **)&o_dyld_name},
+    {"_dyld_get_image_header",  (void *)h_hdr,     (void **)&o_dyld_hdr},
+    {"dladdr",                  (void *)h_dladdr,  (void **)&o_dladdr},
+};
+#define BK_TCOUNT (sizeof(gTargets) / sizeof(gTargets[0]))
+
+struct bk_chain_img { uint32_t seg_count; uint32_t seg_off[1]; };
+struct bk_chain_seg { uint32_t size; uint16_t page_size; uint16_t page_count;
+                      uint32_t max_valid; uint16_t ptr_format; uint64_t seg_off; uint16_t page_start[1]; };
+struct bk_chain_fx { uint32_t ver; uint32_t starts_off; uint32_t imports_off;
+                     uint32_t symbols_off; uint32_t imports_count; uint32_t imports_format; uint32_t symbols_format; };
+struct bk_import { uint32_t lib_ordinal:8, weak:1, name_off:23; };
+struct bk_bind { uint64_t ordinal:24, addend:8, reserved:19, next:12, bind:1; };
+
+static void BKPatchPtr(uint8_t *p, void *repl, void **orig)
+{
+    uintptr_t page = (uintptr_t)p & ~(uintptr_t)0xFFF;
+    vm_protect(mach_task_self(), page, 0x1000, 0, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+    if (orig) *orig = *(void **)p;
+    *(void **)p = repl;
+}
+
+static void BKApplyChained(const struct mach_header_64 *mh)
+{
+    const uint8_t *base = (const uint8_t *)mh;
+    const struct load_command *lc = (const struct load_command *)(base + sizeof(*mh));
+    const struct bk_chain_fx *fx = NULL;
+    const uint8_t *le = NULL;
+
+    for (uint32_t i = 0; i < mh->ncmds; i++) {
+        if (lc->cmd == LC_SEGMENT_64) {
+            const struct segment_command_64 *sg = (const struct segment_command_64 *)lc;
+            if (!strcmp(sg->segname, "__LINKEDIT")) le = base + (sg->vmaddr - sg->fileoff);
+        } else if (lc->cmd == LC_DYLD_CHAINED_FIXUPS) {
+            const struct linkedit_data_command *ld = (const struct linkedit_data_command *)lc;
+            fx = (const struct bk_chain_fx *)(base + ld->dataoff);
+        }
+        lc = (const struct load_command *)((const uint8_t *)lc + lc->cmdsize);
+    }
+    if (!fx || !le || fx->imports_format != 1) return;
+
+    const struct bk_chain_img *img = (const struct bk_chain_img *)((const uint8_t *)fx + fx->starts_off);
+    const struct bk_import *imp = (const struct bk_import *)((const uint8_t *)fx + fx->imports_off);
+    const char *syms = (const char *)fx + fx->symbols_off;
+
+    for (uint32_t s = 0; s < img->seg_count; s++) {
+        if (!img->seg_off[s]) continue;
+        const struct bk_chain_seg *seg = (const struct bk_chain_seg *)((const uint8_t *)img + img->seg_off[s]);
+        if (!seg->page_size) continue;
+        uint8_t *sb = (uint8_t *)base + seg->seg_off;
+        for (uint16_t pg = 0; pg < seg->page_count; pg++) {
+            uint16_t off = seg->page_start[pg];
+            if (off == 0xFFFF) continue;
+            uint8_t *p = sb + (uint64_t)pg * seg->page_size + off;
+            for (int guard = 0; guard < 8192; guard++) {
+                struct bk_bind *b = (struct bk_bind *)p;
+                if (b->bind && b->ordinal < fx->imports_count) {
+                    const char *nm = syms + imp[b->ordinal].name_off;
+                    for (size_t t = 0; t < BK_TCOUNT; t++) {
+                        if (strcmp(nm, gTargets[t].name)) continue;
+                        BKPatchPtr(p, gTargets[t].repl, gTargets[t].orig);
+                        break;
+                    }
+                }
+                if (!b->next) break;
+                p += b->next * 4;
+            }
+        }
+    }
+}
+
+static void BKApplyLegacy(const struct mach_header_64 *mh)
+{
+    const uint8_t *base = (const uint8_t *)mh;
+    const struct load_command *lc = (const struct load_command *)(base + sizeof(*mh));
+    const struct symtab_command *st = NULL;
+    const struct dysymtab_command *dys = NULL;
+
+    for (uint32_t i = 0; i < mh->ncmds; i++) {
+        if (lc->cmd == LC_SYMTAB) st = (const struct symtab_command *)lc;
+        else if (lc->cmd == LC_DYSYMTAB) dys = (const struct dysymtab_command *)lc;
+        lc = (const struct load_command *)((const uint8_t *)lc + lc->cmdsize);
+    }
+    if (!st || !dys) return;
+
+    const struct nlist_64 *nl = (const struct nlist_64 *)(base + st->symoff);
+    const char *str = (const char *)base + st->stroff;
+    const uint32_t *ind = (const uint32_t *)(base + dys->indirectsymoff);
+
+    const struct load_command *l2 = (const struct load_command *)(base + sizeof(*mh));
+    for (uint32_t i = 0; i < mh->ncmds; i++) {
+        if (l2->cmd == LC_SEGMENT_64) {
+            const struct segment_command_64 *sg = (const struct segment_command_64 *)l2;
+            const struct section_64 *sc = (const struct section_64 *)(sg + 1);
+            for (uint32_t j = 0; j < sg->nsects; j++, sc++) {
+                if (strcmp(sc->sectname, "__la_symbol_ptr") && strcmp(sc->sectname, "__nl_symbol_ptr")) continue;
+                if (sc->flags & 0x2) { }
+                uint32_t n = sc->size / sizeof(void *);
+                void **ptrs = (void **)(base + sc->offset);
+                for (uint32_t k = 0; k < n; k++) {
+                    uint32_t si = ind[sc->reserved1 + k];
+                    if (si == INDIRECT_SYMBOL_LOCAL || si == INDIRECT_SYMBOL_ABS || si >= st->nsyms) continue;
+                    const char *nm = str + nl[si].n_un.n_strx;
+                    for (size_t t = 0; t < BK_TCOUNT; t++) {
+                        if (strcmp(nm, gTargets[t].name)) continue;
+                        BKPatchPtr((uint8_t *)&ptrs[k], gTargets[t].repl, gTargets[t].orig);
+                        break;
+                    }
+                }
+            }
+        }
+        l2 = (const struct load_command *)((const uint8_t *)l2 + l2->cmdsize);
+    }
+}
+
+static void BKStealth(void)
+{
+    const struct mach_header_64 *mh = (const struct mach_header_64 *)_dyld_get_image_header(0);
+    if (!mh) return;
+    o_dyld_count = (uint32_t (*)(void))_dyld_image_count;
+    o_dyld_name = (const char *(*)(uint32_t))_dyld_get_image_name;
+    o_dyld_hdr = (const struct mach_header *(*)(uint32_t))_dyld_get_image_header;
+    o_dladdr = (int (*)(const void *, Dl_info *))dladdr;
+
+    BOOL chained = NO;
+    const struct load_command *lc = (const struct load_command *)((const uint8_t *)mh + sizeof(*mh));
+    for (uint32_t i = 0; i < mh->ncmds; i++) {
+        if (lc->cmd == LC_DYLD_CHAINED_FIXUPS) { chained = YES; break; }
+        lc = (const struct load_command *)((const uint8_t *)lc + lc->cmdsize);
+    }
+    if (chained) BKApplyChained(mh);
+    else BKApplyLegacy(mh);
+}
+
 #pragma mark - boot
 
 static void BKStart(void)
@@ -1892,7 +2137,7 @@ static void BKStart(void)
     [NSFileManager.defaultManager createDirectoryAtPath:base withIntermediateDirectories:YES attributes:nil error:nil];
     gLog = [base stringByAppendingPathComponent:@"ballkey.log"];
     [@"" writeToFile:gLog atomically:NO encoding:NSUTF8StringEncoding error:nil];
-    BKLog(@"boot v5.1");
+    BKLog(@"boot v5.2");
 
     BKInstall();
     if (!gHidOk) { BKLog(@"hid fail"); return; }
@@ -1944,6 +2189,7 @@ static void BKInit(void)
 {
     NSString *bid = NSBundle.mainBundle.bundleIdentifier;
     if (![bid isEqualToString:@"com.dts.freefireth"] && ![bid isEqualToString:@"com.dts.freefiremax"]) return;
+    @try { BKStealth(); } @catch (id e) {}
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         @autoreleasepool { @try { BKStart(); } @catch (id e) {} }
     });

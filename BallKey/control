@@ -1,9 +1,9 @@
 Package: com.wjf.ballkey
-Name: Teclado e Mouse Mapeador
-Version: 2.4.0
+Name: Mapeador de Teclado e Mouse
+Version: 1.0.0
 Architecture: iphoneos-arm64
-Description: Mapeia teclado e mouse para toques, com trava de mira estilo emulador
-Maintainer: wjf
-Author: wjf
+Description: Teclado e mouse Bluetooth/USB como toque no Free Fire.
+Maintainer: martidev333
+Author: martidev333
 Section: Tweaks
 Depends: mobilesubstrate

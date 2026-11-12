@@ -13,7 +13,7 @@
 typedef struct __IOHIDEvent *BKIOHIDEventRef;
 typedef struct __IOHIDEventSystemClient *BKIOHIDEventSystemClientRef;
 
-const char BKEngineTag[] = "b36";
+const char BKEngineTag[] = "b38";
 
 #define kBKSenderID 0x8000000817319372ULL
 static const int kBKTypeKeyExtra = 1;
@@ -39,6 +39,8 @@ static const int kBKTypePointer = 17;
 #define kBKOffFile   @"/var/mobile/bk_off.txt"
 #define kBKSafeFile  @"/var/mobile/bk_safe.txt"
 #define kBKTryFile   @"/var/mobile/bk_try.txt"
+#define kBKLibDir1   @"/var/jb/usr/lib/TweakInject"
+#define kBKLibDir2   @"/var/jb/Library/MobileSubstrate/DynamicLibraries"
 
 static NSString *gBaseDir = nil;
 static NSString *gLogBuf = nil;
@@ -202,7 +204,11 @@ static void BKAppend(NSString *fmt, ...)
 static BOOL BKInitIO(void)
 {
     @try {
-        void *k = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
+        void *k = RTLD_DEFAULT;
+        if (!dlsym(k, "IOHIDEventSystemClientCreate")) {
+            k = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
+        }
+        if (!k) k = dlopen("/usr/lib/libIOKit.dylib", RTLD_LAZY);
         if (!k) return NO;
         gIO.ClientCreate = (void *)dlsym(k, "IOHIDEventSystemClientCreate");
         gIO.ClientCreateType = (void *)dlsym(k, "IOHIDEventSystemClientCreateWithType");
@@ -573,8 +579,12 @@ static void BKFrontTick(void)
 static NSString *BKFilterOK(void)
 {
     @try {
-        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:
-            @"/var/jb/Library/MobileSubstrate/DynamicLibraries/BallKeyEngine.plist"];
+        NSString *p = [kBKLibDir1 stringByAppendingPathComponent:@"BallKeyEngine.plist"];
+        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:p];
+        if (!d) {
+            p = [kBKLibDir2 stringByAppendingPathComponent:@"BallKeyEngine.plist"];
+            d = [NSDictionary dictionaryWithContentsOfFile:p];
+        }
         if (!d) return @"N";
         NSDictionary *f = [d objectForKey:@"Filter"];
         NSArray *e = [f objectForKey:@"Executables"];
@@ -714,17 +724,21 @@ static void BKInit(void)
 
         BKLoadConfig();
 
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(400 * NSEC_PER_MSEC)),
-                       dispatch_get_main_queue(), ^{
-            @try {
-                gPtrClient = BKNewListen(@{ @"PrimaryUsagePage": @1 }, &gPtrBlock, &gCapType);
-                gKeyClient = BKNewListen(@{ @"PrimaryUsagePage": @7 }, &gKeyBlock, &gCapType);
-                BKAppend(@"I cap=%d p=%d k=%d", gCapType,
-                          gPtrClient ? 1 : 0, gKeyClient ? 1 : 0);
-                if (gPtrClient || gKeyClient) BKMark(@"engine_listen.txt");
-                gReady = YES;
-            } @catch (NSException *e) { }
-        });
+        if (gSafe) {
+            BKAppend(@"I safe sem captura");
+        } else {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(400 * NSEC_PER_MSEC)),
+                           dispatch_get_main_queue(), ^{
+                @try {
+                    gPtrClient = BKNewListen(@{ @"PrimaryUsagePage": @1 }, &gPtrBlock, &gCapType);
+                    gKeyClient = BKNewListen(@{ @"PrimaryUsagePage": @7 }, &gKeyBlock, &gCapType);
+                    BKAppend(@"I cap=%d p=%d k=%d", gCapType,
+                              gPtrClient ? 1 : 0, gKeyClient ? 1 : 0);
+                    if (gPtrClient || gKeyClient) BKMark(@"engine_listen.txt");
+                    gReady = YES;
+                } @catch (NSException *e) { }
+            });
+        }
 
         dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
                                                        dispatch_get_main_queue());
@@ -738,7 +752,10 @@ static void BKInit(void)
                     BKCaptureWatch();
                     if (tick == 80) {
                         BKWriteInt(kBKTryFile, 0);
-                        if (gSafe) [[NSFileManager defaultManager] removeItemAtPath:kBKSafeFile error:nil];
+                        if (gSafe) {
+                            [[NSFileManager defaultManager] removeItemAtPath:kBKSafeFile error:nil];
+                            gSafe = NO;
+                        }
                         BKMark(@"engine_ok.txt");
                     }
                     if (tick % 4 == 0) BKStatus();
@@ -772,15 +789,13 @@ __attribute__((constructor)) static void BKInitC(void)
                 gSafe = BKExists(kBKSafeFile);
                 BKAppend(@"I boot n=%d off=%d safe=%d", n, gOff, gSafe);
 
-                if (gOff || (gSafe && n > 3)) {
-                    BKMark(@"engine_safe.txt");
-                    BKStatus();
-                    return;
-                }
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1000 * NSEC_PER_MSEC)),
-                               dispatch_get_main_queue(), ^{
-                    @try { BKInit(); } @catch (NSException *e) { }
-                });
+                if (gOff) { BKMark(@"engine_off.txt"); BKStatus(); return; }
+
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                    (int64_t)((gSafe ? 2000 : 900) * NSEC_PER_MSEC)),
+                    dispatch_get_main_queue(), ^{
+                        @try { BKInit(); } @catch (NSException *e) { }
+                    });
             } @catch (NSException *e) {
                 BKAppend(@"! ctor %@", e.reason);
             }

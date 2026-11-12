@@ -32,6 +32,8 @@ typedef uint32_t IOOptionBits;
 #define BK_GAME @"com.dts.freefireth"
 #define BK_GAMEMAX @"com.dts.freefiremax"
 #define BK_ME @"com.wjf.ballkeyapp"
+#define BK_SAFE @"/var/mobile/Documents/BallKey/safe"
+#define BK_SENDER 0x8000000817319375ULL
 
 CGSize BKSize(void);
 void BKRelayout(void); void BKSetInputGated(BOOL g); void BKSetEditorOpen(BOOL open);
@@ -176,7 +178,7 @@ static BKCore *gCore; static BKUI *gUI; static NSString *gLog;
 static UIWindow *gBallWin, *gCursorWin; static UIView *gBall, *gCursor, *gCanvas;
 static NSMutableArray *gMarkViews;
 static BOOL gMenuOpen, gEditOpen, gCursorOn, gGated, gFps, gFpsHeld;
-static BOOL gHidOk, gGcMouse, gGcKey, gCursorDown, gLastValid, gFront, gStarted, gEnabled;
+static BOOL gHidOk, gGcMouse, gGcKey, gCursorDown, gLastValid, gFront, gBuilt, gEnabled, gHook;
 static int gFpsIdx = -1, gSelIdx = -1, gInjecting, gPtrMask;
 static int gFingerOwner[BK_FINGERS]; static int gHoldKey[512];
 static double gCx, gCy, gLastX, gLastY;
@@ -191,6 +193,7 @@ static IOHIDEventRef (*pCreateDigitizer)(CFAllocatorRef,uint64_t,uint32_t,uint32
 static void (*pAppend)(IOHIDEventRef,IOHIDEventRef,IOOptionBits);
 static void (*pSetDigitizerInfo)(IOHIDEventRef,uint32_t,Boolean,Boolean,CFStringRef,double,float);
 static void (*pSetInt)(IOHIDEventRef,uint32_t,int64_t);
+static void (*pSetSender)(IOHIDEventRef,uint64_t);
 static int (*pGetType)(IOHIDEventRef);
 static double (*pGetFloat)(IOHIDEventRef,uint32_t);
 static int64_t (*pGetInt)(IOHIDEventRef,uint32_t);
@@ -212,65 +215,77 @@ static IOHIDEventSystemClientRef gSys;
 
 @interface BKHostVC : UIViewController @end
 @implementation BKHostVC
-- (void)viewDidLayoutSubviews { [super viewDidLayoutSubviews]; if (gUI) [gUI layoutAll]; }
-- (BOOL)prefersStatusBarHidden { return YES; }
-- (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
+- (void)viewDidLayoutSubviews { [super viewDidLayoutSubviews]; @try { if (gUI) [gUI layoutAll]; } @catch (id e) {} }
+- (BOOL)prefersStatusBarHidden { return NO; }
+- (BOOL)prefersHomeIndicatorAutoHidden { return NO; }
 @end
 
 static UIWindowScene *BKScene(void)
 {
-    for (UIScene *s in UIApplication.sharedApplication.connectedScenes)
-        if ([s isKindOfClass:UIWindowScene.class] && s.activationState == UISceneActivationStateForegroundActive)
-            return (UIWindowScene *)s;
-    for (UIScene *s in UIApplication.sharedApplication.connectedScenes)
-        if ([s isKindOfClass:UIWindowScene.class]) return (UIWindowScene *)s;
+    @try {
+        for (UIScene *s in UIApplication.sharedApplication.connectedScenes)
+            if ([s isKindOfClass:UIWindowScene.class] && s.activationState == UISceneActivationStateForegroundActive)
+                return (UIWindowScene *)s;
+        for (UIScene *s in UIApplication.sharedApplication.connectedScenes)
+            if ([s isKindOfClass:UIWindowScene.class]) return (UIWindowScene *)s;
+    } @catch (id e) {}
     return nil;
 }
 CGSize BKSize(void)
 {
     UIWindowScene *s = BKScene();
-    if (s) return s.coordinateSpace.bounds.size;
+    if (s) { CGSize z = s.coordinateSpace.bounds.size; if (z.width > 1) return z; }
     return UIScreen.mainScreen.bounds.size;
 }
 static void BKLog(NSString *fmt, ...)
 {
     if (!gLog) return;
-    va_list ap; va_start(ap, fmt);
-    NSString *s = [[NSString alloc] initWithFormat:fmt arguments:ap];
-    va_end(ap);
-    NSString *line = [NSString stringWithFormat:@"%.3f %@\n", CFAbsoluteTimeGetCurrent(), s];
-    NSFileHandle *h = [NSFileHandle fileHandleForWritingAtPath:gLog];
-    if (!h) [line writeToFile:gLog atomically:NO encoding:NSUTF8StringEncoding error:nil];
-    else { @try { [h seekToEndOfFile]; [h writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; [h closeFile]; } @catch (id e) {} }
+    @try {
+        va_list ap; va_start(ap, fmt);
+        NSString *s = [[NSString alloc] initWithFormat:fmt arguments:ap];
+        va_end(ap);
+        NSString *line = [NSString stringWithFormat:@"%.3f %@\n", CFAbsoluteTimeGetCurrent(), s];
+        NSFileHandle *h = [NSFileHandle fileHandleForWritingAtPath:gLog];
+        if (!h) [line writeToFile:gLog atomically:NO encoding:NSUTF8StringEncoding error:nil];
+        else { [h seekToEndOfFile]; [h writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; [h closeFile]; }
+    } @catch (id e) {}
 }
 static double BKClamp(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
 static double BKNum(NSString *k, double d) { return [gCore doubleForKey:k def:d]; }
 
-// ---- estado ligado/desligado ----
+// ---- estado ----
 static NSString *BKStateDir(void)
 {
-    return [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
-            stringByAppendingPathComponent:@"BallKey"];
+    NSString *d = nil;
+    @try { d = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject]; }
+    @catch (id e) {}
+    return d.length ? [d stringByAppendingPathComponent:@"BallKey"] : @"/var/mobile/Documents/BallKey";
 }
 static void BKSetEnabled(BOOL on)
 {
     gEnabled = on;
-    [NSFileManager.defaultManager createDirectoryAtPath:BKStateDir() withIntermediateDirectories:YES attributes:nil error:nil];
-    [(on ? @"1" : @"0") writeToFile:[BKStateDir() stringByAppendingPathComponent:@"enabled"]
-                         atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    @try {
+        [NSFileManager.defaultManager createDirectoryAtPath:BKStateDir() withIntermediateDirectories:YES attributes:nil error:nil];
+        [(on ? @"1" : @"0") writeToFile:[BKStateDir() stringByAppendingPathComponent:@"enabled"]
+                             atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    } @catch (id e) {}
 }
 static void BKLoadEnabled(void)
 {
-    NSString *s = [NSString stringWithContentsOfFile:[BKStateDir() stringByAppendingPathComponent:@"enabled"]
-                                            encoding:NSUTF8StringEncoding error:nil];
-    gEnabled = [s isEqualToString:@"1"];
+    @try {
+        NSString *s = [NSString stringWithContentsOfFile:[BKStateDir() stringByAppendingPathComponent:@"enabled"]
+                                                encoding:NSUTF8StringEncoding error:nil];
+        gEnabled = [s isEqualToString:@"1"];
+    } @catch (id e) {}
 }
 static void BKAlive(void)
 {
-    [NSFileManager.defaultManager createDirectoryAtPath:BKStateDir() withIntermediateDirectories:YES attributes:nil error:nil];
-    [[NSString stringWithFormat:@"%f", CFAbsoluteTimeGetCurrent()]
-        writeToFile:[BKStateDir() stringByAppendingPathComponent:@"alive"]
-        atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    @try {
+        [NSFileManager.defaultManager createDirectoryAtPath:BKStateDir() withIntermediateDirectories:YES attributes:nil error:nil];
+        [[NSString stringWithFormat:@"%f", CFAbsoluteTimeGetCurrent()]
+            writeToFile:[BKStateDir() stringByAppendingPathComponent:@"alive"]
+            atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    } @catch (id e) {}
 }
 
 // ---- ativador externo (app BallKey) ----
@@ -279,85 +294,96 @@ static void BKAlive(void)
 #define BK_NOTE_OFF   "com.wjf.ballkey.off"
 
 static void BKTickFront(void);
+static void BKEnsure(void);
 static void BKLaunchGame(void)
 {
-    Class ws = NSClassFromString(@"LSApplicationWorkspace");
-    if (!ws) return;
-    id w = [ws respondsToSelector:@selector(defaultWorkspace)] ? [ws performSelector:@selector(defaultWorkspace)] : nil;
-    if (w && [w respondsToSelector:@selector(openApplicationWithBundleID:)])
-        [w performSelector:@selector(openApplicationWithBundleID:) withObject:BK_GAME];
+    @try {
+        Class ws = NSClassFromString(@"LSApplicationWorkspace");
+        if (!ws) return;
+        id w = [ws respondsToSelector:@selector(defaultWorkspace)] ? [ws performSelector:@selector(defaultWorkspace)] : nil;
+        if (w && [w respondsToSelector:@selector(openApplicationWithBundleID:)])
+            [w performSelector:@selector(openApplicationWithBundleID:) withObject:BK_GAME];
+    } @catch (id e) {}
 }
 static void BKOnNotify(CFNotificationCenterRef c, void *o, CFStringRef name, const void *obj, CFDictionaryRef info)
 {
     NSString *n = (__bridge NSString *)name;
     dispatch_async(dispatch_get_main_queue(), ^{
-        BKLog(@"notify %@", n);
-        if ([n isEqualToString:@BK_NOTE_OFF]) {
-            BKSetEnabled(NO);
-            BKMenuClose();
-            BKReleaseAll();
+        @try {
+            BKLog(@"notify %@", n);
+            if ([n isEqualToString:@BK_NOTE_OFF]) {
+                BKSetEnabled(NO);
+                BKMenuClose();
+                BKReleaseAll();
+                BKTickFront();
+                return;
+            }
+            BOOL game = [n isEqualToString:@BK_NOTE_GAME];
+            BKSetEnabled(YES);
+            BKEnsure();
+            if (gMenuOpen) BKMenuClose();
+            BKMenuOpen();
             BKTickFront();
-            return;
-        }
-        BOOL game = [n isEqualToString:@BK_NOTE_GAME];
-        BKSetEnabled(YES);
-        if (gMenuOpen) BKMenuClose();
-        BKMenuOpen();
-        BKTickFront();
-        if (game) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 340 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-            BKLaunchGame();
-        });
+            if (game) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 340 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+                BKLaunchGame();
+            });
+        } @catch (id e) { BKLog(@"notify fail %@", e); }
     });
 }
 static void BKActivatorInstall(void)
 {
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, BKOnNotify,
-        CFSTR(BK_NOTE_PANEL), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, BKOnNotify,
-        CFSTR(BK_NOTE_GAME), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, BKOnNotify,
-        CFSTR(BK_NOTE_OFF), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
-    BKLog(@"ativador ok");
+    @try {
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, BKOnNotify,
+            CFSTR(BK_NOTE_PANEL), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, BKOnNotify,
+            CFSTR(BK_NOTE_GAME), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, BKOnNotify,
+            CFSTR(BK_NOTE_OFF), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+    } @catch (id e) {}
 }
 // ---- fim ativador ----
 
-// ---- gate: so age com o Free Fire na frente ----
+// ---- gate ----
 static NSString *BKFrontApp(void)
 {
     id app = nil;
-    Class c = NSClassFromString(@"SBApplicationController");
-    id ctrl = c ? [c performSelector:@selector(sharedInstance)] : nil;
-    if ([ctrl respondsToSelector:@selector(frontmostApplication)]) app = [ctrl performSelector:@selector(frontmostApplication)];
-    if (!app) {
-        Class wc = NSClassFromString(@"SBWorkspace");
-        id ws = wc ? [wc performSelector:@selector(sharedInstance)] : nil;
-        if ([ws respondsToSelector:@selector(frontmostApplication)]) app = [ws performSelector:@selector(frontmostApplication)];
-    }
-    if ([app respondsToSelector:@selector(displayIdentifier)]) return [app performSelector:@selector(displayIdentifier)];
-    if ([app respondsToSelector:@selector(bundleIdentifier)]) return [app performSelector:@selector(bundleIdentifier)];
+    @try {
+        Class c = NSClassFromString(@"SBApplicationController");
+        id ctrl = c ? [c performSelector:@selector(sharedInstance)] : nil;
+        if ([ctrl respondsToSelector:@selector(frontmostApplication)]) app = [ctrl performSelector:@selector(frontmostApplication)];
+        if (!app) {
+            Class wc = NSClassFromString(@"SBWorkspace");
+            id ws = wc ? [wc performSelector:@selector(sharedInstance)] : nil;
+            if ([ws respondsToSelector:@selector(frontmostApplication)]) app = [ws performSelector:@selector(frontmostApplication)];
+        }
+        if ([app respondsToSelector:@selector(displayIdentifier)]) return [app performSelector:@selector(displayIdentifier)];
+        if ([app respondsToSelector:@selector(bundleIdentifier)]) return [app performSelector:@selector(bundleIdentifier)];
+    } @catch (id e) {}
     return nil;
 }
 static void BKTickFront(void)
 {
-    NSString *f = BKFrontApp();
-    static NSString *lastF;
-    if (![lastF isEqualToString:(f ?: @"")]) { lastF = (f ?: @""); BKLog(@"front %@", f.length ? f : @"nil"); }
+    @try {
+        NSString *f = BKFrontApp();
+        static NSString *lastF;
+        if (![lastF isEqualToString:(f ?: @"")]) { lastF = (f ?: @""); BKLog(@"front %@", f.length ? f : @"nil"); }
 
-    BOOL on = [f isEqualToString:BK_GAME] || [f isEqualToString:BK_GAMEMAX];
-    BOOL mine = [f isEqualToString:BK_ME];
-    if (!f.length) on = YES;
-    BOOL show = gEnabled && (on || mine);
-    gFront = on;
-    if (gBallWin) gBallWin.hidden = !show;
-    if (gCursorWin) gCursorWin.hidden = !(on && gCursorOn);
-    if (!show) {
-        if (gMenuOpen) BKMenuClose();
-        if (gEditOpen) [BKUI closeEditor];
-        BKReleaseAll();
-    }
+        BOOL on = [f isEqualToString:BK_GAME] || [f isEqualToString:BK_GAMEMAX];
+        BOOL mine = [f isEqualToString:BK_ME];
+        if (!f.length) on = YES;
+        BOOL show = gEnabled && (on || mine);
+        gFront = on;
+        if (gBallWin) gBallWin.hidden = !show;
+        if (gCursorWin) gCursorWin.hidden = !(on && gCursorOn);
+        if (!show) {
+            if (gMenuOpen) BKMenuClose();
+            if (gEditOpen) [BKUI closeEditor];
+            BKReleaseAll();
+        }
+    } @catch (id e) { BKLog(@"tick fail %@", e); }
 }
 
-// ---- espaco de tela nativo para o digitador
+// ---- injecao ----
 static CGPoint BKToNat(CGPoint p)
 {
     UIWindow *w = gCursorWin ?: gBallWin;
@@ -380,38 +406,45 @@ static int BKFingerTake(int owner)
 }
 static void BKFingerFree(int f) { if (f >= BK_FBASE && f < BK_FBASE + BK_FINGERS) gFingerOwner[f - BK_FBASE] = 0; }
 
-static void BKInjectNat(int finger, double nx, double ny, BOOL down, BOOL move)
+static void BKInjectNorm(int finger, double fx, double fy, BOOL down, BOOL move)
 {
     if (!pCreateFinger || !pCreateDigitizer) return;
-    uint32_t mask = move ? 4 : 3;
-    Boolean rng = down, tch = down;
-    uint64_t t = mach_absolute_time();
+    @try {
+        uint32_t mask = move ? 4 : 3;
+        Boolean rng = down, tch = down;
+        uint64_t t = mach_absolute_time();
 
-    IOHIDEventRef parent = pCreateDigitizer(kCFAllocatorDefault, t, 2, 0, 0, mask, 0, 0, 0, 0, 0, 0, rng, tch, 0);
-    if (!parent) return;
-    IOHIDEventRef sub = pCreateFinger(kCFAllocatorDefault, t, gIdent++, (uint32_t)finger, mask, nx, ny, 0.0, 0.0, 0.0, rng, tch, 0);
-    if (!sub) { CFRelease(parent); return; }
+        IOHIDEventRef parent = pCreateDigitizer(kCFAllocatorDefault, t, 2, 1u << 22, 1, mask, 0,
+            fx, fy, 0, 0, 0, rng, tch, 0);
+        if (!parent) return;
+        IOHIDEventRef sub = pCreateFinger(kCFAllocatorDefault, t, gIdent++, (uint32_t)finger, mask,
+            fx, fy, 0.0, 0.0, 0.0, rng, tch, 0);
+        if (!sub) { CFRelease(parent); return; }
 
-    if (pSetInt) pSetInt(sub, kFieldDigIsDisplayIntegrated, 1);
-    pAppend(parent, sub, 0);
-    CFRelease(sub);
-    if (pSetInt) pSetInt(parent, kFieldDigIsDisplayIntegrated, 1);
-    if (pSetDigitizerInfo) pSetDigitizerInfo(parent, 0, false, false, NULL, 0, 0);
+        if (pSetInt) pSetInt(sub, kFieldDigIsDisplayIntegrated, 1);
+        pAppend(parent, sub, 0);
+        CFRelease(sub);
+        if (pSetInt) pSetInt(parent, kFieldDigIsDisplayIntegrated, 1);
+        if (pSetSender) pSetSender(parent, BK_SENDER);
+        if (pSetDigitizerInfo) pSetDigitizerInfo(parent, 0, false, false, NULL, 0, 0);
 
-    gInjecting++;
-    if (gSys && pSysDispatch) pSysDispatch(gSys, parent);
-    else if (origEnq) @try { origEnq(UIApplication.sharedApplication, @selector(_enqueueHIDEvent:), parent); } @catch (id e) {}
-    gInjecting--;
-    CFRelease(parent);
+        gInjecting++;
+        if (gSys && pSysDispatch) pSysDispatch(gSys, parent);
+        else if (origEnq) origEnq(UIApplication.sharedApplication, @selector(_enqueueHIDEvent:), parent);
+        gInjecting--;
+        CFRelease(parent);
 
-    if (finger >= BK_FBASE && finger < BK_FBASE + BK_FINGERS) {
-        gFingerX[finger - BK_FBASE] = nx; gFingerY[finger - BK_FBASE] = ny;
-    }
+        if (finger >= BK_FBASE && finger < BK_FBASE + BK_FINGERS) {
+            gFingerX[finger - BK_FBASE] = fx; gFingerY[finger - BK_FBASE] = fy;
+        }
+    } @catch (id e) {}
 }
 static void BKInject(int finger, double x, double y, BOOL down, BOOL move)
 {
     CGPoint n = BKToNat(CGPointMake(x, y));
-    BKInjectNat(finger, n.x, n.y, down, move);
+    CGSize scr = UIScreen.mainScreen.bounds.size;
+    if (scr.width < 1 || scr.height < 1) return;
+    BKInjectNorm(finger, n.x / scr.width, n.y / scr.height, down, move);
 }
 
 static void BKTapAt(double x, double y)
@@ -431,16 +464,23 @@ static void BKTapAt(double x, double y)
 
 void BKReleaseAll(void)
 {
-    for (int i = 0; i < 512; i++) gHoldKey[i] = 0;
-    if (gFireTimer) dispatch_source_set_timer(gFireTimer, DISPATCH_TIME_FOREVER, 0, 0);
-    gFireOn = NO; gFireIdx = -1;
-    for (int i = 0; i < BK_FINGERS; i++) {
-        if (!gFingerOwner[i]) continue;
-        BKInjectNat(BK_FBASE + i, gFingerX[i], gFingerY[i], NO, NO);
-        gFingerOwner[i] = 0;
-    }
-    if (gCursorDown) { CGPoint n = BKToNat(CGPointMake(gCx, gCy)); BKInjectNat(31, n.x, n.y, NO, NO); gCursorDown = NO; }
-    gFps = gFpsHeld = NO;
+    @try {
+        for (int i = 0; i < 512; i++) gHoldKey[i] = 0;
+        if (gFireTimer) dispatch_source_set_timer(gFireTimer, DISPATCH_TIME_FOREVER, 0, 0);
+        gFireOn = NO; gFireIdx = -1;
+        for (int i = 0; i < BK_FINGERS; i++) {
+            if (!gFingerOwner[i]) continue;
+            BKInjectNorm(BK_FBASE + i, gFingerX[i], gFingerY[i], NO, NO);
+            gFingerOwner[i] = 0;
+        }
+        if (gCursorDown) {
+            CGPoint n = BKToNat(CGPointMake(gCx, gCy));
+            CGSize scr = UIScreen.mainScreen.bounds.size;
+            if (scr.width > 0 && scr.height > 0) BKInjectNorm(31, n.x / scr.width, n.y / scr.height, NO, NO);
+            gCursorDown = NO;
+        }
+        gFps = gFpsHeld = NO;
+    } @catch (id e) {}
 }
 
 void BKCursorSet(BOOL on)
@@ -698,10 +738,10 @@ static void BKAttachMouse(void)
     gGcMouse = (m != nil);
     if (!m) return;
     BKLog(@"gc mouse ok");
-    m.mouseInput.mouseMovedHandler = ^(GCMouseInput *in, float dx, float dy) { BKPointerDelta(dx, dy); };
-    m.mouseInput.leftButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) { BKButtonDown(1, p); };
-    m.mouseInput.rightButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) { BKButtonDown(2, p); };
-    m.mouseInput.middleButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) { BKButtonDown(3, p); };
+    m.mouseInput.mouseMovedHandler = ^(GCMouseInput *in, float dx, float dy) { @try { BKPointerDelta(dx, dy); } @catch (id e) {} };
+    m.mouseInput.leftButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) { @try { BKButtonDown(1, p); } @catch (id e) {} };
+    m.mouseInput.rightButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) { @try { BKButtonDown(2, p); } @catch (id e) {} };
+    m.mouseInput.middleButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) { @try { BKButtonDown(3, p); } @catch (id e) {} };
 }
 static void BKAttachKey(void)
 {
@@ -710,7 +750,7 @@ static void BKAttachKey(void)
     if (!k) return;
     BKLog(@"gc key ok");
     k.keyboardInput.keyChangedHandler = ^(GCKeyboardInput *in, GCControllerButtonInput *key, GCKeyCode code, BOOL pressed) {
-        BKKeyUsage((int)code, pressed);
+        @try { BKKeyUsage((int)code, pressed); } @catch (id e) {}
     };
 }
 static void BKInstall(void)
@@ -721,6 +761,7 @@ static void BKInstall(void)
         pCreateDigitizer = dlsym(h, "IOHIDEventCreateDigitizerEvent");
         pAppend = dlsym(h, "IOHIDEventAppendEvent");
         pSetInt = dlsym(h, "IOHIDEventSetIntegerValue");
+        pSetSender = dlsym(h, "IOHIDEventSetSenderID");
         pGetType = dlsym(h, "IOHIDEventGetType");
         pGetFloat = dlsym(h, "IOHIDEventGetFloatValue");
         pGetInt = dlsym(h, "IOHIDEventGetIntegerValue");
@@ -732,9 +773,17 @@ static void BKInstall(void)
 
     if (pClientCreate) gSys = pClientCreate(kCFAllocatorDefault, 1, NULL);
     gHidOk = (pCreateFinger != NULL && pCreateDigitizer != NULL);
+    BKLog(@"hid:%d sys:%d", gHidOk, gSys != NULL);
+}
+static void BKHook(void)
+{
+    if (gHook) return;
     Method m = class_getInstanceMethod(UIApplication.class, @selector(_enqueueHIDEvent:));
-    if (m) { origEnq = (void *)method_getImplementation(m); method_setImplementation(m, (IMP)BKEnq); }
-    BKLog(@"sys:%d hid:%d", gSys != NULL, gHidOk);
+    if (!m) return;
+    origEnq = (void *)method_getImplementation(m);
+    method_setImplementation(m, (IMP)BKEnq);
+    gHook = YES;
+    BKLog(@"hook on");
 }
 
 static UIWindow *BKWin(UIWindowLevel lv, BOOL passThrough)
@@ -766,7 +815,7 @@ static UIWindow *BKWin(UIWindowLevel lv, BOOL passThrough)
         NSFontAttributeName:[UIFont boldSystemFontOfSize:13],
         NSForegroundColorAttributeName:[UIColor colorWithRed:1 green:0.42 blue:0.17 alpha:1]}];
 }
-- (void)bkTap:(UITapGestureRecognizer *)g { BKMenuOpen(); }
+- (void)bkTap:(UITapGestureRecognizer *)g { @try { BKMenuOpen(); } @catch (id e) {} }
 @end
 
 @interface BKCursorView : UIView @end
@@ -910,7 +959,7 @@ void BKRelayout(void)
     BKPlaceCursor();
     [BKUI relayout];
 }
-void BKMenuOpen(void) { gMenuOpen = YES; [BKUI show]; BKReleaseAll(); }
+void BKMenuOpen(void) { BKEnsure(); gMenuOpen = YES; [BKUI show]; BKReleaseAll(); }
 void BKMenuClose(void) { gMenuOpen = NO; [BKUI hide]; }
 void BKEditorOpenUI(void) { [BKUI openEditor]; }
 void BKSetEditorOpen(BOOL open)
@@ -1242,7 +1291,9 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
         self->_dim.alpha = 1;
     } completion:nil];
 
-    _statusTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) { [self tickStatus]; }];
+    _statusTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
+        @try { [self tickStatus]; } @catch (id e) {}
+    }];
 }
 
 - (void)dismiss
@@ -2053,7 +2104,7 @@ static void BKApplyLegacy(const struct mach_header_64 *mh)
     const char *str = (const char *)base + st->stroff;
     const uint32_t *ind = (const uint32_t *)(base + dys->indirectsymoff);
 
-    const struct load_command *l2 = (const struct load_command *)(base + sizeof(*mh));
+    const struct load_command *l2 = (const struct load_command *)((const uint8_t *)base + sizeof(*mh));
     for (uint32_t i = 0; i < mh->ncmds; i++) {
         if (l2->cmd == LC_SEGMENT_64) {
             const struct segment_command_64 *sg = (const struct segment_command_64 *)l2;
@@ -2097,74 +2148,87 @@ static void BKStealth(void)
     else BKApplyLegacy(mh);
 }
 
-static void BKStart(void)
+// ---- montagem sob demanda ----
+static void BKEnsure(void)
 {
-    if (gStarted) return;
-    gStarted = YES;
-    gCore = [BKCore shared];
-    NSString *base = BKStateDir();
-    [NSFileManager.defaultManager createDirectoryAtPath:base withIntermediateDirectories:YES attributes:nil error:nil];
-    gLog = [base stringByAppendingPathComponent:@"ballkey.log"];
-    [@"" writeToFile:gLog atomically:NO encoding:NSUTF8StringEncoding error:nil];
-    BKLoadEnabled();
-    BKLog(@"boot v6 springboard enabled:%d", gEnabled);
+    if (gBuilt) return;
+    gBuilt = YES;
+    @try {
+        BKLog(@"ensure 1");
+        BKInstall();
+        BKLog(@"ensure 2 hid:%d sys:%d", gHidOk, gSys != NULL);
 
-    BKAlive();
-    [NSTimer scheduledTimerWithTimeInterval:20 repeats:YES block:^(NSTimer *t) { BKAlive(); }];
+        gBallWin = BKWin(UIWindowLevelAlert + 500, YES);
+        gBall = [[BKBallView alloc] initWithFrame:CGRectMake(0, 0, 56, 56)];
+        gBall.center = CGPointMake(28, 44);
+        gBall.backgroundColor = UIColor.clearColor;
+        [gBall addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:gBall action:@selector(bkTap:)]];
+        [gBallWin.rootViewController.view addSubview:gBall];
+        BKLog(@"ensure 3 ball");
 
-    BKInstall();
-    BKLog(@"hid:%d sys:%d", gHidOk, gSys != NULL);
+        gCursorWin = BKWin(UIWindowLevelAlert + 600, YES);
+        gCursorWin.userInteractionEnabled = NO;
+        double h = BKNum(kCursorSize, 30);
+        gCursor = [[BKCursorView alloc] initWithFrame:CGRectMake(0, 0, h * 0.72, h)];
+        gCursor.backgroundColor = UIColor.clearColor;
+        [gCursorWin.rootViewController.view addSubview:gCursor];
+        gCursorWin.hidden = YES;
+        BKLog(@"ensure 4 cursor");
 
-    gBallWin = BKWin(UIWindowLevelAlert + 500, YES);
-    gBall = [[BKBallView alloc] initWithFrame:CGRectMake(0, 0, 56, 56)];
-    gBall.center = CGPointMake(28, 44);
-    gBall.backgroundColor = UIColor.clearColor;
-    [gBall addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:gBall action:@selector(bkTap:)]];
-    [gBallWin.rootViewController.view addSubview:gBall];
+        [NSNotificationCenter.defaultCenter addObserverForName:GCMouseDidConnectNotification object:nil
+            queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { @try { BKAttachMouse(); } @catch (id e) {} }];
+        [NSNotificationCenter.defaultCenter addObserverForName:GCKeyboardDidConnectNotification object:nil
+            queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { @try { BKAttachKey(); } @catch (id e) {} }];
+        BKAttachMouse();
+        BKAttachKey();
+        if (!gGcMouse && !gGcKey) BKHook();
+        BKLog(@"ensure 5 input hook:%d", gHook);
 
-    gCursorWin = BKWin(UIWindowLevelAlert + 600, YES);
-    gCursorWin.userInteractionEnabled = NO;
-    double h = BKNum(kCursorSize, 30);
-    gCursor = [[BKCursorView alloc] initWithFrame:CGRectMake(0, 0, h * 0.72, h)];
-    gCursor.backgroundColor = UIColor.clearColor;
-    [gCursorWin.rootViewController.view addSubview:gCursor];
-    gCursorWin.hidden = YES;
+        void (^relay)(NSNotification *) = ^(NSNotification *n) {
+            @try {
+                [BKUI relayout];
+                for (int i = 1; i <= 3; i++)
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 90 * NSEC_PER_MSEC)),
+                                   dispatch_get_main_queue(), ^{ @try { [BKUI relayout]; } @catch (id e) {} });
+                BKRelayout();
+            } @catch (id e) {}
+        };
+        [NSNotificationCenter.defaultCenter addObserverForName:UIDeviceOrientationDidChangeNotification
+            object:nil queue:NSOperationQueue.mainQueue usingBlock:relay];
+        [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidChangeStatusBarOrientationNotification
+            object:nil queue:NSOperationQueue.mainQueue usingBlock:relay];
 
-    [NSNotificationCenter.defaultCenter addObserverForName:GCMouseDidConnectNotification object:nil
-        queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { BKAttachMouse(); }];
-    [NSNotificationCenter.defaultCenter addObserverForName:GCKeyboardDidConnectNotification object:nil
-        queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { BKAttachKey(); }];
-    BKAttachMouse();
-    BKAttachKey();
+        gTick = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+        dispatch_source_set_timer(gTick, dispatch_time(DISPATCH_TIME_NOW, 0), 16 * NSEC_PER_MSEC, 2 * NSEC_PER_MSEC);
+        dispatch_source_set_event_handler(gTick, ^{ @try { BKJoystick(); } @catch (id e) {} });
+        dispatch_resume(gTick);
 
-    void (^relay)(NSNotification *) = ^(NSNotification *n) {
-        [BKUI relayout];
-        for (int i = 1; i <= 6; i++)
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 60 * NSEC_PER_MSEC)),
-                           dispatch_get_main_queue(), ^{ [BKUI relayout]; });
-        BKRelayout();
-    };
-    [NSNotificationCenter.defaultCenter addObserverForName:UIDeviceOrientationDidChangeNotification
-        object:nil queue:NSOperationQueue.mainQueue usingBlock:relay];
-    [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidChangeStatusBarOrientationNotification
-        object:nil queue:NSOperationQueue.mainQueue usingBlock:relay];
-
-    gTick = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-    dispatch_source_set_timer(gTick, dispatch_time(DISPATCH_TIME_NOW, 0), 16 * NSEC_PER_MSEC, 2 * NSEC_PER_MSEC);
-    dispatch_source_set_event_handler(gTick, ^{ @try { BKJoystick(); } @catch (id e) {} });
-    dispatch_resume(gTick);
-
-    [NSTimer scheduledTimerWithTimeInterval:0.7 repeats:YES block:^(NSTimer *t) { BKTickFront(); }];
-    BKTickFront();
-    if ([gCore boolForKey:kCursor def:NO]) BKCursorSet(YES);
+        [NSTimer scheduledTimerWithTimeInterval:0.7 repeats:YES block:^(NSTimer *t) { BKTickFront(); }];
+        BKTickFront();
+        if ([gCore boolForKey:kCursor def:NO]) BKCursorSet(YES);
+        BKLog(@"ensure ok");
+    } @catch (id e) { BKLog(@"ensure fail %@", e); }
 }
 
 __attribute__((constructor))
 static void BKInit(void)
 {
-    BKActivatorInstall();
-    @try { BKStealth(); } @catch (id e) {}
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        @autoreleasepool { @try { BKStart(); } @catch (id e) {} }
-    });
+    @try {
+        gCore = [BKCore shared];
+        NSString *base = BKStateDir();
+        [NSFileManager.defaultManager createDirectoryAtPath:base withIntermediateDirectories:YES attributes:nil error:nil];
+        gLog = [base stringByAppendingPathComponent:@"ballkey.log"];
+        [@"" writeToFile:gLog atomically:NO encoding:NSUTF8StringEncoding error:nil];
+        BKLog(@"ctor");
+        BKLoadEnabled();
+        BKAlive();
+        [NSTimer scheduledTimerWithTimeInterval:20 repeats:YES block:^(NSTimer *t) { BKAlive(); }];
+        BKActivatorInstall();
+        BKLog(@"ctor ok enabled:%d", gEnabled);
+    } @catch (id e) {}
+
+    if (![[NSFileManager defaultManager] fileExistsAtPath:BK_SAFE])
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            @autoreleasepool { @try { BKStealth(); } @catch (id e) {} }
+        });
 }

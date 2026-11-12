@@ -9,7 +9,7 @@
 
 typedef struct __IOHIDEvent *BKIOHIDEventRef;
 
-const char BKTag[] = "a1";
+const char BKTag[] = "a2";
 
 static const int kBKTypeKeyExtra = 1;
 static const int kBKTypeButton = 2;
@@ -99,7 +99,8 @@ static UILabel *gEditTitle = nil;
 static UIView *gEditCanvas = nil;
 static BKUI *gUI = nil;
 static BOOL gMenuOpen = NO;
-static BOOL gBallDone = NO, gCursorDone = NO, gHookDone = NO;
+static BOOL gBallDone = NO, gCursorDone = NO;
+static BOOL gHookDone = NO, gHookOK = NO;
 static BOOL gInj = NO;
 static int gEvSeen = 0, gKeySeen = 0, gPtrSeen = 0;
 static int gPtrMask = 0;
@@ -131,6 +132,14 @@ static BKIOHIDEventRef (*fFinger)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, 
 static BKIOHIDEventRef (*fHand)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t,
     uint32_t, uint32_t, double, double, double, double, double, double, BOOL, uint32_t) = NULL;
 static void (*fAppend)(BKIOHIDEventRef, BKIOHIDEventRef, uint32_t) = NULL;
+static void *(*fCreate)(CFAllocatorRef) = NULL;
+static void *(*fCreateType)(CFAllocatorRef, int, void *) = NULL;
+static void (*fSetQueue)(void *, dispatch_queue_t) = NULL;
+static void (*fActivate)(void *) = NULL;
+static void (*fSetMatching)(void *, CFDictionaryRef) = NULL;
+static void (*fRegisterCB)(void *, void *, void *, void *) = NULL;
+static void *gSendClient = NULL;
+static id gPtrBlock = nil, gKeyBlock = nil;
 
 typedef struct { int on; double x, y; } BKAct;
 static BKAct gAct[kBKSlotAim + 1];
@@ -151,6 +160,7 @@ static void BKHandleButton(int index, BOOL down);
 static void BKLoadConfig(void);
 static void BKSaveConfig(NSDictionary *cfg);
 static NSMutableArray *BKPoints(NSMutableDictionary *cfg);
+static NSMutableDictionary *BKConfig(void);
 static void BKStatus(void);
 static void BKCursor(void);
 static void BKRefresh(void);
@@ -168,6 +178,8 @@ static UIWindow *BKMakeWindow(CGRect frame, CGFloat level, BOOL blocks);
 static void BKBuildBall(void);
 static void BKBuildCursor(void);
 static void BKInstallHook(void);
+static void BKOnEvent(BKIOHIDEventRef event, int type);
+static BOOL BKSeenRecently(void *ev);
 static void BKInit(void);
 
 static uint64_t BKNow(void) { return mach_absolute_time() / 1000000ull; }
@@ -233,6 +245,12 @@ static BOOL BKInitIO(void)
         fSetInt = (void *)dlsym(k, "IOHIDEventSetIntegerValue");
         fAppend = (void *)dlsym(k, "IOHIDEventAppendEvent");
         fDispatch = (void *)dlsym(k, "IOHIDEventSystemClientDispatchEvent");
+        fCreate = (void *)dlsym(k, "IOHIDEventSystemClientCreate");
+        fCreateType = (void *)dlsym(k, "IOHIDEventSystemClientCreateWithType");
+        fSetQueue = (void *)dlsym(k, "IOHIDEventSystemClientSetQueue");
+        fActivate = (void *)dlsym(k, "IOHIDEventSystemClientActivate");
+        fSetMatching = (void *)dlsym(k, "IOHIDEventSystemClientSetMatching");
+        fRegisterCB = (void *)dlsym(k, "IOHIDEventSystemClientRegisterEventCallback");
         fFinger = (void *)dlsym(k, "IOHIDEventCreateDigitizerFingerEvent");
         if (!fFinger) fFinger = (void *)dlsym(k, "IOHIDEventCreateDigitizerFingerEventWithQuality");
         fHand = (void *)dlsym(k, "IOHIDEventCreateDigitizerEvent");
@@ -249,6 +267,8 @@ static void BKInject(BKIOHIDEventRef ev)
             gInj = YES;
             origEnqueue(app, @selector(_enqueueHIDEvent:), ev);
             gInj = NO;
+        } else if (gSendClient && fDispatch) {
+            fDispatch(gSendClient, ev);
         }
     } @catch (NSException *e) { }
     CFRelease(ev);
@@ -502,13 +522,12 @@ static NSMutableDictionary *BKConfig(void)
 static void BKStatus(void)
 {
     @try {
-        [gUI setNeedsLayout];
         if (!gStatusLabel) return;
         gStatusLabel.text = [NSString stringWithFormat:
-            @"v %@  hk:%@  e%d k%d p%d  at:%@",
-            [NSString stringWithUTF8String:BKTag], gHookDone ? @"S" : @"N",
-            gEvSeen, gKeySeen, gPtrSeen,
-            gEnabled ? @"1" : @"0"];
+            @"v %@  hk:%@  inj:%@  e%d k%d p%d",
+            [NSString stringWithUTF8String:BKTag], gHookOK ? @"S" : @"N",
+            (origEnqueue || gSendClient) ? @"S" : @"N",
+            gEvSeen, gKeySeen, gPtrSeen];
     } @catch (NSException *e) { }
 }
 
@@ -619,11 +638,7 @@ static void BKHookEnqueue(id self, SEL cmd, BKIOHIDEventRef ev)
     @try {
         if (!gInj && ev && fGetType) {
             int type = fGetType(ev);
-            if (type != kBKTypeDigitizer && !BKSeenRecently(ev)) {
-                uint64_t snd = fGetSender ? fGetSender(ev) : 0;
-                (void)snd;
-                BKOnEvent(ev, type);
-            }
+            if (type != kBKTypeDigitizer && !BKSeenRecently(ev)) BKOnEvent(ev, type);
         }
     } @catch (NSException *e) { }
     if (origEnqueue) origEnqueue(self, cmd, ev);
@@ -634,11 +649,11 @@ static void BKInstallHook(void)
     if (gHookDone) return;
     gHookDone = YES;
     @try {
-        Method m = class_getInstanceMethod([UIApplication class],
-                                          @selector(_enqueueHIDEvent:));
+        Method m = class_getInstanceMethod([UIApplication class], @selector(_enqueueHIDEvent:));
         if (m) {
             origEnqueue = (void *)method_getImplementation(m);
             method_setImplementation(m, (IMP)BKHookEnqueue);
+            gHookOK = YES;
             BKAppend(@"hook ok");
         } else {
             BKAppend(@"hook ausente");
@@ -646,6 +661,63 @@ static void BKInstallHook(void)
     } @catch (NSException *e) {
         BKAppend(@"hook erro %@", e.reason);
     }
+}
+
+static void BKSetupFallback(void)
+{
+    if (!origEnqueue) {
+        @try {
+            if (fCreateType) gSendClient = fCreateType(kCFAllocatorDefault, 2, NULL);
+            if (!gSendClient && fCreate) gSendClient = fCreate(kCFAllocatorDefault);
+            if (gSendClient) {
+                if (fSetQueue) fSetQueue(gSendClient, dispatch_get_main_queue());
+                if (fActivate) fActivate(gSendClient);
+                BKAppend(@"injecao por dispatch");
+            } else {
+                BKAppend(@"sem backend de injecao");
+            }
+        } @catch (NSException *e) { }
+    }
+
+    if (gHookOK) return;
+    @try {
+        NSDictionary *pm = @{ @"PrimaryUsagePage": @1 };
+        NSDictionary *km = @{ @"PrimaryUsagePage": @7 };
+        void *pc = fCreateType ? fCreateType(kCFAllocatorDefault, 1, NULL) : NULL;
+        void *kc = fCreateType ? fCreateType(kCFAllocatorDefault, 1, NULL) : NULL;
+
+        if (pc && fRegisterCB) {
+            void (^cb)(void *, void *, void *, BKIOHIDEventRef) =
+                ^(void *t, void *r, void *s, BKIOHIDEventRef e) {
+                    (void)t; (void)r; (void)s;
+                    if (e && fGetType) {
+                        int ty = fGetType(e);
+                        if (ty != kBKTypeDigitizer && !BKSeenRecently(e)) BKOnEvent(e, ty);
+                    }
+                };
+            gPtrBlock = [cb copy];
+            if (fSetMatching) fSetMatching(pc, (__bridge CFDictionaryRef)pm);
+            if (fSetQueue) fSetQueue(pc, dispatch_get_main_queue());
+            fRegisterCB(pc, (__bridge void *)gPtrBlock, NULL, NULL);
+            if (fActivate) fActivate(pc);
+        }
+        if (kc && fRegisterCB) {
+            void (^cb)(void *, void *, void *, BKIOHIDEventRef) =
+                ^(void *t, void *r, void *s, BKIOHIDEventRef e) {
+                    (void)t; (void)r; (void)s;
+                    if (e && fGetType) {
+                        int ty = fGetType(e);
+                        if (ty != kBKTypeDigitizer && !BKSeenRecently(e)) BKOnEvent(e, ty);
+                    }
+                };
+            gKeyBlock = [cb copy];
+            if (fSetMatching) fSetMatching(kc, (__bridge CFDictionaryRef)km);
+            if (fSetQueue) fSetQueue(kc, dispatch_get_main_queue());
+            fRegisterCB(kc, (__bridge void *)gKeyBlock, NULL, NULL);
+            if (fActivate) fActivate(kc);
+        }
+        BKAppend(@"captura por monitor p=%d k=%d", pc ? 1 : 0, kc ? 1 : 0);
+    } @catch (NSException *e) { }
 }
 
 static void BKCaptureRequest(void)
@@ -888,6 +960,7 @@ static void BKCloseMenu(void)
 
 static void BKOpenEditor(NSString *kind, int code)
 {
+    (void)code;
     gEditKind = kind;
     gMenuOpen = NO;
     if (gMenuWin) gMenuWin.hidden = YES;
@@ -1100,6 +1173,7 @@ static void BKInit(void)
         if (!BKInitIO()) { BKAppend(@"io falhou"); return; }
         BKLoadConfig();
         BKInstallHook();
+        BKSetupFallback();
         BKBuildBall();
         BKBuildCursor();
         dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,

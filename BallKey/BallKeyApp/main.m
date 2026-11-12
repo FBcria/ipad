@@ -1,8 +1,10 @@
-// BallKey 6.0 - instalador e ativador
+// BallKey 6.0 - ativador
 #import <UIKit/UIKit.h>
 
 static NSString *const kNotePanel = @"com.wjf.ballkey.panel";
 static NSString *const kNoteGame  = @"com.wjf.ballkey.panelgame";
+static NSString *const kNoteOff   = @"com.wjf.ballkey.off";
+static NSString *const kState     = @"/var/mobile/Documents/BallKey/enabled";
 
 static void BKMark(NSString *s)
 {
@@ -22,98 +24,115 @@ static BOOL BKInstalled(void)
     return NO;
 }
 
-static void BKPost(NSString *name)
+static BOOL BKActive(void)
+{
+    return [[NSString stringWithContentsOfFile:kState encoding:NSUTF8StringEncoding error:nil] isEqualToString:@"1"];
+}
+
+static void BKPost(NSString *n)
 {
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-        (__bridge CFStringRef)name, NULL, NULL, YES);
+        (__bridge CFStringRef)n, NULL, NULL, YES);
 }
 
 @interface BKVC : UIViewController
-@property (nonatomic, strong) UILabel *status;
-@property (nonatomic, strong) UIButton *bPanel, *bGame, *bInstall, *bUrl;
+@property (nonatomic, strong) UIButton *big;
+@property (nonatomic, strong) UILabel *status, *title;
+@property (nonatomic, strong) NSTimer *timer;
 @end
 
 @implementation BKVC
-
-- (UIButton *)mkBtn:(NSString *)title color:(UIColor *)c action:(SEL)a
-{
-    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-    b.backgroundColor = c;
-    [b setTitle:title forState:UIControlStateNormal];
-    [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-    b.titleLabel.font = [UIFont boldSystemFontOfSize:15];
-    b.layer.cornerRadius = 13;
-    [b addTarget:self action:a forControlEvents:UIControlEventTouchUpInside];
-    return b;
-}
 
 - (void)viewDidLoad
 {
     [super viewDidLoad];
     BKMark(@"viewDidLoad");
-    self.view.backgroundColor = [UIColor colorWithRed:0.05 green:0.07 blue:0.12 alpha:1];
+    self.view.backgroundColor = UIColor.blackColor;
 
-    UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(20, 84, 335, 34)];
-    t.text = @"BallKey 6.0";
-    t.textColor = UIColor.whiteColor;
-    t.font = [UIFont boldSystemFontOfSize:26];
-    t.textAlignment = NSTextAlignmentCenter;
-    [self.view addSubview:t];
+    self.title = [[UILabel alloc] initWithFrame:CGRectMake(20, 70, self.view.bounds.size.width - 40, 40)];
+    self.title.text = @"BallKey";
+    self.title.textColor = UIColor.whiteColor;
+    self.title.font = [UIFont boldSystemFontOfSize:30];
+    self.title.textAlignment = NSTextAlignmentCenter;
+    [self.view addSubview:self.title];
 
-    UILabel *s = [[UILabel alloc] initWithFrame:CGRectMake(20, 118, 335, 20)];
-    s.text = @"tweak de SpringBoard  -  martidev333";
-    s.textColor = UIColor.grayColor;
-    s.font = [UIFont systemFontOfSize:12];
-    s.textAlignment = NSTextAlignmentCenter;
-    [self.view addSubview:s];
+    self.big = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.big.bounds = CGRectMake(0, 0, 190, 190);
+    self.big.center = CGPointMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2 - 40);
+    self.big.layer.cornerRadius = 95;
+    self.big.layer.borderWidth = 3;
+    self.big.titleLabel.font = [UIFont boldSystemFontOfSize:24];
+    [self.big addTarget:self action:@selector(toggle:) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.big];
 
-    self.bGame = [self mkBtn:@"ABRIR PAINEL + FREE FIRE" color:[UIColor colorWithRed:1 green:0.45 blue:0.1 alpha:1] action:@selector(openGame:)];
-    self.bGame.frame = CGRectMake(24, 170, 327, 54);
-    [self.view addSubview:self.bGame];
-
-    self.bPanel = [self mkBtn:@"SÓ O PAINEL" color:[UIColor colorWithRed:0.18 green:0.24 blue:0.36 alpha:1] action:@selector(openPanel:)];
-    self.bPanel.frame = CGRectMake(24, 234, 327, 50);
-    [self.view addSubview:self.bPanel];
-
-    self.bInstall = [self mkBtn:@"INSTALAR TWEAK (.deb)" color:[UIColor colorWithRed:0.2 green:0.55 blue:0.35 alpha:1] action:@selector(install:)];
-    self.bInstall.frame = CGRectMake(24, 300, 327, 50);
-    [self.view addSubview:self.bInstall];
-
-    self.bUrl = [self mkBtn:@"ENVIAR DEB PRO TROLLSTORE" color:[UIColor colorWithRed:0.35 green:0.3 blue:0.6 alpha:1] action:@selector(openTroll:)];
-    self.bUrl.frame = CGRectMake(24, 360, 327, 46);
-    [self.view addSubview:self.bUrl];
-
-    self.status = [[UILabel alloc] initWithFrame:CGRectMake(24, 424, 327, 120)];
-    self.status.textColor = UIColor.lightGrayColor;
-    self.status.font = [UIFont systemFontOfSize:12];
+    self.status = [[UILabel alloc] initWithFrame:CGRectMake(24, self.view.bounds.size.height - 230,
+                    self.view.bounds.size.width - 48, 60)];
+    self.status.textColor = UIColor.grayColor;
+    self.status.font = [UIFont systemFontOfSize:13];
     self.status.numberOfLines = 0;
     self.status.textAlignment = NSTextAlignmentCenter;
     [self.view addSubview:self.status];
+
+    UIButton *inst = [UIButton buttonWithType:UIButtonTypeSystem];
+    inst.frame = CGRectMake(24, self.view.bounds.size.height - 150, self.view.bounds.size.width - 48, 44);
+    [inst setTitle:@"INSTALAR / REINSTALAR TWEAK" forState:UIControlStateNormal];
+    [inst setTitleColor:[UIColor colorWithRed:0.2 green:0.75 blue:0.45 alpha:1] forState:UIControlStateNormal];
+    inst.titleLabel.font = [UIFont boldSystemFontOfSize:13];
+    inst.layer.cornerRadius = 12;
+    inst.layer.borderWidth = 1;
+    inst.layer.borderColor = [[UIColor colorWithRed:0.2 green:0.75 blue:0.45 alpha:0.5] CGColor];
+    [inst addTarget:self action:@selector(install:) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:inst];
+
+    UILabel *cr = [[UILabel alloc] initWithFrame:CGRectMake(20, self.view.bounds.size.height - 70,
+                    self.view.bounds.size.width - 40, 20)];
+    cr.text = @"martidev333  -  BallKey 6.0";
+    cr.textColor = [UIColor colorWithWhite:1 alpha:0.25];
+    cr.font = [UIFont systemFontOfSize:11];
+    cr.textAlignment = NSTextAlignmentCenter;
+    [self.view addSubview:cr];
 }
 
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
-    BOOL ok = BKInstalled();
-    self.status.text = ok
-        ? @"Tweak instalado. Use os botões acima.\nSe o painel não abrir, dê respring."
-        : @"Tweak NÃO instalado.\nToque em INSTALAR TWEAK, escolha TrollStore e dê respring depois.";
-    self.bInstall.enabled = !ok;
-    self.bInstall.alpha = ok ? 0.4 : 1.0;
+    [self paint];
+    self.timer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) { [self paint]; }];
 }
 
-- (void)openPanel:(id)s
+- (void)viewDidDisappear:(BOOL)animated
 {
-    if (!BKInstalled()) { self.status.text = @"Instale o tweak primeiro."; return; }
-    BKPost(kNotePanel);
-    self.status.text = @"Painel enviado.";
+    [super viewDidDisappear:animated];
+    [self.timer invalidate];
+    self.timer = nil;
 }
 
-- (void)openGame:(id)s
+- (void)paint
+{
+    BOOL on = BKActive();
+    UIColor *c = on ? [UIColor colorWithRed:1 green:0.42 blue:0.17 alpha:1]
+                    : [UIColor colorWithRed:0.35 green:0.9 blue:0.55 alpha:1];
+    [self.big setTitle:(on ? @"DESATIVAR" : @"ATIVAR") forState:UIControlStateNormal];
+    [self.big setTitleColor:c forState:UIControlStateNormal];
+    self.big.layer.borderColor = c.CGColor;
+    self.big.backgroundColor = [c colorWithAlphaComponent:0.10];
+
+    if (!BKInstalled()) { self.status.text = @"Tweak não instalado.\nToque em instalar abaixo."; return; }
+    self.status.text = on ? @"Ativo.\nO painel está na tela do jogo." : @"Desativado.";
+}
+
+- (void)toggle:(id)s
 {
     if (!BKInstalled()) { self.status.text = @"Instale o tweak primeiro."; return; }
-    BKPost(kNoteGame);
-    self.status.text = @"Abrindo painel e jogo...";
+    BOOL on = BKActive();
+    if (on) {
+        BKPost(kNoteOff);
+        self.status.text = @"Desativado.";
+    } else {
+        BKPost(kNoteGame);
+        self.status.text = @"Ativando e abrindo o Free Fire...";
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 400 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ [self paint]; });
 }
 
 - (NSString *)debInBundle
@@ -121,36 +140,20 @@ static void BKPost(NSString *name)
     return [[[NSBundle mainBundle] pathsForResourcesOfType:@"deb" inDirectory:nil] firstObject];
 }
 
-- (NSString *)stageDeb
+- (void)install:(id)s
 {
     NSString *src = [self debInBundle];
-    if (!src) return nil;
+    if (!src) { self.status.text = @"deb não encontrado no bundle."; return; }
     NSString *dst = [NSTemporaryDirectory() stringByAppendingPathComponent:[src lastPathComponent]];
     NSFileManager *fm = [NSFileManager defaultManager];
     [fm removeItemAtPath:dst error:nil];
-    if (![fm copyItemAtPath:src toPath:dst error:nil]) return nil;
-    return dst;
-}
-
-- (void)install:(id)s
-{
-    NSString *deb = [self stageDeb];
-    if (!deb) { self.status.text = @"deb não encontrado no bundle."; return; }
+    if (![fm copyItemAtPath:src toPath:dst error:nil]) { self.status.text = @"falha ao copiar."; return; }
     UIActivityViewController *a = [[UIActivityViewController alloc]
-        initWithActivityItems:@[[NSURL fileURLWithPath:deb]] applicationActivities:nil];
-    a.popoverPresentationController.sourceView = self.bInstall;
-    a.popoverPresentationController.sourceRect = self.bInstall.bounds;
+        initWithActivityItems:@[[NSURL fileURLWithPath:dst]] applicationActivities:nil];
+    a.popoverPresentationController.sourceView = self.big;
+    a.popoverPresentationController.sourceRect = self.big.bounds;
     [self presentViewController:a animated:YES completion:nil];
-    self.status.text = @"Escolha TrollStore na folha. Depois dê respring.";
-}
-
-- (void)openTroll:(id)s
-{
-    NSString *deb = [self stageDeb];
-    if (!deb) { self.status.text = @"deb não encontrado no bundle."; return; }
-    NSString *u = [@"apple-magnifier://install?url=file://" stringByAppendingString:
-        [deb stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet]];
-    [[UIApplication sharedApplication] openURL:[NSURL URLWithString:u] options:@{} completionHandler:nil];
+    self.status.text = @"Escolha TrollStore e dê respring depois.";
 }
 
 @end
@@ -164,7 +167,8 @@ static void BKPost(NSString *name)
 {
     BKMark(@"didFinishLaunching");
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    self.window.rootViewController = [[UINavigationController alloc] initWithRootViewController:[BKVC new]];
+    self.window.backgroundColor = UIColor.blackColor;
+    self.window.rootViewController = [BKVC new];
     [self.window makeKeyAndVisible];
     return YES;
 }

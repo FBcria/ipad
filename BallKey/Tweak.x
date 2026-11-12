@@ -63,6 +63,7 @@ static NSString *const kCursor=@"cursor", *const kSens=@"sens", *const kCurve=@"
 @interface BKUI : NSObject
 + (void)show; + (void)hide; + (void)relayout; + (void)openEditor; + (void)closeEditor;
 + (void)editorKey:(int)usage; + (void)editorSelectionChanged;
+- (void)layoutAll;
 @end
 
 #pragma mark - settings store
@@ -185,6 +186,7 @@ static NSArray *BKDefaultMarks(void)
 #pragma mark - globals
 
 static BKCore *gCore;
+static BKUI *gUI;
 static NSString *gLog;
 static UIWindow *gBallWin, *gCursorWin;
 static UIView *gBall, *gCursor, *gCanvas;
@@ -210,7 +212,7 @@ static void (*origEnq)(id,SEL,IOHIDEventRef);
 
 #pragma mark - pass-through window
 
-// Janela que deixa o toque atravessar quando ele não cai em nenhum subview real.
+// Janela que deixa o toque atravessar quando ele nao cai em nenhum subview real.
 // Sem isso a janela de overlay engole todos os toques da tela do jogo.
 @interface BKPassWindow : UIWindow @end
 @implementation BKPassWindow
@@ -616,10 +618,7 @@ static UIWindow *BKWin(UIWindowLevel lv, BOOL passThrough)
     UIWindowScene *sc = BKScene();
     UIWindow *w = sc ? [[UIWindow alloc] initWithWindowScene:sc]
                      : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    if (passThrough) {
-        // troca a classe para a variante que deixa o toque passar
-        object_setClass(w, [BKPassWindow class]);
-    }
+    if (passThrough) object_setClass(w, [BKPassWindow class]);
     w.frame = CGRectMake(0, 0, BKSize().width, BKSize().height);
     w.windowLevel = lv;
     w.backgroundColor = UIColor.clearColor;
@@ -997,12 +996,9 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
 #pragma mark - panel
 
-static BKUI *gUI;
-
 @interface BKUI () <UIScrollViewDelegate>
 - (void)present;
 - (void)dismiss;
-- (void)layoutAll;
 - (void)buildChrome;
 - (void)tabTap:(UIControl *)c;
 - (void)setTab:(NSInteger)tab animated:(BOOL)animated;
@@ -1086,7 +1082,7 @@ static BKUI *gUI;
     _win.hidden = NO;
     BKSetInputGated(YES);
 
-    // dim não intercepta: o toque fora do painel segue para o jogo
+    // dim nao intercepta: o toque fora do painel segue para o jogo
     _dim = [[UIView alloc] initWithFrame:_win.bounds];
     _dim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.28];
     _dim.userInteractionEnabled = NO;
@@ -1822,7 +1818,7 @@ static void BKStart(void)
 
     // duas fontes + reexecucoes: a geometria so estabiliza depois da rotacao
     void (^relay)(NSNotification *) = ^(NSNotification *n) {
-        [UIView animateWithDuration:0 animations:^{ [BKUI relayout]; }];
+        [BKUI relayout];
         for (int i = 1; i <= 6; i++)
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 60 * NSEC_PER_MSEC)),
                            dispatch_get_main_queue(), ^{ [BKUI relayout]; });

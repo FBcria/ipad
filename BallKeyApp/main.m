@@ -8,7 +8,7 @@ static NSString *const kState     = @"/var/mobile/Documents/BallKey/enabled";
 
 static void BKMark(NSString *s)
 {
-    NSString *p = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject];
+    NSString *p = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
     if (!p) return;
     [[NSFileManager defaultManager] createDirectoryAtPath:p withIntermediateDirectories:YES attributes:nil error:nil];
     [s writeToFile:[p stringByAppendingPathComponent:@"boot.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -37,7 +37,7 @@ static void BKPost(NSString *n)
 
 @interface BKVC : UIViewController
 @property (nonatomic, strong) UIButton *big;
-@property (nonatomic, strong) UILabel *status, *title;
+@property (nonatomic, strong) UILabel *status, *caption;
 @property (nonatomic, strong) NSTimer *timer;
 @end
 
@@ -49,12 +49,12 @@ static void BKPost(NSString *n)
     BKMark(@"viewDidLoad");
     self.view.backgroundColor = UIColor.blackColor;
 
-    self.title = [[UILabel alloc] initWithFrame:CGRectMake(20, 70, self.view.bounds.size.width - 40, 40)];
-    self.title.text = @"BallKey";
-    self.title.textColor = UIColor.whiteColor;
-    self.title.font = [UIFont boldSystemFontOfSize:30];
-    self.title.textAlignment = NSTextAlignmentCenter;
-    [self.view addSubview:self.title];
+    self.caption = [[UILabel alloc] initWithFrame:CGRectMake(20, 70, self.view.bounds.size.width - 40, 40)];
+    self.caption.text = @"BallKey";
+    self.caption.textColor = UIColor.whiteColor;
+    self.caption.font = [UIFont boldSystemFontOfSize:30];
+    self.caption.textAlignment = NSTextAlignmentCenter;
+    [self.view addSubview:self.caption];
 
     self.big = [UIButton buttonWithType:UIButtonTypeSystem];
     self.big.bounds = CGRectMake(0, 0, 190, 190);

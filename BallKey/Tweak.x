@@ -27,8 +27,13 @@ typedef uint32_t IOOptionBits;
 #define kFieldDigIsDisplayIntegrated 0xB0019u
 #define BK_FINGERS 10
 #define BK_FBASE 40
-#define DW 1180.0
-#define DH 760.0
+#define BK_DW 1180.0
+#define BK_DH 760.0
+#define BK_SBW 210.0
+static CGFloat gDW = BK_DW, gDH = BK_DH, gSB = BK_SBW;
+#define DW gDW
+#define DH gDH
+#define SBW gSB
 #define BK_GAME @"com.dts.freefireth"
 #define BK_GAMEMAX @"com.dts.freefiremax"
 #define BK_ME @"com.wjf.ballkeyapp"
@@ -1216,6 +1221,8 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 - (void)editorAdd:(UIButton *)b; - (void)editorDelete:(UIButton *)b;
 - (void)editorSave; - (void)editorCancel; - (void)dismissEditor;
 - (void)editorGotKey:(int)u; - (void)refreshEditorStatus;
+- (void)rebuildCanvas;
+- (CGAffineTransform)fitT;
 @end
 
 @interface BKUI ()
@@ -1228,6 +1235,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     NSInteger _tab;
     CGFloat _userScale;
     NSTimer *_statusTimer;
+    CGFloat _builtW, _builtH, _fit;
 }
 @end
 
@@ -1246,6 +1254,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     if (!(self = [super init])) return nil;
     _rows = [NSMutableArray array];
     _userScale = 1.0;
+    _tab = 0;
     return self;
 }
 
@@ -1276,17 +1285,16 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     _box.clipsToBounds = YES;
     [_win.rootViewController.view addSubview:_box];
 
-    [self buildChrome];
     _userScale = [gCore doubleForKey:kUiScale def:100];
+    _tab = 0;
     [self layoutAll];
-    [self setTab:0 animated:NO];
 
-    _box.transform = CGAffineTransformMakeScale(0.92, 0.92);
+    _box.transform = CGAffineTransformMakeScale(_fit * 0.92, _fit * 0.92);
     _box.alpha = 0;
     _dim.alpha = 0;
     [UIView animateWithDuration:0.42 delay:0 usingSpringWithDamping:0.78 initialSpringVelocity:0.9
                         options:UIViewAnimationOptionAllowUserInteraction animations:^{
-        self->_box.transform = CGAffineTransformIdentity;
+        self->_box.transform = [self fitT];
         self->_box.alpha = [gCore doubleForKey:kMenuOpacity def:96] / 100.0;
         self->_dim.alpha = 1;
     } completion:nil];
@@ -1301,7 +1309,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     [_statusTimer invalidate];
     _statusTimer = nil;
     [UIView animateWithDuration:0.2 animations:^{
-        self->_box.transform = CGAffineTransformMakeScale(0.94, 0.94);
+        self->_box.transform = CGAffineTransformMakeScale(self->_fit * 0.94, self->_fit * 0.94);
         self->_box.alpha = 0;
         self->_dim.alpha = 0;
     } completion:^(BOOL f) {
@@ -1312,24 +1320,59 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     }];
 }
 
+- (CGAffineTransform)fitT { return CGAffineTransformMakeScale(_fit, _fit); }
+
 - (void)layoutAll
 {
     if (!_win || !_box) return;
     CGRect b = _win.bounds;
     if (b.size.width < 40 || b.size.height < 40) return;
     _dim.frame = b;
+
     UIEdgeInsets in = _win.safeAreaInsets;
-    CGFloat fit = MIN((b.size.width - in.left - in.right - 24) / DW,
-                      (b.size.height - in.top - in.bottom - 24) / DH);
-    CGFloat k = fit * MIN(1.0, _userScale / 100.0);
-    _box.transform = CGAffineTransformMakeScale(k, k);
+    CGFloat ratio = b.size.width / MAX(1.0, b.size.height);
+    CGFloat dw = (ratio >= 1.0) ? BK_DH * ratio : BK_DH;
+    CGFloat dh = (ratio >= 1.0) ? BK_DH : BK_DH / ratio;
+
+    CGFloat mx = MAX(16.0, b.size.width * 0.05);
+    CGFloat my = MAX(12.0, b.size.height * 0.06);
+    CGFloat aw = b.size.width - in.left - in.right - 2 * mx;
+    CGFloat ah = b.size.height - in.top - in.bottom - 2 * my;
+    CGFloat fit = MIN(aw / dw, ah / dh);
+    if (fit <= 0.05) fit = 0.05;
+
+    if (fabs(dw - _builtW) > 1.5 || fabs(dh - _builtH) > 1.5) {
+        _builtW = dw; _builtH = dh;
+        [self rebuildCanvas];
+    }
+
+    _fit = fit * MIN(1.0, _userScale / 100.0);
+    _box.transform = [self fitT];
     _box.center = CGPointMake(b.size.width / 2, b.size.height / 2 + (in.top - in.bottom) / 2);
     _box.alpha = [gCore doubleForKey:kMenuOpacity def:96] / 100.0;
 }
 
+- (void)rebuildCanvas
+{
+    if (!_box) return;
+    gDW = _builtW;
+    gDH = _builtH;
+    gSB = MAX(150.0, _builtW * (BK_SBW / BK_DW));
+    [_sidebar removeFromSuperview]; _sidebar = nil;
+    [_content removeFromSuperview]; _content = nil;
+    [_rows removeAllObjects];
+    _inner = nil; _scroll = nil; _statusLbl = nil;
+    _box.frame = CGRectMake(0, 0, gDW, gDH);
+    [self buildChrome];
+    _tab = MAX(0, MIN(4, _tab));
+    NSInteger t = _tab;
+    _tab = -1;
+    [self setTab:t animated:NO];
+}
+
 - (void)buildChrome
 {
-    _sidebar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 210, DH)];
+    _sidebar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, SBW, DH)];
     _sidebar.backgroundColor = SIDE;
     [_box addSubview:_sidebar];
     UIImageView *logo = [[UIImageView alloc] initWithImage:BKIcon(@"cursor", 30, ACC)];
@@ -1346,15 +1389,15 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     NSArray *names = @[@"Cursor", @"Mapa", @"Teclas", @"Perfis", @"Sobre"];
     NSArray *icons = @[@"cursor", @"map", @"keys", @"user", @"info"];
     for (NSInteger i = 0; i < (NSInteger)names.count; i++) {
-        UIControl *c = [[UIControl alloc] initWithFrame:CGRectMake(0, 130 + i * 108, 210, 92)];
+        UIControl *c = [[UIControl alloc] initWithFrame:CGRectMake(0, 130 + i * 108, SBW, 92)];
         c.tag = i;
         [c addTarget:self action:@selector(tabTap:) forControlEvents:UIControlEventTouchUpInside];
         UIImageView *ic = [[UIImageView alloc] initWithImage:BKIcon(icons[i], 34, DIM)];
-        ic.frame = CGRectMake(88, 8, 34, 34);
+        ic.frame = CGRectMake((SBW - 34) / 2, 8, 34, 34);
         ic.tag = 10;
         [c addSubview:ic];
         UILabel *l = [UILabel new];
-        l.frame = CGRectMake(0, 50, 210, 24);
+        l.frame = CGRectMake(0, 50, SBW, 24);
         l.text = names[i];
         l.textColor = DIM;
         l.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
@@ -1426,7 +1469,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 }
 - (UIView *)shell:(CGFloat)h
 {
-    UIView *r = [[UIView alloc] initWithFrame:CGRectMake(0, 0, DW - 210 - 76, h)];
+    UIView *r = [[UIView alloc] initWithFrame:CGRectMake(0, 0, DW - SBW - 76, h)];
     r.backgroundColor = ROW;
     r.layer.cornerRadius = 14;
     [_rows addObject:r];
@@ -1589,7 +1632,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 - (UIView *)buildTab:(NSInteger)tab
 {
     [_rows removeAllObjects];
-    UIView *host = [[UIView alloc] initWithFrame:CGRectMake(210, 0, DW - 210, DH)];
+    UIView *host = [[UIView alloc] initWithFrame:CGRectMake(SBW, 0, DW - SBW, DH)];
     CGFloat y = 158;
 
     if (tab == 0) {
@@ -1719,11 +1762,11 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
         [self tickStatus];
     }
 
-    UIScrollView *sv = [[UIScrollView alloc] initWithFrame:CGRectMake(210, 0, DW - 210, DH)];
+    UIScrollView *sv = [[UIScrollView alloc] initWithFrame:CGRectMake(SBW, 0, DW - SBW, DH)];
     sv.showsVerticalScrollIndicator = NO;
     sv.delegate = self;
     _scroll = sv;
-    UIView *in = [[UIView alloc] initWithFrame:CGRectMake(0, 0, DW - 210, MAX(DH, y + 40))];
+    UIView *in = [[UIView alloc] initWithFrame:CGRectMake(0, 0, DW - SBW, MAX(DH, y + 40))];
     _inner = in;
     for (UIView *v in host.subviews) { [v removeFromSuperview]; [in addSubview:v]; }
     sv.contentSize = in.bounds.size;

@@ -265,6 +265,13 @@ static void BKLoadEnabled(void)
                                             encoding:NSUTF8StringEncoding error:nil];
     gEnabled = [s isEqualToString:@"1"];
 }
+static void BKAlive(void)
+{
+    [NSFileManager.defaultManager createDirectoryAtPath:BKStateDir() withIntermediateDirectories:YES attributes:nil error:nil];
+    [[NSString stringWithFormat:@"%f", CFAbsoluteTimeGetCurrent()]
+        writeToFile:[BKStateDir() stringByAppendingPathComponent:@"alive"]
+        atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
 
 // ---- ativador externo (app BallKey) ----
 #define BK_NOTE_PANEL "com.wjf.ballkey.panel"
@@ -2101,6 +2108,9 @@ static void BKStart(void)
     [@"" writeToFile:gLog atomically:NO encoding:NSUTF8StringEncoding error:nil];
     BKLoadEnabled();
     BKLog(@"boot v6 springboard enabled:%d", gEnabled);
+
+    BKAlive();
+    [NSTimer scheduledTimerWithTimeInterval:20 repeats:YES block:^(NSTimer *t) { BKAlive(); }];
 
     BKInstall();
     BKLog(@"hid:%d sys:%d", gHidOk, gSys != NULL);

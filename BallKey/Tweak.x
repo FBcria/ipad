@@ -68,29 +68,42 @@ static NSString *const kCursor=@"cursor", *const kSens=@"sens", *const kCurve=@"
 @interface BKUI : NSObject
 + (void)show; + (void)hide; + (void)relayout; + (void)openEditor; + (void)closeEditor;
 + (void)editorKey:(int)usage; + (void)editorSelectionChanged;
-- (void)layoutAll;
-@end
-
-@interface BKCore : NSObject
-+ (instancetype)shared;
-- (void)load; - (void)save; - (void)resetDefaults;
-- (BOOL)boolForKey:(NSString *)k def:(BOOL)d; - (void)setBool:(BOOL)v forKey:(NSString *)k;
-- (double)doubleForKey:(NSString *)k def:(double)d; - (void)setDouble:(double)v forKey:(NSString *)k;
-- (NSInteger)intForKey:(NSString *)k def:(NSInteger)d; - (void)setInt:(NSInteger)v forKey:(NSString *)k;
-- (NSMutableArray *)marks; - (void)setMarks:(NSArray *)a;
-- (NSArray<NSString *> *)profileNames; - (void)saveProfile:(NSString *)n;
-- (void)loadProfile:(NSString *)n; - (void)deleteProfile:(NSString *)n;
-@property (nonatomic, copy) void (^onChange)(NSString *key);
-@end
-
-static NSDictionary *BKDefaults(void)
+- (void)layoutAll
 {
-    return @{kCursor:@NO, kSens:@1.0, kCurve:@(BKCurveLinear), kSmooth:@0, kYRatio:@100, kFovCircle:@YES,
-             kLockRadius:@70, kRecenter:@(BKRecenterOnRelease), kHideCursor:@NO, kCursorSize:@30, kMarkSize:@26,
-             kMarkOpacity:@30, kMarkLabels:@YES, kSnapGrid:@NO, kShowMarks:@NO, kFireMode:@(BKFireModeSingle),
-             kTapMode:@(BKTapModeHold), kRepeatCount:@4, kHoldAim:@YES, kNormDiag:@YES, kJoySpeed:@7,
-             kJoyCenter:@(BKJoyCenterAverage), kRepeatDelay:@60, kMenuOpacity:@96, kUiScale:@100,
-             kAutoProfile:@YES, kJoyFx:@0.15, kJoyFy:@0.72, kHideRec:@NO};
+    if (!_win || !_box) return;
+
+    CGSize sc = BKSize();
+    CGRect b = CGRectMake(0, 0, sc.width, sc.height);
+    if (b.size.width < 40 || b.size.height < 40) return;
+
+    if (fabs(_win.frame.size.width - b.size.width) > 1 || fabs(_win.frame.size.height - b.size.height) > 1)
+        _win.frame = b;
+    _dim.frame = b;
+
+    UIEdgeInsets in = _win.safeAreaInsets;
+    CGFloat L = MAX(b.size.width, b.size.height);
+    CGFloat S = MIN(b.size.width, b.size.height);
+
+    CGFloat dh = BK_DH;
+    CGFloat dw = BK_DH * 1.6;
+
+    CGFloat mx = MAX(16.0, L * 0.07);
+    CGFloat my = MAX(12.0, S * 0.11);
+    CGFloat aw = L - in.left - in.right - 2 * mx;
+    CGFloat ah = S - in.top - in.bottom - 2 * my;
+    CGFloat fit = MIN(aw / dw, ah / dh);
+    if (fit <= 0.05) fit = 0.05;
+
+    if (fabs(dw - _builtW) > 1.5 || fabs(dh - _builtH) > 1.5) {
+        _builtW = dw; _builtH = dh;
+        [self rebuildCanvas];
+    }
+    _box.frame = CGRectMake(0, 0, dw, dh);
+
+    _fit = fit * MIN(1.0, _userScale / 100.0);
+    _box.transform = [self fitT];
+    _box.center = CGPointMake(b.size.width / 2, b.size.height / 2);
+    _box.alpha = [gCore doubleForKey:kMenuOpacity def:96] / 100.0;
 }
 
 static NSArray *BKDefaultMarks(void)

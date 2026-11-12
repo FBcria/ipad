@@ -1,1 +1,19 @@
-
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleDevelopmentRegion</key><string>pt_BR</string>
+<key>CFBundleDisplayName</key><string>BallKey</string>
+<key>CFBundleExecutable</key><string>BallKeyApp</string>
+<key>CFBundleIdentifier</key><string>com.wjf.ballkeyapp</string>
+<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+<key>CFBundleName</key><string>BallKey</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>6.0.0</string>
+<key>CFBundleVersion</key><string>6.0.0</string>
+<key>LSRequiresIPhoneOS</key><true/>
+<key>MinimumOSVersion</key><string>15.0</string>
+<key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
+<key>UIRequiredDeviceCapabilities</key><array><string>arm64</string></array>
+<key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
+<key>UILaunchScreen</key><dict/>
+</dict></plist>

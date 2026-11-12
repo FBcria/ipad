@@ -1203,7 +1203,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 - (void)toggleRow:(NSString *)title key:(NSString *)key y:(CGFloat)y host:(UIView *)host;
 - (void)tgChanged:(BKToggle *)t;
 - (void)sliderRow:(NSString *)title key:(NSString *)key min:(double)mn max:(double)mx
-                y:(CGFloat)y host:(UIView *)host fmt:(NSString *(double))fmt;
+                y:(CGFloat)y host:(UIView *)host fmt:(NSString *(^)(double))fmt;
 - (void)slChanged:(BKSlider *)s;
 - (void)dropRow:(NSString *)title key:(NSString *)key options:(NSArray *)opts y:(CGFloat)y host:(UIView *)host;
 - (void)dropTap:(UIButton *)b;
@@ -1617,7 +1617,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     v.text = fmt ? fmt(s.value) : [NSString stringWithFormat:@"%.0f", s.value];
     objc_setAssociatedObject(s, "k", key, OBJC_ASSOCIATION_RETAIN);
     objc_setAssociatedObject(s, "v", v, OBJC_ASSOCIATION_RETAIN);
-    objc_setAssociatedObject(s, "f", fmt, OBJC_ASSOCIATION_RETAIN);
+    objc_setAssociatedObject(s, "f", fmt, OBJC_ASSOCIATION_COPY);
     [s addTarget:self action:@selector(slChanged:) forControlEvents:UIControlEventValueChanged];
     [r addSubview:s];
     [host addSubview:r];

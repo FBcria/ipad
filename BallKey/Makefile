@@ -1,11 +1,15 @@
-export THEOS_PACKAGE_SCHEME = roothide
+export THEOS_PACKAGE_SCHEME = rootless
 
-TARGET := iphone:clang:latest:15.0
-ARCHS := arm64
+TARGET := iphone:clang:latest:14.0
+ARCHS := arm64 arm64e
+INSTALL_TARGET_PROCESSES = SpringBoard
 
 include $(THEOS)/makefiles/common.mk
 
-SUBPROJECTS += Engine
-SUBPROJECTS += Overlay
+TWEAK_NAME = BallKey
 
-include $(THEOS)/makefiles/aggregate.mk
+BallKey_FILES = Tweak.x
+BallKey_CFLAGS = -fobjc-arc -Wno-unused-parameter
+BallKey_FRAMEWORKS = UIKit Foundation CoreGraphics
+
+include $(THEOS_MAKE_PATH)/tweak.mk

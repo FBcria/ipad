@@ -10,8 +10,10 @@
 typedef struct __IOHIDEvent *IOHIDEventRef;
 typedef double IOHIDFloat;
 typedef uint64_t BKAbsTime;
+typedef uint32_t IOOptionBits;
 
 #define kFieldDigIsDisplayIntegrated 0x000B0046u
+#define kTransducerFinger 2
 
 static NSString *gBase = nil;
 static NSString *gCfg = nil;
@@ -51,7 +53,6 @@ static int gInjSeen = 0;
 
 static double gSens = 1.7;
 static double gCx = 0.0, gCy = 0.0;
-static double gFx = 0.0, gFy = 0.0;
 static double gLastX = 0.0, gLastY = 0.0;
 static BOOL gLastValid = NO;
 static int gPtrMask = 0;
@@ -80,6 +81,7 @@ static void BKCursorPaint(void);
 static void BKPtrDelta(double dx, double dy);
 static void BKKey(int usage, BOOL down);
 static void BKButton(int btn, BOOL down);
+static void BKMarkerPress(int idx, BOOL down);
 static void BKReleaseAll(void);
 static void BKInject(int finger, double x, double y, BOOL down, BOOL move);
 static void BKBuildBall(void);
@@ -90,6 +92,14 @@ static void BKOpenEdit(void);
 static void BKCloseEdit(void);
 static void BKInstall(void);
 static void BKCaptureStart(void);
+
+@interface BKEdit : NSObject
++ (void)add:(UIButton *)b;
++ (void)del:(UIButton *)b;
++ (void)done:(UIButton *)b;
++ (void)cancel:(UIButton *)b;
++ (void)key:(int)usage;
+@end
 
 static NSString *BKPath(NSString *name)
 {
@@ -123,10 +133,8 @@ static double BKClamp(double v, double lo, double hi)
 
 static CGSize BKSize(void)
 {
-    UIWindow *w = gBallWin ?: UIApplication.sharedApplication.keyWindow;
-    CGSize s = w ? w.bounds.size : CGSizeMake(414, 736);
-    if (s.width < 100) s = CGSizeMake(414, 736);
-    return s;
+    if (gBallWin) return gBallWin.bounds.size;
+    return UIScreen.mainScreen.bounds.size;
 }
 
 #pragma mark - Config
@@ -199,12 +207,9 @@ static UIColor *BKColor(NSString *t)
 static void BKInject(int finger, double x, double y, BOOL down, BOOL move)
 {
     if (!pCreateFinger || !origEnq) return;
-    uint32_t mask = 0;
-    if (move) mask = 4;
-    else if (down) mask = 3;
-    else mask = 3;
+    uint32_t mask = move ? 4 : 3;
     IOHIDEventRef ev = pCreateFinger(kCFAllocatorDefault, mach_absolute_time(),
-                                     kIOHIDDigitizerTransducerTypeFinger,
+                                     kTransducerFinger,
                                      (uint32_t)finger, (uint32_t)finger,
                                      mask, x, y, 0.0, down ? 1.0 : 0.0, 0.0,
                                      down ? 1 : 0, down ? 1 : 0, 0);
@@ -221,9 +226,8 @@ static void BKInject(int finger, double x, double y, BOOL down, BOOL move)
 static void BKTap(int finger, double x, double y)
 {
     BKInject(finger, x, y, YES, NO);
-    double px = x, py = y;
-    BKInject(finger, px, py, YES, YES);
-    BKInject(finger, px, py, NO, NO);
+    BKInject(finger, x, y, YES, YES);
+    BKInject(finger, x, y, NO, NO);
 }
 
 #pragma mark - Cursor
@@ -321,6 +325,12 @@ static void BKMarkerPress(int idx, BOOL down)
 static void BKKey(int usage, BOOL down)
 {
     gKeySeen++;
+
+    if (gEditOpen) {
+        if (down) [BKEdit key:usage];
+        return;
+    }
+
     for (int i = 0; i < (int)gMarks.count; i++) {
         NSDictionary *m = gMarks[i];
         if ([m[@"c"] intValue] != usage) continue;
@@ -331,7 +341,6 @@ static void BKKey(int usage, BOOL down)
                 if (gHoldKey[i]) break;
                 gHoldKey[i] = 1;
                 gDirCount++;
-                [BKMarkerPress(i, YES) ];
             } else {
                 if (!gHoldKey[i]) break;
                 gHoldKey[i] = 0;
@@ -358,20 +367,11 @@ static void BKButton(int btn, BOOL down)
         return;
     }
     if (btn == 2) {
-        if (down) {
-            for (int i = 0; i < (int)gMarks.count; i++) {
-                if ([gMarks[i][@"t"] isEqualToString:@"Ads"]) {
-                    BKInject(42, [gMarks[i][@"x"] doubleValue] * BKSize().width,
-                             [gMarks[i][@"y"] doubleValue] * BKSize().height, YES, NO);
-                }
-            }
-        } else {
-            for (int i = 0; i < (int)gMarks.count; i++) {
-                if ([gMarks[i][@"t"] isEqualToString:@"Ads"]) {
-                    BKInject(42, [gMarks[i][@"x"] doubleValue] * BKSize().width,
-                             [gMarks[i][@"y"] doubleValue] * BKSize().height, NO, NO);
-                }
-            }
+        CGSize s = BKSize();
+        for (int i = 0; i < (int)gMarks.count; i++) {
+            if (![gMarks[i][@"t"] isEqualToString:@"Ads"]) continue;
+            BKInject(42, [gMarks[i][@"x"] doubleValue] * s.width,
+                     [gMarks[i][@"y"] doubleValue] * s.height, down, NO);
         }
     }
 }
@@ -380,7 +380,8 @@ static void BKReleaseAll(void)
 {
     for (int i = 0; i < 256; i++) gHoldKey[i] = 0;
     gDirCount = 0;
-    gDirX = 0; gDirY = 0;
+    gDirX = 0;
+    gDirY = 0;
 }
 
 static void BKJoystick(void)
@@ -407,7 +408,8 @@ static void BKJoystick(void)
     }
     double len = sqrt(vx * vx + vy * vy);
     if (len < 0.0001) return;
-    vx /= len; vy /= len;
+    vx /= len;
+    vy /= len;
 
     CGSize s = BKSize();
     gCx = BKClamp(gCx + vx * 7.0, 4, s.width - 4);
@@ -416,7 +418,7 @@ static void BKJoystick(void)
     if (gCursorDown) BKInject(31, gCx, gCy, YES, YES);
 }
 
-static void BKCaptureEvent(IOHIDEventRef ev, int src)
+static void BKCaptureEvent(IOHIDEventRef ev)
 {
     if (!ev) return;
     int type = pGetType ? pGetType(ev) : 0;
@@ -429,7 +431,7 @@ static void BKCaptureEvent(IOHIDEventRef ev, int src)
         return;
     }
 
-    if (type == 17 || type == 18 || type == 0x11) {
+    if (type == 17 || type == 18) {
         gHookSeen++;
         double x = pGetFloat ? pGetFloat(ev, (uint32_t)((type << 16) | 1)) : 0;
         double y = pGetFloat ? pGetFloat(ev, (uint32_t)((type << 16) | 2)) : 0;
@@ -437,7 +439,9 @@ static void BKCaptureEvent(IOHIDEventRef ev, int src)
         if (gLastValid && fabs(x) < 9000 && fabs(y) < 9000) {
             BKPtrDelta(x - gLastX, y - gLastY);
         }
-        gLastX = x; gLastY = y; gLastValid = YES;
+        gLastX = x;
+        gLastY = y;
+        gLastValid = YES;
         if (mask != gPtrMask) {
             if ((mask & 1) && !(gPtrMask & 1)) BKButton(1, YES);
             if (!(mask & 1) && (gPtrMask & 1)) BKButton(1, NO);
@@ -451,7 +455,7 @@ static void BKCaptureEvent(IOHIDEventRef ev, int src)
 static void BKEnq(id self, SEL cmd, IOHIDEventRef ev)
 {
     if (gInjecting == 0) {
-        @try { BKCaptureEvent(ev, 9); } @catch (NSException *e) { }
+        @try { BKCaptureEvent(ev); } @catch (NSException *e) { }
     }
     if (origEnq) origEnq(self, cmd, ev);
 }
@@ -464,7 +468,7 @@ static void BKAttachMouse(void)
     if (!m) { gGcMouse = NO; return; }
     gGcMouse = YES;
     BKLog(@"gc mouse ok");
-    m.mouseInput.movedHandler = ^(GCMouseInput *in, float dx, float dy) {
+    m.mouseInput.mouseMovedHandler = ^(GCMouseInput *in, float dx, float dy) {
         BKPtrDelta(dx, dy);
     };
     m.mouseInput.leftButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) {
@@ -480,7 +484,7 @@ static void BKAttachMouse(void)
 
 static void BKAttachKey(void)
 {
-    GCKeyboard *k = GCKeyboard.current;
+    GCKeyboard *k = [GCKeyboard coalescedKeyboard];
     if (!k) { gGcKey = NO; return; }
     gGcKey = YES;
     BKLog(@"gc key ok");
@@ -507,7 +511,6 @@ static void BKCaptureStart(void)
 static void BKInstall(void)
 {
     void *h = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
-    if (!h) h = dlopen("/System/Library/PrivateFrameworks/IOKit.framework/IOKit", RTLD_LAZY);
     if (h) {
         pCreateFinger = dlsym(h, "IOHIDEventCreateDigitizerFingerEvent");
         pSetInt = dlsym(h, "IOHIDEventSetIntegerValue");
@@ -593,7 +596,11 @@ static void BKRedraw(void)
         NSFontAttributeName: [UIFont boldSystemFontOfSize:13],
         NSForegroundColorAttributeName: [UIColor colorWithRed:0 green:0.9 blue:1 alpha:1]}];
 }
-- (void)bkTap:(UITapGestureRecognizer *)g { if (gMenuOpen) BKCloseMenu(); else BKOpenMenu(); }
+- (void)bkTap:(UITapGestureRecognizer *)g
+{
+    if (gMenuOpen) BKCloseMenu();
+    else BKOpenMenu();
+}
 @end
 
 @interface BKCursorView : UIView
@@ -637,7 +644,11 @@ static void BKRedraw(void)
 - (void)bkPick:(UITapGestureRecognizer *)g
 {
     gSelIdx = (int)self.tag - 300;
-    for (UIView *v in gMarkViews) v.layer.borderColor = BKColor(gMarks[(int)v.tag - 300][@"t"]).CGColor;
+    for (UIView *v in gMarkViews) {
+        int j = (int)v.tag - 300;
+        if (j < 0 || j >= (int)gMarks.count) continue;
+        v.layer.borderColor = BKColor(gMarks[j][@"t"]).CGColor;
+    }
     self.layer.borderColor = UIColor.whiteColor.CGColor;
     if (gSel) gSel.text = @"Aperte uma tecla para ligar";
 }
@@ -660,9 +671,9 @@ static void BKRedraw(void)
 {
     if (!gStatus) return;
     gStatus.text = [NSString stringWithFormat:
-        @"hk:%@ inj:%@ ptr:%d key:%d cap:%d\nmodo:%@ sens:%.1f",
+        @"hk:%@ inj:%@ ptr:%d key:%d cap:%d gc:%d%d\nmodo:%@ sens:%.1f",
         gHidOk ? @"S" : @"N", origEnq ? @"S" : @"N",
-        gPtrSeen, gKeySeen, gHookSeen,
+        gPtrSeen, gKeySeen, gHookSeen, (int)gGcMouse, (int)gGcKey,
         gCursorOn ? @"CURSOR" : (gFps ? @"TRAVA" : @"-"), gSens];
     gStatus.textColor = gCursorOn ? [UIColor colorWithRed:0 green:1 blue:0.6 alpha:1]
                                   : [UIColor colorWithRed:0 green:0.9 blue:1 alpha:1];
@@ -706,26 +717,15 @@ static void BKRedraw(void)
 
 #pragma mark - Editor
 
-@interface BKEdit : NSObject
-+ (void)add:(UIButton *)b;
-+ (void)del:(UIButton *)b;
-+ (void)done:(UIButton *)b;
-+ (void)cancel:(UIButton *)b;
-+ (void)key:(int)usage;
-@end
-
 @implementation BKEdit
 
 + (void)add:(UIButton *)b
 {
-    NSString *t = @[@"Tap", @"Press", @"Dir", @"Fps", @"Ads", @"Fire"][b.tag - 200];
-    CGSize s = gCanvas.bounds.size;
-    NSMutableDictionary *m = [NSMutableDictionary dictionaryWithDictionary:
-        @{@"t": t, @"x": @(0.5), @"y": @(0.5), @"c": @0}];
-    [gMarks addObject:m];
+    NSArray *types = @[@"Tap", @"Press", @"Dir", @"Fps", @"Ads", @"Fire"];
+    [gMarks addObject:[NSMutableDictionary dictionaryWithDictionary:
+        @{@"t": types[b.tag - 200], @"x": @(0.5), @"y": @(0.5), @"c": @0}]];
     gSelIdx = (int)gMarks.count - 1;
     BKRedraw();
-    (void)s;
 }
 
 + (void)del:(UIButton *)b
@@ -770,7 +770,7 @@ static UIWindow *BKMakeWindow(CGRect f, UIWindowLevel lv)
     return w;
 }
 
-static UILabel *BKLabel(CGRect f, CGFloat size, UIColor *c)
+static UILabel *BKMakeLabel(CGRect f, CGFloat size, UIColor *c)
 {
     UILabel *l = [[UILabel alloc] initWithFrame:f];
     l.textColor = c;
@@ -779,7 +779,7 @@ static UILabel *BKLabel(CGRect f, CGFloat size, UIColor *c)
     return l;
 }
 
-static UIButton *BKButton(NSString *title, CGRect f, UIColor *c)
+static UIButton *BKMakeBtn(NSString *title, CGRect f, UIColor *c)
 {
     UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
     b.frame = f;
@@ -796,14 +796,12 @@ static UIButton *BKButton(NSString *title, CGRect f, UIColor *c)
 
 static void BKBuildBall(void)
 {
-    CGSize s = BKSize();
     gBallWin = BKMakeWindow(CGRectMake(0, 40, 60, 60), UIWindowLevelAlert + 200);
     gBall = [[BKBallView alloc] initWithFrame:CGRectMake(0, 0, 60, 60)];
     gBall.backgroundColor = UIColor.clearColor;
     [gBall addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:gBall
                                        action:@selector(bkTap:)]];
     [gBallWin.rootViewController.view addSubview:gBall];
-    (void)s;
 }
 
 static void BKBuildCursor(void)
@@ -832,44 +830,46 @@ static void BKOpenMenu(void)
     panel.layer.cornerRadius = 14;
     [r addSubview:panel];
 
-    UILabel *t = BKLabel(CGRectMake(14, 12, panel.bounds.size.width - 28, 26), 17,
-                         [UIColor colorWithRed:0 green:0.9 blue:1 alpha:1]);
+    UILabel *t = BKMakeLabel(CGRectMake(14, 12, panel.bounds.size.width - 28, 26), 17,
+                             [UIColor colorWithRed:0 green:0.9 blue:1 alpha:1]);
     t.text = @"Mapeador de Teclado e Mouse";
     t.textAlignment = NSTextAlignmentCenter;
     [panel addSubview:t];
 
-    gStatus = BKLabel(CGRectMake(14, 44, panel.bounds.size.width - 28, 52), 12,
-                      [UIColor colorWithRed:0 green:0.9 blue:1 alpha:1]);
+    gStatus = BKMakeLabel(CGRectMake(14, 44, panel.bounds.size.width - 28, 52), 12,
+                          [UIColor colorWithRed:0 green:0.9 blue:1 alpha:1]);
     [panel addSubview:gStatus];
 
-    UIButton *c = BKButton(@"CURSOR DESLIGADO", CGRectMake(14, 104, panel.bounds.size.width - 28, 44),
-                           [UIColor colorWithRed:0 green:1 blue:0.6 alpha:1]);
+    UIButton *c = BKMakeBtn(@"CURSOR DESLIGADO", CGRectMake(14, 104, panel.bounds.size.width - 28, 44),
+                            [UIColor colorWithRed:0 green:1 blue:0.6 alpha:1]);
     [c addTarget:[BKMenu class] action:@selector(toggleCursor:) forControlEvents:UIControlEventTouchUpInside];
     [panel addSubview:c];
 
     UISlider *sl = [[UISlider alloc] initWithFrame:CGRectMake(14, 156, panel.bounds.size.width - 28, 30)];
-    sl.minimumValue = 0.4; sl.maximumValue = 4.0; sl.value = gSens;
+    sl.minimumValue = 0.4;
+    sl.maximumValue = 4.0;
+    sl.value = gSens;
     sl.tintColor = [UIColor colorWithRed:0 green:0.9 blue:1 alpha:1];
     [sl addTarget:[BKMenu class] action:@selector(sensChanged:) forControlEvents:UIControlEventValueChanged];
     [panel addSubview:sl];
 
-    UIButton *m = BKButton(@"MAPEAR BOTÕES", CGRectMake(14, 196, panel.bounds.size.width - 28, 44),
-                           [UIColor colorWithRed:0.65 green:0.40 blue:1 alpha:1]);
+    UIButton *m = BKMakeBtn(@"MAPEAR BOTÕES", CGRectMake(14, 196, panel.bounds.size.width - 28, 44),
+                            [UIColor colorWithRed:0.65 green:0.40 blue:1 alpha:1]);
     [m addTarget:[BKMenu class] action:@selector(openEdit:) forControlEvents:UIControlEventTouchUpInside];
     [panel addSubview:m];
 
-    UIButton *rs = BKButton(@"RESTAURAR PADRÃO", CGRectMake(14, 248, panel.bounds.size.width - 28, 40),
-                            [UIColor colorWithRed:1 green:0.62 blue:0 alpha:1]);
+    UIButton *rs = BKMakeBtn(@"RESTAURAR PADRÃO", CGRectMake(14, 248, panel.bounds.size.width - 28, 40),
+                             [UIColor colorWithRed:1 green:0.62 blue:0 alpha:1]);
     [rs addTarget:[BKMenu class] action:@selector(reset:) forControlEvents:UIControlEventTouchUpInside];
     [panel addSubview:rs];
 
-    UILabel *cr = BKLabel(CGRectMake(14, 300, panel.bounds.size.width - 28, 40), 11, UIColor.grayColor);
+    UILabel *cr = BKMakeLabel(CGRectMake(14, 300, panel.bounds.size.width - 28, 40), 11, UIColor.grayColor);
     cr.text = @"martidev333  -  BallKey\nEsquerdo: atirar   Direito: mirar   Shift: trava";
     cr.textAlignment = NSTextAlignmentCenter;
     [panel addSubview:cr];
 
-    UIButton *f = BKButton(@"FECHAR", CGRectMake(14, 346, panel.bounds.size.width - 28, 42),
-                           [UIColor colorWithRed:1 green:0.3 blue:0.3 alpha:1]);
+    UIButton *f = BKMakeBtn(@"FECHAR", CGRectMake(14, 346, panel.bounds.size.width - 28, 42),
+                            [UIColor colorWithRed:1 green:0.3 blue:0.3 alpha:1]);
     [f addTarget:[BKMenu class] action:@selector(close:) forControlEvents:UIControlEventTouchUpInside];
     [panel addSubview:f];
 
@@ -901,29 +901,33 @@ static void BKOpenEdit(void)
     [r addSubview:gCanvas];
     gMarkViews = [NSMutableArray array];
 
-    UIView *top = [[UIView alloc] initWithFrame:CGRectMake(0, 0, s.width, 86)];
+    UIView *top = [[UIView alloc] initWithFrame:CGRectMake(0, 0, s.width, 136)];
     top.backgroundColor = [UIColor colorWithRed:0.04 green:0.04 blue:0.07 alpha:0.94];
     [r addSubview:top];
 
-    gHint = BKLabel(CGRectMake(10, 6, s.width - 20, 34), 13,
-                    [UIColor colorWithRed:0 green:0.9 blue:1 alpha:1]);
+    gHint = BKMakeLabel(CGRectMake(10, 6, s.width - 20, 34), 13,
+                        [UIColor colorWithRed:0 green:0.9 blue:1 alpha:1]);
     gHint.text = @"Arraste os marcadores. Toque para escolher e apertar a tecla.";
     gHint.numberOfLines = 2;
     [top addSubview:gHint];
 
-    gSel = BKLabel(CGRectMake(10, 44, s.width - 150, 32), 12, UIColor.lightGrayColor);
+    gSel = BKMakeLabel(CGRectMake(10, 44, s.width - 150, 32), 12, UIColor.lightGrayColor);
     [top addSubview:gSel];
 
-    UIButton *ok = BKButton(@"SALVAR", CGRectMake(s.width - 132, 8, 60, 34),
-                            [UIColor colorWithRed:0 green:1 blue:0.6 alpha:1]);
-    ok.tag = 211;
+    UIButton *ok = BKMakeBtn(@"SALVAR", CGRectMake(s.width - 132, 8, 60, 34),
+                             [UIColor colorWithRed:0 green:1 blue:0.6 alpha:1]);
     [ok addTarget:[BKEdit class] action:@selector(done:) forControlEvents:UIControlEventTouchUpInside];
     [top addSubview:ok];
 
-    UIButton *no = BKButton(@"SAIR", CGRectMake(s.width - 66, 8, 56, 34),
-                            [UIColor colorWithRed:1 green:0.3 blue:0.3 alpha:1]);
+    UIButton *no = BKMakeBtn(@"SAIR", CGRectMake(s.width - 66, 8, 56, 34),
+                             [UIColor colorWithRed:1 green:0.3 blue:0.3 alpha:1]);
     [no addTarget:[BKEdit class] action:@selector(cancel:) forControlEvents:UIControlEventTouchUpInside];
     [top addSubview:no];
+
+    UIButton *dl = BKMakeBtn(@"APAGAR", CGRectMake(10, 96, 80, 34),
+                             [UIColor colorWithRed:1 green:0.3 blue:0.3 alpha:1]);
+    [dl addTarget:[BKEdit class] action:@selector(del:) forControlEvents:UIControlEventTouchUpInside];
+    [top addSubview:dl];
 
     UIView *bar = [[UIView alloc] initWithFrame:CGRectMake(0, s.height - 62, s.width, 62)];
     bar.backgroundColor = [UIColor colorWithRed:0.04 green:0.04 blue:0.07 alpha:0.94];
@@ -933,20 +937,14 @@ static void BKOpenEdit(void)
     NSArray *types = @[@"Tap", @"Press", @"Dir", @"Fps", @"Ads", @"Fire"];
     CGFloat w = (s.width - 20) / 6.0;
     for (int i = 0; i < 6; i++) {
-        UIButton *b = BKButton(names[i], CGRectMake(10 + w * i, s.height - 54, w - 4, 44),
-                               BKColor(types[i]));
+        UIButton *b = BKMakeBtn(names[i], CGRectMake(10 + w * i, s.height - 54, w - 4, 44),
+                                BKColor(types[i]));
         b.tag = 200 + i;
         [b addTarget:[BKEdit class] action:@selector(add:) forControlEvents:UIControlEventTouchUpInside];
         [bar addSubview:b];
     }
 
     BKRedraw();
-
-    UIButton *dl = BKButton(@"APAGAR", CGRectMake(10, 96, 80, 34),
-                            [UIColor colorWithRed:1 green:0.3 blue:0.3 alpha:1]);
-    [dl addTarget:[BKEdit class] action:@selector(del:) forControlEvents:UIControlEventTouchUpInside];
-    [top addSubview:dl];
-    top.frame = CGRectMake(0, 0, s.width, 136);
 }
 
 static void BKCloseEdit(void)
@@ -968,6 +966,15 @@ static void BKCloseEdit(void)
 static void BKTick(void)
 {
     @try { BKJoystick(); } @catch (NSException *e) { }
+}
+
+static void BKStatus(void)
+{
+    NSString *s = [NSString stringWithFormat:@"hk:%@ inj:%@ key:%d ptr:%d cap:%d gc:%d%d injn:%d",
+                   gHidOk ? @"S" : @"N", origEnq ? @"S" : @"N",
+                   gKeySeen, gPtrSeen, gHookSeen, (int)gGcMouse, (int)gGcKey, gInjSeen];
+    [s writeToFile:BKPath(@"status.txt") atomically:NO encoding:NSUTF8StringEncoding error:nil];
+    BKLog(@"status %@", s);
 }
 
 static void BKStart(void)
@@ -995,14 +1002,6 @@ static void BKStart(void)
     dispatch_resume(gTick);
 
     gReady = YES;
-}
-
-static void BKStatus(void)
-{
-    NSString *s = [NSString stringWithFormat:@"hk:%@ inj:%@ key:%d ptr:%d",
-                   gHidOk ? @"S" : @"N", origEnq ? @"S" : @"N", gKeySeen, gPtrSeen];
-    [s writeToFile:BKPath(@"status.txt") atomically:NO encoding:NSUTF8StringEncoding error:nil];
-    BKLog(@"status %@", s);
 }
 
 __attribute__((constructor))

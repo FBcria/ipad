@@ -8,19 +8,23 @@ make clean && make package FINALPACKAGE=1
 DEB=$(ls packages/*.deb | head -1)
 cd ../BallKeyApp
 make clean && make FINALPACKAGE=1
-APP=$(find .theos/obj -maxdepth 4 -type d -name "*.app" | head -1)
-[ -n "$APP" ] || APP=$(find .theos/_ -maxdepth 8 -type d -name "*.app" | head -1)
-NAME=$(basename "$APP")
-BIN="${NAME%.app}"
+BIN=$(find .theos/obj -maxdepth 4 -type f -name "BallKeyApp" | head -1)
+[ -n "$BIN" ] || { echo "binario nao gerado"; exit 1; }
 cd ..
-rm -rf Payload && mkdir -p Payload
-cp -R "BallKeyApp/$APP" Payload/
-cp "BallKey/$DEB" "Payload/$NAME/"
+
+rm -rf Payload
+mkdir -p Payload/BallKeyApp.app
+cp "BallKeyApp/$BIN" Payload/BallKeyApp.app/BallKeyApp
+cp BallKeyApp/Info.plist Payload/BallKeyApp.app/Info.plist
+cp "BallKey/$DEB" Payload/BallKeyApp.app/
+chmod +x Payload/BallKeyApp.app/BallKeyApp
+
 if command -v ldid >/dev/null; then
-  ldid -S BallKeyApp/entitlements.plist "Payload/$NAME/$BIN" || true
+  ldid -SBallKeyApp/entitlements.plist Payload/BallKeyApp.app/BallKeyApp
 elif [ -x "$THEOS/bin/ldid" ]; then
-  "$THEOS/bin/ldid" -S BallKeyApp/entitlements.plist "Payload/$NAME/$BIN" || true
+  "$THEOS/bin/ldid" -SBallKeyApp/entitlements.plist Payload/BallKeyApp.app/BallKeyApp
 fi
+
 rm -f BallKey.tipa
 zip -qr BallKey.tipa Payload
 rm -rf Payload

@@ -5,7 +5,7 @@
 #import <notify.h>
 #import <dlfcn.h>
 
-#define kBKBuildTag    @"b38"
+#define kBKBuildTag    @"b39"
 #define kBKConfigPath  @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 #define kBKNotifyLoad  "com.wjf.ballkey.reload"
 #define kBKNotifyTest  "com.wjf.ballkey.test"

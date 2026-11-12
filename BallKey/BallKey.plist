@@ -6,8 +6,7 @@
 	<dict>
 		<key>Bundles</key>
 		<array>
-			<string>com.dts.freefireth</string>
-			<string>com.dts.freefiremax</string>
+			<string>com.apple.springboard</string>
 		</array>
 	</dict>
 </dict>

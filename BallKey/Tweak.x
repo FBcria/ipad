@@ -256,8 +256,8 @@ static void BKSetEnabled(BOOL on)
 {
     gEnabled = on;
     [NSFileManager.defaultManager createDirectoryAtPath:BKStateDir() withIntermediateDirectories:YES attributes:nil error:nil];
-    [@(on ? @"1" : @"0") writeToFile:[BKStateDir() stringByAppendingPathComponent:@"enabled"]
-                          atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [(on ? @"1" : @"0") writeToFile:[BKStateDir() stringByAppendingPathComponent:@"enabled"]
+                         atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 static void BKLoadEnabled(void)
 {

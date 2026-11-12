@@ -242,6 +242,12 @@ CGSize BKSize(void)
     if (s) { CGSize z = s.coordinateSpace.bounds.size; if (z.width > 1) return z; }
     return UIScreen.mainScreen.bounds.size;
 }
+static CGFloat BKAngle(void)
+{
+    UIDeviceOrientation o = UIDevice.currentDevice.orientation;
+    if (o == UIDeviceOrientationLandscapeLeft) return -M_PI_2;
+    return M_PI_2;
+}
 static void BKLog(NSString *fmt, ...)
 {
     if (!gLog) return;
@@ -784,10 +790,11 @@ static void BKHook(void)
 static UIWindow *BKWin(UIWindowLevel lv, BOOL passThrough)
 {
     UIWindowScene *sc = BKScene();
+    CGSize sp = UIScreen.mainScreen.bounds.size;
     UIWindow *w = sc ? [[UIWindow alloc] initWithWindowScene:sc]
                      : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     if (passThrough) object_setClass(w, [BKPassWindow class]);
-    w.frame = CGRectMake(0, 0, BKSize().width, BKSize().height);
+    w.frame = CGRectMake(0, 0, sp.width, sp.height);
     w.windowLevel = lv;
     w.backgroundColor = UIColor.clearColor;
     w.rootViewController = [BKHostVC new];
@@ -1196,7 +1203,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 - (void)toggleRow:(NSString *)title key:(NSString *)key y:(CGFloat)y host:(UIView *)host;
 - (void)tgChanged:(BKToggle *)t;
 - (void)sliderRow:(NSString *)title key:(NSString *)key min:(double)mn max:(double)mx
-                y:(CGFloat)y host:(UIView *)host fmt:(NSString *(^)(double))fmt;
+                y:(CGFloat)y host:(UIView *)host fmt:(NSString *(double))fmt;
 - (void)slChanged:(BKSlider *)s;
 - (void)dropRow:(NSString *)title key:(NSString *)key options:(NSArray *)opts y:(CGFloat)y host:(UIView *)host;
 - (void)dropTap:(UIButton *)b;
@@ -1254,7 +1261,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
 - (void)present
 {
-    CGSize s = BKSize();
+    CGSize sp = UIScreen.mainScreen.bounds.size;
     UIWindowScene *sc = BKScene();
     _win = sc ? [[UIWindow alloc] initWithWindowScene:sc]
               : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
@@ -1262,7 +1269,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     _win.windowLevel = UIWindowLevelAlert + 550;
     _win.backgroundColor = UIColor.clearColor;
     _win.rootViewController = [BKHostVC new];
-    _win.frame = CGRectMake(0, 0, s.width, s.height);
+    _win.frame = CGRectMake(0, 0, sp.width, sp.height);
     _win.hidden = NO;
     BKSetInputGated(YES);
 
@@ -1324,43 +1331,38 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
 - (CGRect)stageBounds
 {
-    CGRect wb = _win.bounds;
-    if (wb.size.width < 40 || wb.size.height < 40) {
-        CGSize scr = BKSize();
-        wb = CGRectMake(0, 0, scr.width, scr.height);
-    }
+    CGSize sp = UIScreen.mainScreen.bounds.size;
+    CGFloat W = MIN(sp.width, sp.height);
+    CGFloat H = MAX(sp.width, sp.height);
+    if (W < 40 || H < 40) { W = 375; H = 667; }
 
-    CGFloat L = MAX(wb.size.width, wb.size.height);
-    CGFloat S = MIN(wb.size.width, wb.size.height);
+    CGRect wf = _win.frame;
+    if (fabs(wf.size.width - W) > 1 || fabs(wf.size.height - H) > 1)
+        _win.frame = CGRectMake(0, 0, W, H);
 
     UIView *root = _win.rootViewController.view;
     if (root) {
         root.autoresizingMask = UIViewAutoresizingNone;
-        CGFloat ang = 0;
-        if (wb.size.width < wb.size.height) {
-            UIDeviceOrientation o = UIDevice.currentDevice.orientation;
-            ang = (o == UIDeviceOrientationLandscapeLeft) ? -M_PI_2 : M_PI_2;
-        }
-        root.transform = CGAffineTransformMakeRotation(ang);
-        root.bounds = CGRectMake(0, 0, L, S);
-        root.center = CGPointMake(CGRectGetMidX(wb), CGRectGetMidY(wb));
+        root.transform = CGAffineTransformMakeRotation(BKAngle());
+        root.bounds = CGRectMake(0, 0, H, W);
+        root.center = CGPointMake(W / 2, H / 2);
     }
-    return CGRectMake(0, 0, L, S);
+    return CGRectMake(0, 0, H, W);
 }
 
 - (void)applyCenter
 {
     if (!_box || _builtW < 1) return;
-    CGRect b = CGRectMake(0, 0, MAX(_win.bounds.size.width, _win.bounds.size.height),
-                          MIN(_win.bounds.size.width, _win.bounds.size.height));
-    if (b.size.width < 40 || b.size.height < 40) return;
+    CGSize sp = UIScreen.mainScreen.bounds.size;
+    CGFloat W = MIN(sp.width, sp.height), H = MAX(sp.width, sp.height);
+    if (W < 40 || H < 40) return;
 
     CGFloat w = _builtW * _fit, h = _builtH * _fit;
-    CGFloat cx = CGRectGetMidX(b) + _boxOffset.x;
-    CGFloat cy = b.origin.y + _topM + h / 2 + _boxOffset.y;
+    CGFloat cx = H / 2 + _boxOffset.x;
+    CGFloat cy = _topM + h / 2 + _boxOffset.y;
 
-    CGFloat loX = b.origin.x + w / 2, hiX = CGRectGetMaxX(b) - w / 2;
-    CGFloat loY = b.origin.y + h / 2, hiY = CGRectGetMaxY(b) - h / 2;
+    CGFloat loX = w / 2, hiX = H - w / 2;
+    CGFloat loY = h / 2, hiY = W - h / 2;
     if (hiX > loX) cx = MIN(MAX(cx, loX), hiX);
     if (hiY > loY) cy = MIN(MAX(cy, loY), hiY);
 
@@ -1924,12 +1926,15 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
 - (void)presentEditor
 {
-    CGSize s = BKSize();
+    CGSize sp = UIScreen.mainScreen.bounds.size;
+    CGFloat W = MIN(sp.width, sp.height), H = MAX(sp.width, sp.height);
+    CGSize s = CGSizeMake(H, W);
+
     UIWindowScene *sc = BKScene();
     _win = sc ? [[UIWindow alloc] initWithWindowScene:sc]
               : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     _win.windowLevel = UIWindowLevelAlert + 560;
-    _win.frame = CGRectMake(0, 0, s.width, s.height);
+    _win.frame = CGRectMake(0, 0, W, H);
     _win.backgroundColor = UIColor.clearColor;
     _win.rootViewController = [BKHostVC new];
     _win.hidden = NO;
@@ -1937,6 +1942,11 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     BKSetInputGated(YES);
 
     UIView *r = _win.rootViewController.view;
+    r.autoresizingMask = UIViewAutoresizingNone;
+    r.transform = CGAffineTransformMakeRotation(BKAngle());
+    r.bounds = CGRectMake(0, 0, s.width, s.height);
+    r.center = CGPointMake(W / 2, H / 2);
+
     UIView *canvas = [[UIView alloc] initWithFrame:r.bounds];
     [r addSubview:canvas];
     BKUISetCanvas(canvas);

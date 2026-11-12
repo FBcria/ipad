@@ -7,9 +7,9 @@ cd BallKey
 make clean && make package FINALPACKAGE=1
 DEB=$(ls packages/*.deb | head -1)
 cd ../BallKeyApp
-make clean && make package FINALPACKAGE=1
-APP=$(find .theos/_ -maxdepth 8 -type d -name "*.app" | head -1)
-[ -n "$APP" ] || APP=$(find .theos/obj -maxdepth 4 -type d -name "*.app" | head -1)
+make clean && make FINALPACKAGE=1
+APP=$(find .theos/obj -maxdepth 4 -type d -name "*.app" | head -1)
+[ -n "$APP" ] || APP=$(find .theos/_ -maxdepth 8 -type d -name "*.app" | head -1)
 NAME=$(basename "$APP")
 BIN="${NAME%.app}"
 cd ..

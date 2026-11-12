@@ -4,6 +4,14 @@
 static NSString *const kNotePanel = @"com.wjf.ballkey.panel";
 static NSString *const kNoteGame  = @"com.wjf.ballkey.panelgame";
 
+static void BKMark(NSString *s)
+{
+    NSString *p = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject];
+    if (!p) return;
+    [[NSFileManager defaultManager] createDirectoryAtPath:p withIntermediateDirectories:YES attributes:nil error:nil];
+    [s writeToFile:[p stringByAppendingPathComponent:@"boot.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
 static BOOL BKInstalled(void)
 {
     NSArray *paths = @[@"/var/jb/Library/MobileSubstrate/DynamicLibraries/BallKey.plist",
@@ -42,6 +50,7 @@ static void BKPost(NSString *name)
 - (void)viewDidLoad
 {
     [super viewDidLoad];
+    BKMark(@"viewDidLoad");
     self.view.backgroundColor = [UIColor colorWithRed:0.05 green:0.07 blue:0.12 alpha:1];
 
     UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(20, 84, 335, 34)];
@@ -153,6 +162,7 @@ static void BKPost(NSString *name)
 @implementation BKDelegate
 - (BOOL)application:(UIApplication *)a didFinishLaunchingWithOptions:(NSDictionary *)o
 {
+    BKMark(@"didFinishLaunching");
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.rootViewController = [[UINavigationController alloc] initWithRootViewController:[BKVC new]];
     [self.window makeKeyAndVisible];
@@ -162,5 +172,8 @@ static void BKPost(NSString *name)
 
 int main(int argc, char **argv)
 {
-    @autoreleasepool { return UIApplicationMain(argc, argv, nil, @"BKDelegate"); }
+    @autoreleasepool {
+        BKMark(@"main");
+        return UIApplicationMain(argc, argv, nil, @"BKDelegate");
+    }
 }

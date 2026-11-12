@@ -5,7 +5,7 @@
 #import <notify.h>
 #import <dlfcn.h>
 
-#define kBKBuildTag    @"b37"
+#define kBKBuildTag    @"b38"
 #define kBKConfigPath  @"/var/mobile/Library/Preferences/com.wjf.ballkey.plist"
 #define kBKNotifyLoad  "com.wjf.ballkey.reload"
 #define kBKNotifyTest  "com.wjf.ballkey.test"
@@ -14,6 +14,8 @@
 #define kBKOSafeFile   @"/var/mobile/bk_overlay_safe.txt"
 #define kBKOTryFile    @"/var/mobile/bk_ot.txt"
 #define kBKTagBall     9001
+#define kBKLib1        @"/var/jb/usr/lib/TweakInject/BallKeyEngine.dylib"
+#define kBKLib2        @"/var/jb/Library/MobileSubstrate/DynamicLibraries/BallKeyEngine.dylib"
 
 #define kBKNeon  [UIColor colorWithRed:0.15 green:0.98 blue:0.85 alpha:1.0]
 #define kBKNeon2 [UIColor colorWithRed:0.45 green:0.35 blue:1.00 alpha:1.0]
@@ -223,14 +225,16 @@ static NSMutableArray *BKProfile(NSMutableDictionary *cfg)
 static void BKLoadEngine(void)
 {
     if (gEngineLoaded) return;
-    if (gLoadTries > 20) return;
+    if (gLoadTries > 30) return;
     gLoadTries++;
     @try {
         if (BKExists(kBKOffFile)) return;
-        NSString *cand = @"/var/jb/Library/MobileSubstrate/DynamicLibraries/BallKeyEngine.dylib";
-        if (!BKExists(cand)) return;
+        NSString *cand = nil;
+        if (BKExists(kBKLib1)) cand = kBKLib1;
+        else if (BKExists(kBKLib2)) cand = kBKLib2;
+        if (!cand) return;
         void *h = dlopen([cand UTF8String], RTLD_LAZY);
-        if (h) { gEngineLoaded = YES; BKAppend(@"E dlopen ok"); }
+        if (h) { gEngineLoaded = YES; BKAppend(@"E dlopen ok %@", cand); }
     } @catch (NSException *e) { }
 }
 
@@ -683,7 +687,10 @@ static void BKCloseEditor(void)
 - (void)dragBall:(UIPanGestureRecognizer *)g
 {
     CGPoint t = [g translationInView:gBallWin];
-    gBall.center = CGPointMake(gBall.center.x + t.x, gBall.center.y + t.y);
+    CGRect f = gBallWin.frame;
+    f.origin.x += t.x;
+    f.origin.y += t.y;
+    gBallWin.frame = f;
     [g setTranslation:CGPointZero inView:gBallWin];
 }
 
@@ -759,8 +766,12 @@ static void BKBuildBall(void)
 {
     gBallWin = BKMakeWindow(UIWindowLevelAlert + 2000, NO);
 
-    gBall = [[UIView alloc] initWithFrame:CGRectMake(20, 120, 52, 52)];
+    gBallWin.frame = CGRectMake(20, 120, 60, 60);
+    gBallWin.rootViewController.view.frame = gBallWin.bounds;
+
+    gBall = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 52, 52)];
     gBall.tag = kBKTagBall;
+    gBall.center = CGPointMake(30, 30);
     gBall.backgroundColor = [UIColor colorWithRed:0.03 green:0.07 blue:0.10 alpha:0.90];
     gBall.layer.cornerRadius = 26;
     gBall.layer.borderColor = kBKNeon.CGColor;

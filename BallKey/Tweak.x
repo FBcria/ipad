@@ -389,13 +389,6 @@ static void BKTickFront(void)
 }
 
 // ---- injecao ----
-static CGPoint BKToNat(CGPoint p)
-{
-    UIWindow *w = gCursorWin ?: gBallWin;
-    if (!w) return p;
-    return [w convertPoint:p toCoordinateSpace:UIScreen.mainScreen.coordinateSpace];
-}
-
 static void BKPlaceCursor(void)
 {
     if (!gCursor) return;

@@ -30,6 +30,7 @@ typedef uint32_t IOOptionBits;
 #define BK_DW 1180.0
 #define BK_DH 760.0
 #define BK_SBW 210.0
+#define BK_STAGE_TAG 777
 static CGFloat gDW = BK_DW, gDH = BK_DH, gSB = BK_SBW;
 #define DW gDW
 #define DH gDH
@@ -180,7 +181,7 @@ static NSArray *BKDefaultMarks(void)
 @end
 
 static BKCore *gCore; static BKUI *gUI; static NSString *gLog;
-static UIWindow *gBallWin, *gCursorWin; static UIView *gBall, *gCursor, *gCanvas;
+static UIWindow *gBallWin, *gCursorWin; static UIView *gBall, *gCursor, *gCanvas, *gBallStage, *gCursorStage;
 static NSMutableArray *gMarkViews;
 static BOOL gMenuOpen, gEditOpen, gCursorOn, gGated, gFps, gFpsHeld;
 static BOOL gHidOk, gGcMouse, gGcKey, gCursorDown, gLastValid, gFront, gBuilt, gEnabled, gHook;
@@ -213,7 +214,7 @@ static IOHIDEventSystemClientRef gSys;
 {
     UIView *v = [super hitTest:p withEvent:e];
     if (!v) return nil;
-    if (v == self.rootViewController.view) return nil;
+    if (v == self.rootViewController.view || v.tag == BK_STAGE_TAG) return nil;
     return v;
 }
 @end
@@ -236,17 +237,35 @@ static UIWindowScene *BKScene(void)
     } @catch (id e) {}
     return nil;
 }
+static BOOL BKLandscape(void)
+{
+    UIDeviceOrientation o = UIDevice.currentDevice.orientation;
+    if (o == UIDeviceOrientationLandscapeLeft || o == UIDeviceOrientationLandscapeRight) return YES;
+    if (o == UIDeviceOrientationPortrait || o == UIDeviceOrientationPortraitUpsideDown) return NO;
+    @try { return UIInterfaceOrientationIsLandscape(UIApplication.sharedApplication.statusBarOrientation); }
+    @catch (id e) {}
+    return NO;
+}
 CGSize BKSize(void)
 {
-    UIWindowScene *s = BKScene();
-    if (s) { CGSize z = s.coordinateSpace.bounds.size; if (z.width > 1) return z; }
-    return UIScreen.mainScreen.bounds.size;
+    CGSize p = UIScreen.mainScreen.bounds.size;
+    if (p.width < 40 || p.height < 40) {
+        UIWindowScene *s = BKScene();
+        if (s) p = s.coordinateSpace.bounds.size;
+    }
+    if (p.width < 40 || p.height < 40) return CGSizeMake(414, 736);
+    CGFloat w = MIN(p.width, p.height), h = MAX(p.width, p.height);
+    return BKLandscape() ? CGSizeMake(h, w) : CGSizeMake(w, h);
 }
-static __attribute__((unused)) CGFloat BKAngle(void)
+static CGFloat BKAngle(void)
 {
     UIDeviceOrientation o = UIDevice.currentDevice.orientation;
     if (o == UIDeviceOrientationLandscapeLeft) return -M_PI_2;
     return M_PI_2;
+}
+static CGAffineTransform BKStageT(void)
+{
+    return BKLandscape() ? CGAffineTransformMakeRotation(BKAngle()) : CGAffineTransformIdentity;
 }
 static void BKLog(NSString *fmt, ...)
 {
@@ -787,20 +806,47 @@ static void BKHook(void)
     BKLog(@"hook on");
 }
 
+static void BKFitStage(UIWindow *w, UIView *stg)
+{
+    if (!w || !stg) return;
+    CGRect sb = UIScreen.mainScreen.bounds;
+    CGRect wf = w.frame;
+    if (fabs(wf.size.width - sb.size.width) > 1 || fabs(wf.size.height - sb.size.height) > 1)
+        w.frame = sb;
+    CGSize st = BKSize();
+    if (st.width < 40 || st.height < 40) st = sb.size;
+    stg.transform = BKStageT();
+    stg.bounds = CGRectMake(0, 0, st.width, st.height);
+    stg.center = CGPointMake(sb.size.width / 2, sb.size.height / 2);
+}
+
 static UIWindow *BKWin(UIWindowLevel lv, BOOL passThrough)
 {
     UIWindowScene *sc = BKScene();
-    CGSize sp = BKSize();
+    CGRect sb = UIScreen.mainScreen.bounds;
     UIWindow *w = sc ? [[UIWindow alloc] initWithWindowScene:sc]
-                     : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+                     : [[UIWindow alloc] initWithFrame:sb];
     if (passThrough) object_setClass(w, [BKPassWindow class]);
-    w.frame = CGRectMake(0, 0, sp.width, sp.height);
+    w.frame = sb;
     w.windowLevel = lv;
     w.backgroundColor = UIColor.clearColor;
     w.rootViewController = [BKHostVC new];
     w.rootViewController.view.backgroundColor = UIColor.clearColor;
     w.hidden = NO;
     return w;
+}
+
+static UIView *BKStageIn(UIWindow *w)
+{
+    if (!w) return nil;
+    UIView *root = w.rootViewController.view;
+    root.autoresizingMask = UIViewAutoresizingNone;
+    UIView *stg = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 10, 10)];
+    stg.tag = BK_STAGE_TAG;
+    stg.backgroundColor = UIColor.clearColor;
+    [root addSubview:stg];
+    BKFitStage(w, stg);
+    return stg;
 }
 
 @interface BKBallView : UIView @end
@@ -953,9 +999,9 @@ void BKApplySettings(void)
 void BKRelayout(void)
 {
     CGSize s = BKSize();
-    if (gBallWin) gBallWin.frame = CGRectMake(0, 0, s.width, s.height);
+    BKFitStage(gBallWin, gBallStage);
+    BKFitStage(gCursorWin, gCursorStage);
     if (gBall) gBall.center = CGPointMake(28, 44);
-    if (gCursorWin) gCursorWin.frame = CGRectMake(0, 0, s.width, s.height);
     if (gCanvas) { gCanvas.frame = CGRectMake(0, 0, s.width, s.height); BKRedrawMarkers(); }
     gCx = BKClamp(gCx, 2, s.width - 2); gCy = BKClamp(gCy, 2, s.height - 2);
     BKPlaceCursor();
@@ -1228,7 +1274,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 @interface BKUI ()
 {
     UIWindow *_win;
-    UIView *_dim, *_box, *_content, *_sidebar, *_pill, *_inner;
+    UIView *_stage, *_dim, *_box, *_content, *_sidebar, *_pill, *_inner;
     UIScrollView *_scroll;
     NSMutableArray *_rows;
     UILabel *_statusLbl;
@@ -1261,23 +1307,25 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
 - (void)present
 {
-    CGSize sp = BKSize();
-    if (sp.width < 40 || sp.height < 40) sp = UIScreen.mainScreen.bounds.size;
     UIWindowScene *sc = BKScene();
+    CGRect sb = UIScreen.mainScreen.bounds;
     _win = sc ? [[UIWindow alloc] initWithWindowScene:sc]
-              : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+              : [[UIWindow alloc] initWithFrame:sb];
     object_setClass(_win, [BKPassWindow class]);
     _win.windowLevel = UIWindowLevelAlert + 550;
     _win.backgroundColor = UIColor.clearColor;
     _win.rootViewController = [BKHostVC new];
-    _win.frame = CGRectMake(0, 0, sp.width, sp.height);
+    _win.frame = sb;
     _win.hidden = NO;
     BKSetInputGated(YES);
 
-    _dim = [[UIView alloc] initWithFrame:_win.bounds];
+    _stage = BKStageIn(_win);
+    if (!_stage) return;
+
+    _dim = [[UIView alloc] initWithFrame:_stage.bounds];
     _dim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.35];
     _dim.userInteractionEnabled = NO;
-    [_win.rootViewController.view addSubview:_dim];
+    [_stage addSubview:_dim];
 
     _box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, DW, DH)];
     _box.backgroundColor = PANEL;
@@ -1285,7 +1333,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     _box.layer.borderWidth = 1;
     _box.layer.borderColor = STROK.CGColor;
     _box.clipsToBounds = YES;
-    [_win.rootViewController.view addSubview:_box];
+    [_stage addSubview:_box];
 
     _boxOffset = CGPointZero;
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(bkDrag:)];
@@ -1323,6 +1371,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     } completion:^(BOOL f) {
         self->_win.hidden = YES;
         self->_win = nil;
+        self->_stage = nil;
         gUI = nil;
         BKSetInputGated(NO);
     }];
@@ -1332,22 +1381,18 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
 - (CGRect)stageBounds
 {
-    CGSize s = BKSize();
-    if (s.width < 40 || s.height < 40) s = UIScreen.mainScreen.bounds.size;
-    if (s.width < 40 || s.height < 40) s = CGSizeMake(414, 736);
-
-    CGRect wf = _win.frame;
-    if (fabs(wf.size.width - s.width) > 1 || fabs(wf.size.height - s.height) > 1)
-        _win.frame = CGRectMake(0, 0, s.width, s.height);
-
-    UIView *root = _win.rootViewController.view;
-    if (root) {
-        root.autoresizingMask = UIViewAutoresizingNone;
-        root.transform = CGAffineTransformIdentity;
-        root.bounds = CGRectMake(0, 0, s.width, s.height);
-        root.center = CGPointMake(s.width / 2, s.height / 2);
+    CGSize st = BKSize();
+    if (st.width < 40 || st.height < 40) st = CGSizeMake(414, 736);
+    if (_win && _stage) {
+        CGRect sb = UIScreen.mainScreen.bounds;
+        CGRect wf = _win.frame;
+        if (fabs(wf.size.width - sb.size.width) > 1 || fabs(wf.size.height - sb.size.height) > 1)
+            _win.frame = sb;
+        _stage.transform = BKStageT();
+        _stage.bounds = CGRectMake(0, 0, st.width, st.height);
+        _stage.center = CGPointMake(sb.size.width / 2, sb.size.height / 2);
     }
-    return CGRectMake(0, 0, s.width, s.height);
+    return CGRectMake(0, 0, st.width, st.height);
 }
 
 - (void)applyCenter
@@ -1374,7 +1419,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     if (g.state == UIGestureRecognizerStateBegan) {
         _dragStart = _boxOffset;
     } else if (g.state == UIGestureRecognizerStateChanged) {
-        CGPoint d = [g translationInView:_box.superview];
+        CGPoint d = [g translationInView:_stage];
         _boxOffset = CGPointMake(_dragStart.x + d.x, _dragStart.y + d.y);
         [self applyCenter];
     }
@@ -1404,9 +1449,9 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     CGFloat L = b.size.width;
     CGFloat S = b.size.height;
 
-    CGFloat mx = MAX(16.0, L * 0.07);
-    _topM = MAX(14.0, S * 0.07);
-    CGFloat botM = MAX(12.0, S * 0.10);
+    CGFloat mx = MAX(10.0, L * 0.03);
+    _topM = MAX(8.0, S * 0.03);
+    CGFloat botM = MAX(8.0, S * 0.04);
     CGFloat aw = L - 2 * mx;
     CGFloat ah = S - _topM - botM;
 
@@ -1927,34 +1972,31 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 - (void)presentEditor
 {
     CGSize s = BKSize();
-    if (s.width < 40 || s.height < 40) s = UIScreen.mainScreen.bounds.size;
     if (s.width < 40 || s.height < 40) s = CGSizeMake(414, 736);
 
     UIWindowScene *sc = BKScene();
+    CGRect sb = UIScreen.mainScreen.bounds;
     _win = sc ? [[UIWindow alloc] initWithWindowScene:sc]
-              : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+              : [[UIWindow alloc] initWithFrame:sb];
     _win.windowLevel = UIWindowLevelAlert + 560;
-    _win.frame = CGRectMake(0, 0, s.width, s.height);
+    _win.frame = sb;
     _win.backgroundColor = UIColor.clearColor;
     _win.rootViewController = [BKHostVC new];
     _win.hidden = NO;
     BKSetEditorOpen(YES);
     BKSetInputGated(YES);
 
-    UIView *r = _win.rootViewController.view;
-    r.autoresizingMask = UIViewAutoresizingNone;
-    r.transform = CGAffineTransformIdentity;
-    r.bounds = CGRectMake(0, 0, s.width, s.height);
-    r.center = CGPointMake(s.width / 2, s.height / 2);
+    _stage = BKStageIn(_win);
+    if (!_stage) return;
 
-    UIView *canvas = [[UIView alloc] initWithFrame:r.bounds];
-    [r addSubview:canvas];
+    UIView *canvas = [[UIView alloc] initWithFrame:_stage.bounds];
+    [_stage addSubview:canvas];
     BKUISetCanvas(canvas);
     BKRedrawMarkers();
 
     UIView *top = [[UIView alloc] initWithFrame:CGRectMake(0, 0, s.width, 52)];
     top.backgroundColor = [PANEL colorWithAlphaComponent:0.94];
-    [r addSubview:top];
+    [_stage addSubview:top];
     UIView *line = [[UIView alloc] initWithFrame:CGRectMake(0, 51.5, s.width, 0.5)];
     line.backgroundColor = STROK;
     [top addSubview:line];
@@ -1983,7 +2025,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
     UIView *bar = [[UIView alloc] initWithFrame:CGRectMake(0, s.height - 52, s.width, 52)];
     bar.backgroundColor = [PANEL colorWithAlphaComponent:0.94];
-    [r addSubview:bar];
+    [_stage addSubview:bar];
     UIView *line2 = [[UIView alloc] initWithFrame:CGRectMake(0, 0, s.width, 0.5)];
     line2.backgroundColor = STROK;
     [bar addSubview:line2];
@@ -2071,6 +2113,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     [UIView animateWithDuration:0.22 animations:^{ _win.alpha = 0; } completion:^(BOOL f) {
         self->_win.hidden = YES;
         self->_win = nil;
+        self->_stage = nil;
         BKSetEditorOpen(NO);
         BKSetInputGated(NO);
         BKMenuOpen();
@@ -2286,19 +2329,21 @@ static void BKEnsure(void)
         BKLog(@"ensure 2 hid:%d sys:%d", gHidOk, gSys != NULL);
 
         gBallWin = BKWin(UIWindowLevelAlert + 500, YES);
+        gBallStage = BKStageIn(gBallWin);
         gBall = [[BKBallView alloc] initWithFrame:CGRectMake(0, 0, 56, 56)];
         gBall.center = CGPointMake(28, 44);
         gBall.backgroundColor = UIColor.clearColor;
         [gBall addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:gBall action:@selector(bkTap:)]];
-        [gBallWin.rootViewController.view addSubview:gBall];
+        [gBallStage addSubview:gBall];
         BKLog(@"ensure 3 ball");
 
         gCursorWin = BKWin(UIWindowLevelAlert + 600, YES);
         gCursorWin.userInteractionEnabled = NO;
+        gCursorStage = BKStageIn(gCursorWin);
         double h = BKNum(kCursorSize, 30);
         gCursor = [[BKCursorView alloc] initWithFrame:CGRectMake(0, 0, h * 0.72, h)];
         gCursor.backgroundColor = UIColor.clearColor;
-        [gCursorWin.rootViewController.view addSubview:gCursor];
+        [gCursorStage addSubview:gCursor];
         gCursorWin.hidden = YES;
         BKLog(@"ensure 4 cursor");
 

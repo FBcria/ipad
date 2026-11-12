@@ -99,7 +99,6 @@ static UILabel *gEditTitle = nil;
 static UIView *gEditCanvas = nil;
 static BKUI *gUI = nil;
 static BOOL gMenuOpen = NO;
-static BOOL gBallDone = NO, gCursorDone = NO;
 static BOOL gHookDone = NO, gHookOK = NO;
 static BOOL gInj = NO;
 static int gEvSeen = 0, gKeySeen = 0, gPtrSeen = 0;

@@ -245,6 +245,41 @@ static void BKLog(NSString *fmt, ...)
 static double BKClamp(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
 static double BKNum(NSString *k, double d) { return [gCore doubleForKey:k def:d]; }
 
+// ---- ativador externo (app BallKey) ----
+#define BK_NOTE_PANEL "com.wjf.ballkey.panel"
+#define BK_NOTE_GAME  "com.wjf.ballkey.panelgame"
+
+static void BKLaunchGame(void)
+{
+    Class ws = NSClassFromString(@"LSApplicationWorkspace");
+    if (!ws) return;
+    id w = [ws respondsToSelector:@selector(defaultWorkspace)] ? [ws performSelector:@selector(defaultWorkspace)] : nil;
+    if (w && [w respondsToSelector:@selector(openApplicationWithBundleID:)])
+        [w performSelector:@selector(openApplicationWithBundleID:) withObject:BK_GAME];
+}
+static void BKOnNotify(CFNotificationCenterRef c, void *o, CFStringRef name, const void *obj, CFDictionaryRef info)
+{
+    NSString *n = (__bridge NSString *)name;
+    BOOL game = [n isEqualToString:@BK_NOTE_GAME];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        BKLog(@"notify %@", n);
+        if (gMenuOpen) BKMenuClose();
+        BKMenuOpen();
+        if (game) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 320 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+            BKLaunchGame();
+        });
+    });
+}
+static void BKActivatorInstall(void)
+{
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, BKOnNotify,
+        CFSTR(BK_NOTE_PANEL), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, BKOnNotify,
+        CFSTR(BK_NOTE_GAME), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+    BKLog(@"ativador ok");
+}
+// ---- fim ativador ----
+
 // ---- gate: so age com o Free Fire na frente
 static NSString *BKFrontApp(void)
 {
@@ -2078,6 +2113,7 @@ static void BKStart(void)
 __attribute__((constructor))
 static void BKInit(void)
 {
+    BKActivatorInstall();
     @try { BKStealth(); } @catch (id e) {}
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         @autoreleasepool { @try { BKStart(); } @catch (id e) {} }

@@ -1,10 +1,9 @@
 Package: com.wjf.ballkey
 Name: BallKey
-Version: 5.0.0
+Version: 6.0.0
 Architecture: iphoneos-arm64
-Description: Mapeador de teclado e mouse para Free Fire.
+Description: Mapeador de teclado e mouse para o Free Fire
 Maintainer: martidev333
 Author: martidev333
 Section: Tweaks
-Depends: mobilesubstrate, firmware (>= 14.0)
-Icon: file:///Library/PreferenceBundles/BallKey.bundle/icon@2x.png
+Depiction: https://github.com/FBcria/ipad

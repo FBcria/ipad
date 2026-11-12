@@ -8,6 +8,7 @@ static NSString *const kNoteOff   = @"com.wjf.ballkey.off";
 static NSString *const kState     = @"/var/mobile/Documents/BallKey/enabled";
 static NSString *const kLog       = @"/var/mobile/Documents/BallKey/ballkey.log";
 static NSString *const kAlive     = @"/var/mobile/Documents/BallKey/alive";
+static NSString *const kDir       = @"/var/mobile/Documents/BallKey";
 
 static void BKMark(NSString *s)
 {
@@ -58,6 +59,7 @@ static void BKPost(NSString *n)
 @property (nonatomic, strong) UIButton *big;
 @property (nonatomic, strong) UILabel *status, *caption;
 @property (nonatomic, strong) NSTimer *timer;
+@property (nonatomic, strong) UIDocumentInteractionController *doc;
 @end
 
 @implementation BKVC
@@ -154,7 +156,7 @@ static void BKPost(NSString *n)
     self.big.alpha = can ? 1.0 : 0.30;
 
     NSString *msg;
-    if (!loaded) msg = @"Tweak não carregado.\nReinstale e dê respring.";
+    if (!loaded) msg = @"Tweak não carregado.\nReinstale com o Sileo e dê respring.";
     else if (!running && !on) msg = @"Abra o Free Fire primeiro.\nPode deixá-lo em segundo plano e voltar aqui.";
     else if (on) msg = @"Ativo.\nVolte para o Free Fire e jogue.";
     else msg = @"Pronto. Toque em ATIVAR.";
@@ -183,16 +185,18 @@ static void BKPost(NSString *n)
 {
     NSString *src = [self debInBundle];
     if (!src) { self.status.text = @"deb não encontrado no bundle."; return; }
-    NSString *dst = [NSTemporaryDirectory() stringByAppendingPathComponent:[src lastPathComponent]];
+
+    [[NSFileManager defaultManager] createDirectoryAtPath:kDir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSString *dst = [kDir stringByAppendingPathComponent:[src lastPathComponent]];
     NSFileManager *fm = [NSFileManager defaultManager];
     [fm removeItemAtPath:dst error:nil];
-    if (![fm copyItemAtPath:src toPath:dst error:nil]) { self.status.text = @"falha ao copiar."; return; }
-    UIActivityViewController *a = [[UIActivityViewController alloc]
-        initWithActivityItems:@[[NSURL fileURLWithPath:dst]] applicationActivities:nil];
-    a.popoverPresentationController.sourceView = self.big;
-    a.popoverPresentationController.sourceRect = self.big.bounds;
-    [self presentViewController:a animated:YES completion:nil];
-    self.status.text = @"Escolha TrollStore e dê respring depois.";
+    if (![fm copyItemAtPath:src toPath:dst error:nil]) { self.status.text = @"falha ao copiar o deb."; return; }
+
+    self.doc = [UIDocumentInteractionController interactionControllerWithURL:[NSURL fileURLWithPath:dst]];
+    BOOL ok = [self.doc presentOpenInMenuFromRect:self.big.frame inView:self.view animated:YES];
+    self.status.text = ok
+        ? [NSString stringWithFormat:@"Escolha Sileo (ou Filza).\nArquivo em:\n%@", dst]
+        : [NSString stringWithFormat:@"Nenhum app para abrir deb.\nInstale o Sileo ou pegue o arquivo em:\n%@", dst];
 }
 
 @end

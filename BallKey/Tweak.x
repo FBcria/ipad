@@ -333,8 +333,12 @@ static NSString *BKFrontApp(void)
 static void BKTickFront(void)
 {
     NSString *f = BKFrontApp();
+    static NSString *lastF;
+    if (![lastF isEqualToString:(f ?: @"")]) { lastF = (f ?: @""); BKLog(@"front %@", f.length ? f : @"nil"); }
+
     BOOL on = [f isEqualToString:BK_GAME] || [f isEqualToString:BK_GAMEMAX];
     BOOL mine = [f isEqualToString:BK_ME];
+    if (!f.length) on = YES;
     BOOL show = gEnabled && (on || mine);
     gFront = on;
     if (gBallWin) gBallWin.hidden = !show;
@@ -2099,7 +2103,7 @@ static void BKStart(void)
     BKLog(@"boot v6 springboard enabled:%d", gEnabled);
 
     BKInstall();
-    if (!gHidOk) { BKLog(@"hid fail"); return; }
+    BKLog(@"hid:%d sys:%d", gHidOk, gSys != NULL);
 
     gBallWin = BKWin(UIWindowLevelAlert + 500, YES);
     gBall = [[BKBallView alloc] initWithFrame:CGRectMake(0, 0, 56, 56)];

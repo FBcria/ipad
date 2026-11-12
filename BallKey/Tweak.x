@@ -1,4 +1,4 @@
-// BallKey 5.2 - mapeador de teclado e mouse para Free Fire - martidev333
+// BallKey 6.0 - mapeador de teclado e mouse (SpringBoard) - martidev333
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <GameController/GameController.h>
@@ -20,6 +20,7 @@
 #endif
 
 typedef struct __IOHIDEvent *IOHIDEventRef;
+typedef struct __IOHIDEventSystemClient *IOHIDEventSystemClientRef;
 typedef double IOHIDFloat;
 typedef uint64_t BKAbsTime;
 typedef uint32_t IOOptionBits;
@@ -28,6 +29,8 @@ typedef uint32_t IOOptionBits;
 #define BK_FBASE 40
 #define DW 1180.0
 #define DH 760.0
+#define BK_GAME @"com.dts.freefireth"
+#define BK_GAMEMAX @"com.dts.freefiremax"
 
 CGSize BKSize(void);
 void BKRelayout(void); void BKSetInputGated(BOOL g); void BKSetEditorOpen(BOOL open);
@@ -172,7 +175,7 @@ static BKCore *gCore; static BKUI *gUI; static NSString *gLog;
 static UIWindow *gBallWin, *gCursorWin; static UIView *gBall, *gCursor, *gCanvas;
 static NSMutableArray *gMarkViews;
 static BOOL gMenuOpen, gEditOpen, gCursorOn, gGated, gFps, gFpsHeld;
-static BOOL gHidOk, gGcMouse, gGcKey, gCursorDown, gLastValid;
+static BOOL gHidOk, gGcMouse, gGcKey, gCursorDown, gLastValid, gFront, gStarted;
 static int gFpsIdx = -1, gSelIdx = -1, gInjecting, gPtrMask;
 static int gFingerOwner[BK_FINGERS]; static int gHoldKey[512];
 static double gCx, gCy, gLastX, gLastY;
@@ -191,6 +194,9 @@ static int (*pGetType)(IOHIDEventRef);
 static double (*pGetFloat)(IOHIDEventRef,uint32_t);
 static int64_t (*pGetInt)(IOHIDEventRef,uint32_t);
 static void (*origEnq)(id,SEL,IOHIDEventRef);
+static IOHIDEventSystemClientRef (*pClientCreate)(CFAllocatorRef,int,CFDictionaryRef);
+static void (*pSysDispatch)(IOHIDEventSystemClientRef,IOHIDEventRef);
+static IOHIDEventSystemClientRef gSys;
 
 @interface BKPassWindow : UIWindow @end
 @implementation BKPassWindow
@@ -239,7 +245,45 @@ static void BKLog(NSString *fmt, ...)
 static double BKClamp(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
 static double BKNum(NSString *k, double d) { return [gCore doubleForKey:k def:d]; }
 
-// A janela fica sempre em tela cheia; so a seta se move. A ponta e o gCx/gCy.
+// ---- gate: so age com o Free Fire na frente
+static NSString *BKFrontApp(void)
+{
+    id app = nil;
+    Class c = NSClassFromString(@"SBApplicationController");
+    id ctrl = c ? [c performSelector:@selector(sharedInstance)] : nil;
+    if ([ctrl respondsToSelector:@selector(frontmostApplication)]) app = [ctrl performSelector:@selector(frontmostApplication)];
+    if (!app) {
+        Class wc = NSClassFromString(@"SBWorkspace");
+        id ws = wc ? [wc performSelector:@selector(sharedInstance)] : nil;
+        if ([ws respondsToSelector:@selector(frontmostApplication)]) app = [ws performSelector:@selector(frontmostApplication)];
+    }
+    if ([app respondsToSelector:@selector(displayIdentifier)]) return [app performSelector:@selector(displayIdentifier)];
+    if ([app respondsToSelector:@selector(bundleIdentifier)]) return [app performSelector:@selector(bundleIdentifier)];
+    return nil;
+}
+static void BKTickFront(void)
+{
+    NSString *f = BKFrontApp();
+    BOOL on = [f isEqualToString:BK_GAME] || [f isEqualToString:BK_GAMEMAX];
+    if (on == gFront) return;
+    gFront = on;
+    if (gBallWin) gBallWin.hidden = !on;
+    if (gCursorWin) gCursorWin.hidden = !(on && gCursorOn);
+    if (!on) {
+        if (gMenuOpen) BKMenuClose();
+        if (gEditOpen) [BKUI closeEditor];
+        BKReleaseAll();
+    }
+}
+
+// ---- espaco de tela nativo para o digitador
+static CGPoint BKToNat(CGPoint p)
+{
+    UIWindow *w = gCursorWin ?: gBallWin;
+    if (!w) return p;
+    return [w convertPoint:p toCoordinateSpace:UIScreen.mainScreen.coordinateSpace];
+}
+
 static void BKPlaceCursor(void)
 {
     if (!gCursor) return;
@@ -255,52 +299,38 @@ static int BKFingerTake(int owner)
 }
 static void BKFingerFree(int f) { if (f >= BK_FBASE && f < BK_FBASE + BK_FINGERS) gFingerOwner[f - BK_FBASE] = 0; }
 
-static uint32_t BKContextID(void)
+static void BKInjectNat(int finger, double nx, double ny, BOOL down, BOOL move)
 {
-    static uint32_t cached;
-    if (cached) return cached;
-    UIWindow *w = nil;
-    for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
-        if (![s isKindOfClass:UIWindowScene.class]) continue;
-        for (UIWindow *c in ((UIWindowScene *)s).windows) {
-            if (c == gBallWin || c == gCursorWin) continue;
-            if (c.windowLevel != UIWindowLevelNormal) continue;
-            w = c; break;
-        }
-        if (w) break;
-    }
-    if (!w) w = UIApplication.sharedApplication.keyWindow;
-    if (w && [w respondsToSelector:NSSelectorFromString(@"_contextId")])
-        cached = [[w valueForKey:@"_contextId"] unsignedIntValue];
-    return cached;
-}
-
-static void BKInject(int finger, double x, double y, BOOL down, BOOL move)
-{
-    if (!pCreateFinger || !pCreateDigitizer || !origEnq) return;
+    if (!pCreateFinger || !pCreateDigitizer) return;
     uint32_t mask = move ? 4 : 3;
     Boolean rng = down, tch = down;
     uint64_t t = mach_absolute_time();
 
     IOHIDEventRef parent = pCreateDigitizer(kCFAllocatorDefault, t, 2, 0, 0, mask, 0, 0, 0, 0, 0, 0, rng, tch, 0);
     if (!parent) return;
-    IOHIDEventRef sub = pCreateFinger(kCFAllocatorDefault, t, gIdent++, (uint32_t)finger, mask, x, y, 0.0, 0.0, 0.0, rng, tch, 0);
+    IOHIDEventRef sub = pCreateFinger(kCFAllocatorDefault, t, gIdent++, (uint32_t)finger, mask, nx, ny, 0.0, 0.0, 0.0, rng, tch, 0);
     if (!sub) { CFRelease(parent); return; }
 
     if (pSetInt) pSetInt(sub, kFieldDigIsDisplayIntegrated, 1);
     pAppend(parent, sub, 0);
     CFRelease(sub);
     if (pSetInt) pSetInt(parent, kFieldDigIsDisplayIntegrated, 1);
-    if (pSetDigitizerInfo) pSetDigitizerInfo(parent, BKContextID(), false, false, NULL, 0, 0);
+    if (pSetDigitizerInfo) pSetDigitizerInfo(parent, 0, false, false, NULL, 0, 0);
 
     gInjecting++;
-    @try { origEnq(UIApplication.sharedApplication, @selector(_enqueueHIDEvent:), parent); } @catch (id e) {}
+    if (gSys && pSysDispatch) pSysDispatch(gSys, parent);
+    else if (origEnq) @try { origEnq(UIApplication.sharedApplication, @selector(_enqueueHIDEvent:), parent); } @catch (id e) {}
     gInjecting--;
     CFRelease(parent);
 
     if (finger >= BK_FBASE && finger < BK_FBASE + BK_FINGERS) {
-        gFingerX[finger - BK_FBASE] = x; gFingerY[finger - BK_FBASE] = y;
+        gFingerX[finger - BK_FBASE] = nx; gFingerY[finger - BK_FBASE] = ny;
     }
+}
+static void BKInject(int finger, double x, double y, BOOL down, BOOL move)
+{
+    CGPoint n = BKToNat(CGPointMake(x, y));
+    BKInjectNat(finger, n.x, n.y, down, move);
 }
 
 static void BKTapAt(double x, double y)
@@ -325,10 +355,10 @@ void BKReleaseAll(void)
     gFireOn = NO; gFireIdx = -1;
     for (int i = 0; i < BK_FINGERS; i++) {
         if (!gFingerOwner[i]) continue;
-        BKInject(BK_FBASE + i, gFingerX[i], gFingerY[i], NO, NO);
+        BKInjectNat(BK_FBASE + i, gFingerX[i], gFingerY[i], NO, NO);
         gFingerOwner[i] = 0;
     }
-    if (gCursorDown) { BKInject(31, gCx, gCy, NO, NO); gCursorDown = NO; }
+    if (gCursorDown) { CGPoint n = BKToNat(CGPointMake(gCx, gCy)); BKInjectNat(31, n.x, n.y, NO, NO); gCursorDown = NO; }
     gFps = gFpsHeld = NO;
 }
 
@@ -338,7 +368,7 @@ void BKCursorSet(BOOL on)
     CGSize s = BKSize();
     if (on) {
         gCx = s.width * 0.5; gCy = s.height * 0.5; gLastValid = NO; gCursorOn = YES;
-        if (gCursorWin) gCursorWin.hidden = NO;
+        if (gCursorWin) gCursorWin.hidden = !gFront;
         BKPlaceCursor();
         BKInject(31, gCx, gCy, YES, NO); gCursorDown = YES;
     } else {
@@ -364,7 +394,7 @@ static double BKCurveValue(double v)
 
 void BKPointerDelta(double dx, double dy)
 {
-    if (!gCursorOn) return;
+    if (!gCursorOn || !gFront) return;
     CGSize s = BKSize();
     double sens = BKNum(kSens, 1.0);
     dx = BKCurveValue(dx * sens);
@@ -503,7 +533,7 @@ static void BKEnq(id self, SEL cmd, IOHIDEventRef ev)
 
 void BKButtonDown(int btn, BOOL down)
 {
-    if (gGated || gMenuOpen || gEditOpen) return;
+    if (gGated || gMenuOpen || gEditOpen || !gFront) return;
     if (btn == 1) { if (down) BKTapAt(gCx, gCy); return; }
     if (btn == 2) {
         CGSize s = BKSize();
@@ -522,6 +552,7 @@ void BKButtonDown(int btn, BOOL down)
 void BKKeyUsage(int usage, BOOL down)
 {
     if (gGated || gMenuOpen || gEditOpen) { if (gEditOpen && down) [BKUI editorKey:usage]; return; }
+    if (!gFront) return;
     for (int i = 0; i < (int)BKMarks().count; i++) {
         if ([BKMarks()[i][@"c"] intValue] != usage) continue;
         NSString *t = BKMarks()[i][@"t"];
@@ -553,10 +584,8 @@ static void BKJoystick(void)
     if (!any) return;
 
     double bx, by;
-    if (pad >= 0) {
-        bx = [BKMarks()[pad][@"x"] doubleValue];
-        by = [BKMarks()[pad][@"y"] doubleValue];
-    } else if ([gCore intForKey:kJoyCenter def:BKJoyCenterAverage] == BKJoyCenterFixed) {
+    if (pad >= 0) { bx = [BKMarks()[pad][@"x"] doubleValue]; by = [BKMarks()[pad][@"y"] doubleValue]; }
+    else if ([gCore intForKey:kJoyCenter def:BKJoyCenterAverage] == BKJoyCenterFixed) {
         bx = BKNum(kJoyFx, sx / n); by = BKNum(kJoyFy, sy / n);
     } else { bx = sx / n; by = sy / n; }
     if ([gCore intForKey:kJoyCenter def:BKJoyCenterAverage] == BKJoyCenterRandom) {
@@ -614,12 +643,17 @@ static void BKInstall(void)
         pGetType = dlsym(h, "IOHIDEventGetType");
         pGetFloat = dlsym(h, "IOHIDEventGetFloatValue");
         pGetInt = dlsym(h, "IOHIDEventGetIntegerValue");
+        pClientCreate = dlsym(h, "IOHIDEventSystemClientCreateWithType");
+        pSysDispatch = dlsym(h, "IOHIDEventSystemClientDispatchEvent");
     }
     void *b = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_LAZY);
     if (b) pSetDigitizerInfo = dlsym(b, "BKSHIDEventSetDigitizerInfo");
+
+    if (pClientCreate) gSys = pClientCreate(kCFAllocatorDefault, 1, NULL);
     gHidOk = (pCreateFinger != NULL && pCreateDigitizer != NULL);
     Method m = class_getInstanceMethod(UIApplication.class, @selector(_enqueueHIDEvent:));
     if (m) { origEnq = (void *)method_getImplementation(m); method_setImplementation(m, (IMP)BKEnq); }
+    BKLog(@"sys:%d hid:%d", gSys != NULL, gHidOk);
 }
 
 static UIWindow *BKWin(UIWindowLevel lv, BOOL passThrough)
@@ -654,7 +688,6 @@ static UIWindow *BKWin(UIWindowLevel lv, BOOL passThrough)
 - (void)bkTap:(UITapGestureRecognizer *)g { BKMenuOpen(); }
 @end
 
-// Seta estilo Windows 11 com a ponta exatamente em (0,0) do frame.
 @interface BKCursorView : UIView @end
 @implementation BKCursorView
 - (void)drawRect:(CGRect)r
@@ -778,7 +811,6 @@ void BKRedrawMarkers(void)
 
 void BKSaveMarks(void) { [gCore save]; }
 void BKReloadMarks(void) { [gCore load]; BKRedrawMarkers(); }
-
 void BKApplySettings(void)
 {
     BKCursorSet([gCore boolForKey:kCursor def:NO]);
@@ -1546,7 +1578,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
                     fmt:^NSString *(double v){ return [NSString stringWithFormat:@"%.0f%%", v]; }]; y += 104;
         [self buttonRow:@"Abrir log" color:DIM y:y host:host action:@selector(logTap)]; y += 76;
         [self buttonRow:@"Fechar" color:BADC y:y host:host action:@selector(closeTap)]; y += 76;
-        UILabel *cr = [self label:@"BallKey 5.2  •  martidev333\nMapeador de teclado e mouse" size:13 color:DIM bold:NO];
+        UILabel *cr = [self label:@"BallKey 6.0  •  martidev333\nMapeador de teclado e mouse" size:13 color:DIM bold:NO];
         cr.numberOfLines = 0;
         cr.textAlignment = NSTextAlignmentCenter;
         cr.frame = CGRectMake(0, y + 6, host.bounds.size.width, 44);
@@ -1842,7 +1874,11 @@ static const struct mach_header *h_hdr(uint32_t i)
 static int h_dladdr(const void *a, Dl_info *i)
 {
     int r = o_dladdr ? o_dladdr(a, i) : 0;
-    if (r && i && BKSelf(i->dli_fname)) i->dli_fname = "/usr/lib/libSystem.B.dylib";
+    if (r && i && BKSelf(i->dli_fname)) {
+        Dl_info orig;
+        if (origEnq && o_dladdr((const void *)origEnq, &orig) && orig.dli_fname) i->dli_fname = orig.dli_fname;
+        else i->dli_fname = "/System/Library/Frameworks/UIKit.framework/UIKit";
+    }
     return r;
 }
 
@@ -1982,13 +2018,15 @@ static void BKStealth(void)
 
 static void BKStart(void)
 {
+    if (gStarted) return;
+    gStarted = YES;
     gCore = [BKCore shared];
     NSString *base = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
                       stringByAppendingPathComponent:@"BallKey"];
     [NSFileManager.defaultManager createDirectoryAtPath:base withIntermediateDirectories:YES attributes:nil error:nil];
     gLog = [base stringByAppendingPathComponent:@"ballkey.log"];
     [@"" writeToFile:gLog atomically:NO encoding:NSUTF8StringEncoding error:nil];
-    BKLog(@"boot v5.2");
+    BKLog(@"boot v6 springboard");
 
     BKInstall();
     if (!gHidOk) { BKLog(@"hid fail"); return; }
@@ -2032,16 +2070,16 @@ static void BKStart(void)
     dispatch_source_set_event_handler(gTick, ^{ @try { BKJoystick(); } @catch (id e) {} });
     dispatch_resume(gTick);
 
+    [NSTimer scheduledTimerWithTimeInterval:0.7 repeats:YES block:^(NSTimer *t) { BKTickFront(); }];
+    BKTickFront();
     if ([gCore boolForKey:kCursor def:NO]) BKCursorSet(YES);
 }
 
 __attribute__((constructor))
 static void BKInit(void)
 {
-    NSString *bid = NSBundle.mainBundle.bundleIdentifier;
-    if (![bid isEqualToString:@"com.dts.freefireth"] && ![bid isEqualToString:@"com.dts.freefiremax"]) return;
     @try { BKStealth(); } @catch (id e) {}
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         @autoreleasepool { @try { BKStart(); } @catch (id e) {} }
     });
 }

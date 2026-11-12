@@ -13,7 +13,7 @@
 typedef struct __IOHIDEvent *BKIOHIDEventRef;
 typedef struct __IOHIDEventSystemClient *BKIOHIDEventSystemClientRef;
 
-const char BKEngineTag[] = "b39";
+const char BKEngineTag[] = "b40";
 
 #define kBKSenderID 0x8000000817319372ULL
 static const int kBKTypeKeyExtra = 1;
@@ -39,15 +39,14 @@ static const int kBKTypePointer = 17;
 #define kBKOffFile   @"/var/mobile/bk_off.txt"
 #define kBKSafeFile  @"/var/mobile/bk_safe.txt"
 #define kBKTryFile   @"/var/mobile/bk_try.txt"
-#define kBKLibDir1   @"/var/jb/usr/lib/TweakInject"
-#define kBKLibDir2   @"/var/jb/Library/MobileSubstrate/DynamicLibraries"
+#define kBKOnFile    @"/var/mobile/bk_on.txt"
 
 static NSString *gBaseDir = nil;
 static NSString *gLogBuf = nil;
 static uint64_t gLogLast = 0;
 static int gEvSeen = 0, gKeySeen = 0, gPtrSeen = 0, gLstSeen = 0;
 static BOOL gReady = NO;
-static BOOL gOff = NO, gSafe = NO;
+static BOOL gOff = NO, gSafe = NO, gOn = NO;
 static int gCapType = 0, gSendType = 0;
 static void *gSeen[kBKSeenMax];
 static uint64_t gSeenMs[kBKSeenMax];
@@ -110,6 +109,7 @@ static uint64_t BKNow(void);
 static BOOL BKExists(NSString *p);
 static int BKReadInt(NSString *p);
 static void BKWriteInt(NSString *p, int n);
+static NSString *BKJbroot(void);
 static void BKPtrSpan(double *w, double *h);
 static void BKPtrWriteTag(char tag, double a, double b, double c, double d);
 static void BKCursorAbs(double x, double y);
@@ -149,6 +149,18 @@ static void BKWriteInt(NSString *p, int n)
         [[NSString stringWithFormat:@"%d", n] writeToFile:p atomically:NO
                     encoding:NSUTF8StringEncoding error:nil];
     } @catch (NSException *e) { }
+}
+
+static NSString *BKJbroot(void)
+{
+    @try {
+        NSString *dir = @"/var/containers/Bundle/Application";
+        NSArray *a = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
+        for (NSString *n in a) {
+            if ([n hasPrefix:@".jbroot-"]) return [dir stringByAppendingPathComponent:n];
+        }
+    } @catch (NSException *e) { }
+    return nil;
 }
 
 static NSString *BKBase(void)
@@ -567,24 +579,30 @@ static void BKFrontTick(void)
 static NSString *BKFilterOK(void)
 {
     @try {
-        NSString *p = [kBKLibDir1 stringByAppendingPathComponent:@"BallKeyEngine.plist"];
-        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:p];
-        if (!d) {
-            p = [kBKLibDir2 stringByAppendingPathComponent:@"BallKeyEngine.plist"];
-            d = [NSDictionary dictionaryWithContentsOfFile:p];
+        NSString *root = BKJbroot();
+        NSMutableArray *cands = [NSMutableArray array];
+        if (root) {
+            [cands addObject:[root stringByAppendingPathComponent:@"usr/lib/TweakInject/BallKeyEngine.plist"]];
+            [cands addObject:[root stringByAppendingPathComponent:@"Library/MobileSubstrate/DynamicLibraries/BallKeyEngine.plist"]];
         }
-        if (!d) return @"N";
-        NSDictionary *f = [d objectForKey:@"Filter"];
-        NSArray *e = [f objectForKey:@"Executables"];
-        if (![e isKindOfClass:[NSArray class]]) return @"N";
-        BOOL sb = NO, bb = NO;
-        for (NSString *s in e) {
-            if ([s isEqualToString:@"SpringBoard"]) sb = YES;
-            if ([s isEqualToString:@"backboardd"]) bb = YES;
+        [cands addObject:@"/var/jb/usr/lib/TweakInject/BallKeyEngine.plist"];
+        [cands addObject:@"/var/jb/Library/MobileSubstrate/DynamicLibraries/BallKeyEngine.plist"];
+
+        for (NSString *p in cands) {
+            NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:p];
+            if (!d) continue;
+            NSDictionary *f = [d objectForKey:@"Filter"];
+            NSArray *e = [f objectForKey:@"Executables"];
+            if (![e isKindOfClass:[NSArray class]]) continue;
+            BOOL sb = NO, bb = NO;
+            for (NSString *s in e) {
+                if ([s isEqualToString:@"SpringBoard"]) sb = YES;
+                if ([s isEqualToString:@"backboardd"]) bb = YES;
+            }
+            if (sb && bb) return @"SB+BB";
+            if (sb) return @"SB";
+            if (bb) return @"BB";
         }
-        if (sb && bb) return @"SB+BB";
-        if (sb) return @"SB";
-        if (bb) return @"BB";
     } @catch (NSException *e) { }
     return @"N";
 }
@@ -711,7 +729,7 @@ static void BKInit(void)
         if (gSafe) {
             BKAppend(@"I safe sem clientes");
         } else {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(400 * NSEC_PER_MSEC)),
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC)),
                            dispatch_get_main_queue(), ^{
                 @try {
                     gPtrClient = BKNewListen(@{ @"PrimaryUsagePage": @1 }, &gPtrBlock, &gCapType);
@@ -722,7 +740,7 @@ static void BKInit(void)
                     gReady = YES;
                 } @catch (NSException *e) { }
             });
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1500 * NSEC_PER_MSEC)),
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1800 * NSEC_PER_MSEC)),
                            dispatch_get_main_queue(), ^{
                 @try {
                     gSendClient = BKNewClient(2, nil, &gSendType);
@@ -776,16 +794,20 @@ __attribute__((constructor)) static void BKInitC(void)
                 int n = BKReadInt(kBKTryFile) + 1;
                 BKWriteInt(kBKTryFile, n);
                 gOff = BKExists(kBKOffFile);
+                gOn = BKExists(kBKOnFile);
                 if (n > 3) {
                     [@"" writeToFile:kBKSafeFile atomically:NO encoding:NSUTF8StringEncoding error:nil];
                 }
                 gSafe = BKExists(kBKSafeFile);
-                BKAppend(@"I boot n=%d off=%d safe=%d", n, gOff, gSafe);
+                BKAppend(@"I boot n=%d off=%d safe=%d on=%d", n, gOff, gSafe, gOn);
 
-                if (gOff) { BKMark(@"engine_off.txt"); BKStatus(); return; }
+                if (gOff || !gOn || (gSafe && n > 3)) {
+                    BKMark(@"engine_gated.txt");
+                    return;
+                }
 
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                    (int64_t)((gSafe ? 2000 : 900) * NSEC_PER_MSEC)),
+                    (int64_t)((gSafe ? 2200 : 1000) * NSEC_PER_MSEC)),
                     dispatch_get_main_queue(), ^{
                         @try { BKInit(); } @catch (NSException *e) { }
                     });

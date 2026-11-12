@@ -208,6 +208,32 @@ static double (*pGetFloat)(IOHIDEventRef,uint32_t);
 static int64_t (*pGetInt)(IOHIDEventRef,uint32_t);
 static void (*origEnq)(id,SEL,IOHIDEventRef);
 
+#pragma mark - pass-through window
+
+// Janela que deixa o toque atravessar quando ele não cai em nenhum subview real.
+// Sem isso a janela de overlay engole todos os toques da tela do jogo.
+@interface BKPassWindow : UIWindow @end
+@implementation BKPassWindow
+- (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e
+{
+    UIView *v = [super hitTest:p withEvent:e];
+    if (!v) return nil;
+    if (v == self.rootViewController.view) return nil;
+    return v;
+}
+@end
+
+@interface BKHostVC : UIViewController @end
+@implementation BKHostVC
+- (void)viewDidLayoutSubviews
+{
+    [super viewDidLayoutSubviews];
+    if (gUI) [gUI layoutAll];
+}
+- (BOOL)prefersStatusBarHidden { return YES; }
+- (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
+@end
+
 #pragma mark - infra
 
 static UIWindowScene *BKScene(void)
@@ -585,15 +611,19 @@ static void BKInstall(void)
 
 #pragma mark - overlay views
 
-static UIWindow *BKWin(UIWindowLevel lv)
+static UIWindow *BKWin(UIWindowLevel lv, BOOL passThrough)
 {
     UIWindowScene *sc = BKScene();
     UIWindow *w = sc ? [[UIWindow alloc] initWithWindowScene:sc]
                      : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    if (passThrough) {
+        // troca a classe para a variante que deixa o toque passar
+        object_setClass(w, [BKPassWindow class]);
+    }
     w.frame = CGRectMake(0, 0, BKSize().width, BKSize().height);
     w.windowLevel = lv;
     w.backgroundColor = UIColor.clearColor;
-    w.rootViewController = [UIViewController new];
+    w.rootViewController = [BKHostVC new];
     w.rootViewController.view.backgroundColor = UIColor.clearColor;
     w.hidden = NO;
     return w;
@@ -1048,15 +1078,18 @@ static BKUI *gUI;
     UIWindowScene *sc = BKScene();
     _win = sc ? [[UIWindow alloc] initWithWindowScene:sc]
               : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    object_setClass(_win, [BKPassWindow class]);
     _win.windowLevel = UIWindowLevelAlert + 550;
     _win.backgroundColor = UIColor.clearColor;
-    _win.rootViewController = [UIViewController new];
+    _win.rootViewController = [BKHostVC new];
     _win.frame = CGRectMake(0, 0, s.width, s.height);
     _win.hidden = NO;
     BKSetInputGated(YES);
 
+    // dim não intercepta: o toque fora do painel segue para o jogo
     _dim = [[UIView alloc] initWithFrame:_win.bounds];
     _dim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.28];
+    _dim.userInteractionEnabled = NO;
     [_win.rootViewController.view addSubview:_dim];
 
     _box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, DW, DH)];
@@ -1101,17 +1134,22 @@ static BKUI *gUI;
     }];
 }
 
+// Sempre a partir do bounds real da janela, e o fator nunca passa do que cabe.
 - (void)layoutAll
 {
-    CGSize s = BKSize();
-    if (!_win) return;
-    _win.frame = CGRectMake(0, 0, s.width, s.height);
-    _dim.frame = _win.bounds;
+    if (!_win || !_box) return;
+    CGRect b = _win.bounds;
+    if (b.size.width < 40 || b.size.height < 40) return;
+    _dim.frame = b;
+
     UIEdgeInsets in = _win.safeAreaInsets;
-    CGFloat k = MIN((s.width - in.left - in.right - 24) / DW,
-                    (s.height - in.top - in.bottom - 24) / DH) * (_userScale / 100.0);
+    CGFloat availW = b.size.width - in.left - in.right - 24;
+    CGFloat availH = b.size.height - in.top - in.bottom - 24;
+    CGFloat fit = MIN(availW / DW, availH / DH);
+    CGFloat k = fit * MIN(1.0, _userScale / 100.0);
+
     _box.transform = CGAffineTransformMakeScale(k, k);
-    _box.center = CGPointMake(s.width / 2, s.height / 2 + (in.top - in.bottom) / 2);
+    _box.center = CGPointMake(b.size.width / 2, b.size.height / 2 + (in.top - in.bottom) / 2);
     _box.alpha = [gCore doubleForKey:kMenuOpacity def:96] / 100.0;
 }
 
@@ -1619,10 +1657,11 @@ static BKUI *gUI;
     UIWindowScene *sc = BKScene();
     _win = sc ? [[UIWindow alloc] initWithWindowScene:sc]
               : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    // editor bloqueia de proposito: o toque precisa ficar nos marcadores
     _win.windowLevel = UIWindowLevelAlert + 560;
     _win.frame = CGRectMake(0, 0, s.width, s.height);
     _win.backgroundColor = UIColor.clearColor;
-    _win.rootViewController = [UIViewController new];
+    _win.rootViewController = [BKHostVC new];
     _win.hidden = NO;
     BKSetEditorOpen(YES);
     BKSetInputGated(YES);
@@ -1759,14 +1798,14 @@ static void BKStart(void)
     BKInstall();
     if (!gHidOk) { BKLog(@"hid fail"); return; }
 
-    gBallWin = BKWin(UIWindowLevelAlert + 500);
+    gBallWin = BKWin(UIWindowLevelAlert + 500, YES);
     gBall = [[BKBallView alloc] initWithFrame:CGRectMake(0, 0, 56, 56)];
     gBall.center = CGPointMake(28, 44);
     gBall.backgroundColor = UIColor.clearColor;
     [gBall addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:gBall action:@selector(bkTap:)]];
     [gBallWin.rootViewController.view addSubview:gBall];
 
-    gCursorWin = BKWin(UIWindowLevelAlert + 600);
+    gCursorWin = BKWin(UIWindowLevelAlert + 600, YES);
     gCursorWin.userInteractionEnabled = NO;
     double d = BKNum(kCursorSize, 48);
     gCursor = [[BKCursorView alloc] initWithFrame:CGRectMake(0, 0, d, d)];
@@ -1781,12 +1820,18 @@ static void BKStart(void)
     BKAttachMouse();
     BKAttachKey();
 
-    [NSNotificationCenter.defaultCenter addObserverForName:UIDeviceOrientationDidChangeNotification object:nil
-        queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-                BKRelayout();
-            });
-        }];
+    // duas fontes + reexecucoes: a geometria so estabiliza depois da rotacao
+    void (^relay)(NSNotification *) = ^(NSNotification *n) {
+        [UIView animateWithDuration:0 animations:^{ [BKUI relayout]; }];
+        for (int i = 1; i <= 6; i++)
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 60 * NSEC_PER_MSEC)),
+                           dispatch_get_main_queue(), ^{ [BKUI relayout]; });
+        BKRelayout();
+    };
+    [NSNotificationCenter.defaultCenter addObserverForName:UIDeviceOrientationDidChangeNotification
+        object:nil queue:NSOperationQueue.mainQueue usingBlock:relay];
+    [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidChangeStatusBarOrientationNotification
+        object:nil queue:NSOperationQueue.mainQueue usingBlock:relay];
 
     gTick = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
     dispatch_source_set_timer(gTick, dispatch_time(DISPATCH_TIME_NOW, 0), 16 * NSEC_PER_MSEC, 2 * NSEC_PER_MSEC);

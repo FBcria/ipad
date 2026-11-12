@@ -1,11 +1,13 @@
 // BallKey 6.0 - ativador
 #import <UIKit/UIKit.h>
+#import <sys/sysctl.h>
+#import <string.h>
 
 static NSString *const kNotePanel = @"com.wjf.ballkey.panel";
-static NSString *const kNoteGame  = @"com.wjf.ballkey.panelgame";
 static NSString *const kNoteOff   = @"com.wjf.ballkey.off";
 static NSString *const kState     = @"/var/mobile/Documents/BallKey/enabled";
 static NSString *const kLog       = @"/var/mobile/Documents/BallKey/ballkey.log";
+static NSString *const kAlive     = @"/var/mobile/Documents/BallKey/alive";
 
 static void BKMark(NSString *s)
 {
@@ -15,14 +17,30 @@ static void BKMark(NSString *s)
     [s writeToFile:[p stringByAppendingPathComponent:@"boot.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
-static BOOL BKInstalled(void)
+static BOOL BKLoaded(void)
 {
-    NSArray *paths = @[@"/var/jb/Library/MobileSubstrate/DynamicLibraries/BallKey.plist",
-                       @"/var/jb/usr/lib/libBallKey.dylib",
-                       @"/Library/MobileSubstrate/DynamicLibraries/BallKey.plist"];
-    for (NSString *p in paths)
-        if ([[NSFileManager defaultManager] fileExistsAtPath:p]) return YES;
-    return NO;
+    NSDictionary *a = [[NSFileManager defaultManager] attributesOfItemAtPath:kAlive error:nil];
+    if (!a) return NO;
+    NSDate *d = a[NSFileModificationDate];
+    return d && (-[d timeIntervalSinceNow]) < 60;
+}
+
+static BOOL BKGameRunning(void)
+{
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
+    size_t sz = 0;
+    if (sysctl(mib, 4, NULL, &sz, NULL, 0) != 0) return NO;
+    struct kinfo_proc *buf = malloc(sz);
+    if (!buf) return NO;
+    if (sysctl(mib, 4, buf, &sz, NULL, 0) != 0) { free(buf); return NO; }
+    BOOL found = NO;
+    int n = (int)(sz / sizeof(struct kinfo_proc));
+    for (int i = 0; i < n && !found; i++) {
+        char *nm = buf[i].kp_proc.p_comm;
+        if (strstr(nm, "FreeFire") || strstr(nm, "freefire")) found = YES;
+    }
+    free(buf);
+    return found;
 }
 
 static BOOL BKActive(void)
@@ -59,15 +77,15 @@ static void BKPost(NSString *n)
 
     self.big = [UIButton buttonWithType:UIButtonTypeSystem];
     self.big.bounds = CGRectMake(0, 0, 180, 180);
-    self.big.center = CGPointMake(self.view.bounds.size.width / 2, 250);
+    self.big.center = CGPointMake(self.view.bounds.size.width / 2, 240);
     self.big.layer.cornerRadius = 90;
     self.big.layer.borderWidth = 3;
     self.big.titleLabel.font = [UIFont boldSystemFontOfSize:23];
     [self.big addTarget:self action:@selector(toggle:) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.big];
 
-    self.status = [[UILabel alloc] initWithFrame:CGRectMake(20, 360, self.view.bounds.size.width - 40,
-                    self.view.bounds.size.height - 360 - 170)];
+    self.status = [[UILabel alloc] initWithFrame:CGRectMake(20, 350, self.view.bounds.size.width - 40,
+                    self.view.bounds.size.height - 350 - 170)];
     self.status.textColor = UIColor.lightGrayColor;
     self.status.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
     self.status.numberOfLines = 0;
@@ -111,41 +129,49 @@ static void BKPost(NSString *n)
 - (NSString *)logTail
 {
     NSString *s = [NSString stringWithContentsOfFile:kLog encoding:NSUTF8StringEncoding error:nil];
-    if (!s.length) return @"log vazio";
+    if (!s.length) return @"sem log";
     NSArray *l = [s componentsSeparatedByString:@"\n"];
     NSMutableArray *o = [NSMutableArray array];
-    for (NSInteger i = MAX(0, (NSInteger)l.count - 3); i < (NSInteger)l.count; i++)
+    for (NSInteger i = MAX(0, (NSInteger)l.count - 2); i < (NSInteger)l.count; i++)
         if ([l[i] length]) [o addObject:l[i]];
-    return o.count ? [o componentsJoinedByString:@"\n"] : @"log vazio";
+    return o.count ? [o componentsJoinedByString:@"\n"] : @"sem log";
 }
 
 - (void)paint
 {
     BOOL on = BKActive();
+    BOOL loaded = BKLoaded();
+    BOOL running = BKGameRunning();
+    BOOL can = on || (loaded && running);
+
     UIColor *c = on ? [UIColor colorWithRed:1 green:0.42 blue:0.17 alpha:1]
                     : [UIColor colorWithRed:0.35 green:0.9 blue:0.55 alpha:1];
     [self.big setTitle:(on ? @"DESATIVAR" : @"ATIVAR") forState:UIControlStateNormal];
     [self.big setTitleColor:c forState:UIControlStateNormal];
     self.big.layer.borderColor = c.CGColor;
     self.big.backgroundColor = [c colorWithAlphaComponent:0.10];
+    self.big.enabled = can;
+    self.big.alpha = can ? 1.0 : 0.30;
 
-    if (!BKInstalled()) { self.status.text = @"Tweak não instalado.\nToque em instalar abaixo."; return; }
-    self.status.text = [NSString stringWithFormat:@"%@\n\n--- tweak ---\n%@",
-        on ? @"Ativo.\nO painel está na tela do jogo." : @"Desativado.", [self logTail]];
+    NSString *msg;
+    if (!loaded) msg = @"Tweak não carregado.\nReinstale e dê respring.";
+    else if (!running && !on) msg = @"Abra o Free Fire primeiro.\nPode deixá-lo em segundo plano e voltar aqui.";
+    else if (on) msg = @"Ativo.\nVolte para o Free Fire e jogue.";
+    else msg = @"Pronto. Toque em ATIVAR.";
+
+    self.status.text = [NSString stringWithFormat:@"%@\n\n--- tweak ---\n%@", msg, [self logTail]];
 }
 
 - (void)toggle:(id)s
 {
-    if (!BKInstalled()) { self.status.text = @"Instale o tweak primeiro."; return; }
-    BOOL on = BKActive();
-    if (on) {
+    if (BKActive()) {
         BKPost(kNoteOff);
         self.status.text = @"Desativado.";
     } else {
-        BKPost(kNoteGame);
-        self.status.text = @"Ativando e abrindo o Free Fire...";
+        BKPost(kNotePanel);
+        self.status.text = @"Ativado. Volte para o Free Fire.";
     }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 400 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ [self paint]; });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 350 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ [self paint]; });
 }
 
 - (NSString *)debInBundle

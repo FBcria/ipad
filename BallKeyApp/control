@@ -1,0 +1,8 @@
+Package: com.wjf.ballkeyapp
+Name: BallKey
+Version: 6.0.0
+Architecture: iphoneos-arm
+Description: Instalador e ativador do BallKey
+Maintainer: martidev333
+Author: martidev333
+Section: Utilities

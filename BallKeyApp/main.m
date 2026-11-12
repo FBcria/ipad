@@ -5,6 +5,7 @@ static NSString *const kNotePanel = @"com.wjf.ballkey.panel";
 static NSString *const kNoteGame  = @"com.wjf.ballkey.panelgame";
 static NSString *const kNoteOff   = @"com.wjf.ballkey.off";
 static NSString *const kState     = @"/var/mobile/Documents/BallKey/enabled";
+static NSString *const kLog       = @"/var/mobile/Documents/BallKey/ballkey.log";
 
 static void BKMark(NSString *s)
 {
@@ -49,7 +50,7 @@ static void BKPost(NSString *n)
     BKMark(@"viewDidLoad");
     self.view.backgroundColor = UIColor.blackColor;
 
-    self.caption = [[UILabel alloc] initWithFrame:CGRectMake(20, 70, self.view.bounds.size.width - 40, 40)];
+    self.caption = [[UILabel alloc] initWithFrame:CGRectMake(20, 60, self.view.bounds.size.width - 40, 40)];
     self.caption.text = @"BallKey";
     self.caption.textColor = UIColor.whiteColor;
     self.caption.font = [UIFont boldSystemFontOfSize:30];
@@ -57,18 +58,18 @@ static void BKPost(NSString *n)
     [self.view addSubview:self.caption];
 
     self.big = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.big.bounds = CGRectMake(0, 0, 190, 190);
-    self.big.center = CGPointMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2 - 40);
-    self.big.layer.cornerRadius = 95;
+    self.big.bounds = CGRectMake(0, 0, 180, 180);
+    self.big.center = CGPointMake(self.view.bounds.size.width / 2, 250);
+    self.big.layer.cornerRadius = 90;
     self.big.layer.borderWidth = 3;
-    self.big.titleLabel.font = [UIFont boldSystemFontOfSize:24];
+    self.big.titleLabel.font = [UIFont boldSystemFontOfSize:23];
     [self.big addTarget:self action:@selector(toggle:) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.big];
 
-    self.status = [[UILabel alloc] initWithFrame:CGRectMake(24, self.view.bounds.size.height - 230,
-                    self.view.bounds.size.width - 48, 60)];
-    self.status.textColor = UIColor.grayColor;
-    self.status.font = [UIFont systemFontOfSize:13];
+    self.status = [[UILabel alloc] initWithFrame:CGRectMake(20, 360, self.view.bounds.size.width - 40,
+                    self.view.bounds.size.height - 360 - 170)];
+    self.status.textColor = UIColor.lightGrayColor;
+    self.status.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
     self.status.numberOfLines = 0;
     self.status.textAlignment = NSTextAlignmentCenter;
     [self.view addSubview:self.status];
@@ -107,6 +108,17 @@ static void BKPost(NSString *n)
     self.timer = nil;
 }
 
+- (NSString *)logTail
+{
+    NSString *s = [NSString stringWithContentsOfFile:kLog encoding:NSUTF8StringEncoding error:nil];
+    if (!s.length) return @"log vazio";
+    NSArray *l = [s componentsSeparatedByString:@"\n"];
+    NSMutableArray *o = [NSMutableArray array];
+    for (NSInteger i = MAX(0, (NSInteger)l.count - 3); i < (NSInteger)l.count; i++)
+        if ([l[i] length]) [o addObject:l[i]];
+    return o.count ? [o componentsJoinedByString:@"\n"] : @"log vazio";
+}
+
 - (void)paint
 {
     BOOL on = BKActive();
@@ -118,7 +130,8 @@ static void BKPost(NSString *n)
     self.big.backgroundColor = [c colorWithAlphaComponent:0.10];
 
     if (!BKInstalled()) { self.status.text = @"Tweak não instalado.\nToque em instalar abaixo."; return; }
-    self.status.text = on ? @"Ativo.\nO painel está na tela do jogo." : @"Desativado.";
+    self.status.text = [NSString stringWithFormat:@"%@\n\n--- tweak ---\n%@",
+        on ? @"Ativo.\nO painel está na tela do jogo." : @"Desativado.", [self logTail]];
 }
 
 - (void)toggle:(id)s

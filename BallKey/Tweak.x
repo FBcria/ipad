@@ -1,38 +1,205 @@
-// BallKey - mapeador de teclado e mouse - martidev333
+// BallKey 5.0 - mapeador de teclado e mouse para Free Fire - martidev333
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <GameController/GameController.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
 #import <mach/mach_time.h>
-#import "BKCore.h"
-#import "BKEngine.h"
-#import "BKUI.h"
 
 typedef struct __IOHIDEvent *IOHIDEventRef;
 typedef double IOHIDFloat;
 typedef uint64_t BKAbsTime;
 typedef uint32_t IOOptionBits;
 #define kFieldDigIsDisplayIntegrated 0x000B0046u
+
 #define BK_FINGERS 10
 #define BK_FBASE   40
+#define DW 1180.0
+#define DH 760.0
+
+#pragma mark - prototypes
+
+CGSize BKSize(void);
+void   BKRelayout(void);
+void   BKSetInputGated(BOOL g);
+void   BKSetEditorOpen(BOOL open);
+void   BKCursorSet(BOOL on);
+BOOL   BKCursorOn(void);
+void   BKApplySettings(void);
+void   BKReleaseAll(void);
+NSMutableArray *BKMarks(void);
+void   BKRedrawMarkers(void);
+void   BKSaveMarks(void);
+void   BKReloadMarks(void);
+void   BKPointerDelta(double dx, double dy);
+void   BKButtonDown(int btn, BOOL down);
+void   BKKeyUsage(int usage, BOOL down);
+int    BKSelectedMarker(void);
+void   BKSelectMarker(int idx);
+void   BKMenuOpen(void);
+void   BKMenuClose(void);
+void   BKEditorOpenUI(void);
+void   BKUISetCanvas(UIView *v);
+UIColor *BKUIColorFor(NSString *t);
+NSString *BKNameFor(NSString *t);
+
+typedef NS_ENUM(NSInteger, BKCurve)    { BKCurveLinear = 0, BKCurveSoft, BKCurveFast };
+typedef NS_ENUM(NSInteger, BKRecenter) { BKRecenterManual = 0, BKRecenterAuto, BKRecenterOnRelease };
+typedef NS_ENUM(NSInteger, BKFireMode) { BKFireModeSingle = 0, BKFireModeRepeat, BKFireModeMultiply };
+typedef NS_ENUM(NSInteger, BKTapMode)  { BKTapModeFixed = 0, BKTapModeHold, BKTapModeToggle };
+typedef NS_ENUM(NSInteger, BKJoyCenter){ BKJoyCenterAverage = 0, BKJoyCenterFixed, BKJoyCenterRandom };
+
+static NSString *const kCursor=@"cursor", *const kSens=@"sens", *const kCurve=@"curve",
+ *const kSmooth=@"smooth", *const kYRatio=@"yRatio", *const kFovCircle=@"fovCircle",
+ *const kLockRadius=@"lockRadius", *const kRecenter=@"recenter", *const kHideCursor=@"hideCursor",
+ *const kCursorSize=@"cursorSize", *const kMarkSize=@"markSize", *const kMarkOpacity=@"markOpacity",
+ *const kMarkLabels=@"markLabels", *const kSnapGrid=@"snapGrid", *const kShowMarks=@"showMarks",
+ *const kFireMode=@"fireMode", *const kTapMode=@"tapMode", *const kRepeatCount=@"repeatCount",
+ *const kHoldAim=@"holdAim", *const kNormDiag=@"normDiag", *const kJoySpeed=@"joySpeed",
+ *const kJoyCenter=@"joyCenter", *const kRepeatDelay=@"repeatDelay", *const kMenuOpacity=@"menuOpacity",
+ *const kUiScale=@"uiScale", *const kAutoProfile=@"autoProfile", *const kJoyFx=@"joyFx",
+ *const kJoyFy=@"joyFy", *const kHideRec=@"hideRec";
+
+@class BKUI;
+@interface BKUI : NSObject
++ (void)show; + (void)hide; + (void)relayout; + (void)openEditor; + (void)closeEditor;
++ (void)editorKey:(int)usage; + (void)editorSelectionChanged;
+@end
+
+#pragma mark - settings store
+
+@interface BKCore : NSObject
++ (instancetype)shared;
+- (void)load; - (void)save; - (void)resetDefaults;
+- (BOOL)boolForKey:(NSString *)k def:(BOOL)d;
+- (void)setBool:(BOOL)v forKey:(NSString *)k;
+- (double)doubleForKey:(NSString *)k def:(double)d;
+- (void)setDouble:(double)v forKey:(NSString *)k;
+- (NSInteger)intForKey:(NSString *)k def:(NSInteger)d;
+- (void)setInt:(NSInteger)v forKey:(NSString *)k;
+- (NSMutableArray *)marks;
+- (void)setMarks:(NSArray *)a;
+- (NSArray<NSString *> *)profileNames;
+- (void)saveProfile:(NSString *)n;
+- (void)loadProfile:(NSString *)n;
+- (void)deleteProfile:(NSString *)n;
+@property (nonatomic, copy) void (^onChange)(NSString *key);
+@end
+
+static NSDictionary *BKDefaults(void)
+{
+    return @{kCursor:@NO, kSens:@1.7, kCurve:@(BKCurveSoft), kSmooth:@35, kYRatio:@100,
+             kFovCircle:@YES, kLockRadius:@70, kRecenter:@(BKRecenterOnRelease), kHideCursor:@YES,
+             kCursorSize:@48, kMarkSize:@76, kMarkOpacity:@30, kMarkLabels:@YES, kSnapGrid:@NO,
+             kShowMarks:@NO, kFireMode:@(BKFireModeSingle), kTapMode:@(BKTapModeHold),
+             kRepeatCount:@4, kHoldAim:@YES, kNormDiag:@YES, kJoySpeed:@7,
+             kJoyCenter:@(BKJoyCenterAverage), kRepeatDelay:@60, kMenuOpacity:@96,
+             kUiScale:@100, kAutoProfile:@YES, kJoyFx:@0.15, kJoyFy:@0.72, kHideRec:@NO};
+}
+
+static NSArray *BKDefaultMarks(void)
+{
+    return @[@{@"t":@"Dir",@"x":@0.15,@"y":@0.58,@"c":@26}, @{@"t":@"Dir",@"x":@0.06,@"y":@0.72,@"c":@4},
+             @{@"t":@"Dir",@"x":@0.15,@"y":@0.86,@"c":@22}, @{@"t":@"Dir",@"x":@0.24,@"y":@0.72,@"c":@7},
+             @{@"t":@"Fire",@"x":@0.87,@"y":@0.80,@"c":@1}, @{@"t":@"Ads",@"x":@0.87,@"y":@0.62,@"c":@2},
+             @{@"t":@"Fps",@"x":@0.60,@"y":@0.50,@"c":@225}, @{@"t":@"Press",@"x":@0.74,@"y":@0.88,@"c":@21},
+             @{@"t":@"Tap",@"x":@0.78,@"y":@0.74,@"c":@44}];
+}
+
+@implementation BKCore
+{
+    NSMutableDictionary *_s; NSMutableArray *_m; NSString *_base, *_cfg;
+}
++ (instancetype)shared { static BKCore *g; static dispatch_once_t o; dispatch_once(&o, ^{ g = [BKCore new]; }); return g; }
+- (instancetype)init
+{
+    if (!(self = [super init])) return nil;
+    _base = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
+             stringByAppendingPathComponent:@"BallKey"];
+    [NSFileManager.defaultManager createDirectoryAtPath:_base withIntermediateDirectories:YES attributes:nil error:nil];
+    _cfg = [_base stringByAppendingPathComponent:@"settings.plist"];
+    _s = [NSMutableDictionary dictionary]; _m = [NSMutableArray array];
+    [self load];
+    return self;
+}
+- (void)load
+{
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:_cfg];
+    [_s removeAllObjects]; [_s addEntriesFromDictionary:BKDefaults()];
+    if ([d[@"settings"] isKindOfClass:NSDictionary.class]) [_s addEntriesFromDictionary:d[@"settings"]];
+    [_m removeAllObjects];
+    if ([d[@"marks"] isKindOfClass:NSArray.class])
+        for (NSDictionary *x in d[@"marks"])
+            if ([x isKindOfClass:NSDictionary.class]) [_m addObject:[x mutableCopy]];
+    if (!_m.count) for (NSDictionary *x in BKDefaultMarks()) [_m addObject:[x mutableCopy]];
+}
+- (void)save { [@{@"settings":_s, @"marks":_m} writeToFile:_cfg atomically:YES]; }
+- (void)resetDefaults
+{
+    [_s removeAllObjects]; [_s addEntriesFromDictionary:BKDefaults()];
+    [_m removeAllObjects]; for (NSDictionary *x in BKDefaultMarks()) [_m addObject:[x mutableCopy]];
+    [self save];
+}
+- (BOOL)boolForKey:(NSString *)k def:(BOOL)d { id v = _s[k]; return v ? [v boolValue] : d; }
+- (void)setBool:(BOOL)v forKey:(NSString *)k { _s[k] = @(v); [self save]; if (self.onChange) self.onChange(k); }
+- (double)doubleForKey:(NSString *)k def:(double)d { id v = _s[k]; return v ? [v doubleValue] : d; }
+- (void)setDouble:(double)v forKey:(NSString *)k { _s[k] = @(v); [self save]; if (self.onChange) self.onChange(k); }
+- (NSInteger)intForKey:(NSString *)k def:(NSInteger)d { id v = _s[k]; return v ? [v integerValue] : d; }
+- (void)setInt:(NSInteger)v forKey:(NSString *)k { _s[k] = @(v); [self save]; if (self.onChange) self.onChange(k); }
+- (NSMutableArray *)marks { return _m; }
+- (void)setMarks:(NSArray *)a { [_m removeAllObjects]; [_m addObjectsFromArray:a]; [self save]; }
+- (NSString *)profilesPath { return [_base stringByAppendingPathComponent:@"profiles"]; }
+- (NSArray<NSString *> *)profileNames
+{
+    NSMutableArray *o = [NSMutableArray array];
+    for (NSString *f in [NSFileManager.defaultManager contentsOfDirectoryAtPath:[self profilesPath] error:nil])
+        if ([f.pathExtension isEqualToString:@"plist"]) [o addObject:f.stringByDeletingPathExtension];
+    return [o sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+}
+- (void)saveProfile:(NSString *)n
+{
+    if (!n.length) return;
+    NSString *dir = [self profilesPath];
+    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    [@{@"settings":_s, @"marks":_m} writeToFile:
+        [dir stringByAppendingPathComponent:[n stringByAppendingPathExtension:@"plist"]] atomically:YES];
+}
+- (void)loadProfile:(NSString *)n
+{
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:
+        [[self profilesPath] stringByAppendingPathComponent:[n stringByAppendingPathExtension:@"plist"]]];
+    if (!d) return;
+    [_s removeAllObjects]; [_s addEntriesFromDictionary:BKDefaults()];
+    if ([d[@"settings"] isKindOfClass:NSDictionary.class]) [_s addEntriesFromDictionary:d[@"settings"]];
+    [_m removeAllObjects];
+    for (NSDictionary *x in d[@"marks"]) [_m addObject:[x mutableCopy]];
+    [self save];
+    if (self.onChange) self.onChange(@"*");
+}
+- (void)deleteProfile:(NSString *)n
+{
+    [NSFileManager.defaultManager removeItemAtPath:
+        [[self profilesPath] stringByAppendingPathComponent:[n stringByAppendingPathExtension:@"plist"]] error:nil];
+}
+@end
+
+#pragma mark - globals
 
 static BKCore *gCore;
 static NSString *gLog;
 static UIWindow *gBallWin, *gCursorWin;
-static UIView   *gBall, *gCursor, *gCanvas;
+static UIView *gBall, *gCursor, *gCanvas;
 static NSMutableArray *gMarkViews;
 static BOOL gMenuOpen, gEditOpen, gCursorOn, gGated, gFps, gFpsHeld;
-static BOOL gHidOk, gGcMouse, gGcKey, gCursorDown, gLastValid, gInjAny;
+static BOOL gHidOk, gGcMouse, gGcKey, gCursorDown, gLastValid;
 static int  gFpsIdx = -1, gSelIdx = -1, gInjecting, gPtrMask;
 static int  gFingerOwner[BK_FINGERS];
+static int  gHoldKey[512];
 static double gCx, gCy, gLastX, gLastY;
 static double gFingerX[BK_FINGERS], gFingerY[BK_FINGERS];
-static int  gHoldKey[512];
 static dispatch_source_t gTick, gFireTimer;
 static int  gFireIdx = -1, gFireTaps = 0;
 static BOOL gFireOn;
-static int  gJoyFx, gJoyFy;
 
 static IOHIDEventRef (*pCreateFinger)(CFAllocatorRef,BKAbsTime,uint32_t,uint32_t,uint32_t,
     IOHIDFloat,IOHIDFloat,IOHIDFloat,IOHIDFloat,IOHIDFloat,Boolean,Boolean,IOOptionBits);
@@ -56,8 +223,8 @@ static UIWindowScene *BKScene(void)
 
 CGSize BKSize(void)
 {
-    UIWindowScene *sc = BKScene();
-    if (sc) return sc.coordinateSpace.bounds.size;
+    UIWindowScene *s = BKScene();
+    if (s) return s.coordinateSpace.bounds.size;
     return UIScreen.mainScreen.bounds.size;
 }
 
@@ -70,8 +237,7 @@ static void BKLog(NSString *fmt, ...)
     NSString *line = [NSString stringWithFormat:@"%.3f %@\n", CFAbsoluteTimeGetCurrent(), s];
     NSFileHandle *h = [NSFileHandle fileHandleForWritingAtPath:gLog];
     if (!h) [line writeToFile:gLog atomically:NO encoding:NSUTF8StringEncoding error:nil];
-    else { @try { [h seekToEndOfFile];
-        [h writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; [h closeFile]; } @catch (id e) {} }
+    else { @try { [h seekToEndOfFile]; [h writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; [h closeFile]; } @catch (id e) {} }
 }
 
 static double BKClamp(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -101,19 +267,18 @@ static void BKInject(int finger, double x, double y, BOOL down, BOOL move)
     if (!ev) return;
     if (pSetInt) pSetInt(ev, kFieldDigIsDisplayIntegrated, 1);
     gInjecting++;
-    @try { origEnq(UIApplication.sharedApplication, @selector(_enqueueHIDEvent:), ev); }
-    @catch (id e) {}
+    @try { origEnq(UIApplication.sharedApplication, @selector(_enqueueHIDEvent:), ev); } @catch (id e) {}
     gInjecting--;
     CFRelease(ev);
     if (finger >= BK_FBASE && finger < BK_FBASE + BK_FINGERS) {
         gFingerX[finger - BK_FBASE] = x; gFingerY[finger - BK_FBASE] = y;
     }
-    if (down) gInjAny = YES;
 }
 
 static void BKTapAt(double x, double y)
 {
-    int f = BKFingerTake(900); if (f < 0) return;
+    int f = BKFingerTake(900);
+    if (f < 0) return;
     BKInject(f, x, y, YES, NO); BKInject(f, x, y, YES, YES); BKInject(f, x, y, NO, NO);
     BKFingerFree(f);
 }
@@ -134,7 +299,6 @@ void BKReleaseAll(void)
 
 #pragma mark - cursor
 
-void BKCursorOnSet(BOOL on);
 void BKCursorSet(BOOL on)
 {
     if (on == gCursorOn) return;
@@ -156,20 +320,21 @@ static double BKCurve(double v)
 {
     switch ([gCore intForKey:kCurve def:BKCurveSoft]) {
         case BKCurveLinear: return v;
-        case BKCurveFast:   return v * (1.0 + fabs(v) * 0.35);
-        default: { double t = BKClamp(BKNum(kSmooth, 35) / 100.0, 0.0, 1.0);
-                   return v * (1.0 - t) + (v * fabs(v)) * t; }
+        case BKCurveFast: return v * (1.0 + fabs(v) * 0.35);
+        default: {
+            double t = BKClamp(BKNum(kSmooth, 35) / 100.0, 0.0, 1.0);
+            return v * (1.0 - t) + (v * fabs(v)) * t;
+        }
     }
 }
 
 void BKPointerDelta(double dx, double dy)
 {
+    if (!gCursorOn) return;
     CGSize s = BKSize();
     double sens = BKNum(kSens, 1.7) * 0.55;
-    double yr = BKNum(kYRatio, 100) / 100.0;
     dx = BKCurve(dx * sens);
-    dy = BKCurve(dy * sens * yr);
-    if (!gCursorOn) return;
+    dy = BKCurve(dy * sens * (BKNum(kYRatio, 100) / 100.0));
 
     if (gFps && gFpsHeld) {
         double bx = s.width * 0.5, by = s.height * 0.5;
@@ -178,11 +343,9 @@ void BKPointerDelta(double dx, double dy)
             by = [BKMarks()[gFpsIdx][@"y"] doubleValue] * s.height;
         }
         double r = BKNum(kLockRadius, 70);
-        double nx = gCx + dx, ny = gCy + dy;
-        double d = hypot(nx - bx, ny - by);
+        double nx = gCx + dx, ny = gCy + dy, d = hypot(nx - bx, ny - by);
         if (d > r) { nx = bx + (nx - bx) / d * r; ny = by + (ny - by) / d * r; }
-        gCx = BKClamp(nx, 4, s.width - 4);
-        gCy = BKClamp(ny, 4, s.height - 4);
+        gCx = BKClamp(nx, 4, s.width - 4); gCy = BKClamp(ny, 4, s.height - 4);
         if ([gCore intForKey:kRecenter def:BKRecenterOnRelease] == BKRecenterAuto && d > r) {
             gCx = bx + (gCx - bx) * 0.55; gCy = by + (gCy - by) * 0.55;
         }
@@ -194,19 +357,14 @@ void BKPointerDelta(double dx, double dy)
     if (gCursorDown) BKInject(31, gCx, gCy, YES, YES);
 }
 
-#pragma mark - fire engine
+#pragma mark - fire
 
 static void BKFireStop(void)
 {
-    if (gFireIdx >= 0) {
-        int f = BKFingerTake(gFireIdx);
-        if (f >= 0) { NSDictionary *m = BKMarks()[gFireIdx];
-            BKInject(f, [m[@"x"] doubleValue] * BKSize().width, [m[@"y"] doubleValue] * BKSize().height, NO, NO);
-            BKFingerFree(f); }
-    }
     gFireOn = NO;
     if (gFireTimer) dispatch_source_set_timer(gFireTimer, DISPATCH_TIME_FOREVER, 0, 0);
     if ([gCore boolForKey:kHoldAim def:YES]) BKButtonDown(2, NO);
+    gFireIdx = -1;
 }
 
 static void BKFireTick(void)
@@ -216,21 +374,21 @@ static void BKFireTick(void)
     CGSize s = BKSize();
     BKTapAt([m[@"x"] doubleValue] * s.width, [m[@"y"] doubleValue] * s.height);
     gFireTaps++;
-    int mode = [gCore intForKey:kTapMode def:BKTapModeHold];
-    if (mode == BKTapModeFixed && gFireTaps >= [gCore intForKey:kRepeatCount def:4]) BKFireStop();
+    if ([gCore intForKey:kTapMode def:BKTapModeHold] == BKTapModeFixed &&
+        gFireTaps >= [gCore intForKey:kRepeatCount def:4]) BKFireStop();
 }
 
 static void BKFireStart(int idx)
 {
-    if (gFireIdx == idx && gFireOn) {
-        if ([gCore intForKey:kTapMode def:BKTapModeHold] == BKTapModeToggle) { BKFireStop(); return; }
-    }
+    if (gFireIdx == idx && gFireOn &&
+        [gCore intForKey:kTapMode def:BKTapModeHold] == BKTapModeToggle) { BKFireStop(); return; }
     BKFireStop();
     gFireIdx = idx; gFireTaps = 0; gFireOn = YES;
     if ([gCore boolForKey:kHoldAim def:YES]) BKButtonDown(2, YES);
+    NSDictionary *m = BKMarks()[idx];
+    CGSize s = BKSize();
     if ([gCore intForKey:kFireMode def:BKFireModeSingle] == BKFireModeSingle) {
-        NSDictionary *m = BKMarks()[idx];
-        BKTapAt([m[@"x"] doubleValue] * BKSize().width, [m[@"y"] doubleValue] * BKSize().height);
+        BKTapAt([m[@"x"] doubleValue] * s.width, [m[@"y"] doubleValue] * s.height);
         return;
     }
     if (!gFireTimer) {
@@ -255,7 +413,7 @@ static void BKMarkerPress(int idx, BOOL down)
     double x = [m[@"x"] doubleValue] * s.width, y = [m[@"y"] doubleValue] * s.height;
 
     if ([t isEqualToString:@"Tap"]) { if (down) BKTapAt(x, y); return; }
-    if ([t isEqualToString:@"Fire"]) { if (down) BKFireStart(idx); else if (!gFireOn) BKFireStop(); return; }
+    if ([t isEqualToString:@"Fire"]) { if (down) BKFireStart(idx); else BKFireStop(); return; }
     if ([t isEqualToString:@"Fps"]) {
         if (down) {
             gFps = YES; gFpsHeld = YES; gFpsIdx = idx; gCx = x; gCy = y;
@@ -265,10 +423,10 @@ static void BKMarkerPress(int idx, BOOL down)
         return;
     }
     if (down) {
-        int f = BKFingerTake(idx); if (f < 0) return;
-        gFingerOwner[f - BK_FBASE] = idx + 1;
-        BKInject(f, x, y, YES, NO);
+        int f = BKFingerTake(idx);
+        if (f < 0) return;
         gHoldKey[idx] = f;
+        BKInject(f, x, y, YES, NO);
     } else if (gHoldKey[idx]) {
         int f = gHoldKey[idx]; gHoldKey[idx] = 0;
         BKInject(f, x, y, NO, NO);
@@ -333,7 +491,7 @@ void BKKeyUsage(int usage, BOOL down)
         if ([BKMarks()[i][@"c"] intValue] != usage) continue;
         NSString *t = BKMarks()[i][@"t"];
         if ([t isEqualToString:@"Dir"]) {
-            if (down) { if (gHoldKey[i]) return; gHoldKey[i] = 1; gJoyFx += 0; }
+            if (down) { if (gHoldKey[i]) return; gHoldKey[i] = 1; }
             else { if (!gHoldKey[i]) return; gHoldKey[i] = 0; }
             return;
         }
@@ -360,10 +518,11 @@ static void BKJoystick(void)
     if (!any) return;
 
     double bx = sx / n, by = sy / n;
-    if ([gCore intForKey:kJoyCenter def:BKJoyCenterAverage] == BKJoyCenterFixed) { bx = gJoyFx; by = gJoyFy; }
-    else if ([gCore intForKey:kJoyCenter def:BKJoyCenterAverage] == BKJoyCenterRandom) {
-        bx += ((double)(arc4random_uniform(1000)) / 1000.0 - 0.5) * 0.02;
-        by += ((double)(arc4random_uniform(1000)) / 1000.0 - 0.5) * 0.02;
+    NSInteger mode = [gCore intForKey:kJoyCenter def:BKJoyCenterAverage];
+    if (mode == BKJoyCenterFixed) { bx = BKNum(kJoyFx, bx); by = BKNum(kJoyFy, by); }
+    else if (mode == BKJoyCenterRandom) {
+        bx += ((double)arc4random_uniform(1000) / 1000.0 - 0.5) * 0.02;
+        by += ((double)arc4random_uniform(1000) / 1000.0 - 0.5) * 0.02;
     }
 
     double vx = 0, vy = 0;
@@ -375,7 +534,7 @@ static void BKJoystick(void)
     double len = hypot(vx, vy);
     if (len < 0.0001) return;
     vx /= len; vy /= len;
-    if (![gCore boolForKey:kNormDiag def:YES] && (vx != 0 && vy != 0)) { vx *= 1.4142; vy *= 1.4142; }
+    if (![gCore boolForKey:kNormDiag def:YES]) { vx *= 1.4142; vy *= 1.4142; }
 
     CGSize s = BKSize();
     double spd = BKNum(kJoySpeed, 7) * (s.width / 390.0);
@@ -389,7 +548,8 @@ static void BKJoystick(void)
 
 static void BKAttachMouse(void)
 {
-    GCMouse *m = GCMouse.current; gGcMouse = (m != nil);
+    GCMouse *m = GCMouse.current;
+    gGcMouse = (m != nil);
     if (!m) return;
     BKLog(@"gc mouse ok");
     m.mouseInput.mouseMovedHandler = ^(GCMouseInput *in, float dx, float dy) { BKPointerDelta(dx, dy); };
@@ -400,7 +560,8 @@ static void BKAttachMouse(void)
 
 static void BKAttachKey(void)
 {
-    GCKeyboard *k = [GCKeyboard coalescedKeyboard]; gGcKey = (k != nil);
+    GCKeyboard *k = [GCKeyboard coalescedKeyboard];
+    gGcKey = (k != nil);
     if (!k) return;
     BKLog(@"gc key ok");
     k.keyboardInput.keyChangedHandler = ^(GCKeyboardInput *in, GCControllerButtonInput *key, GCKeyCode code, BOOL pressed) {
@@ -423,12 +584,13 @@ static void BKInstall(void)
     if (m) { origEnq = (void *)method_getImplementation(m); method_setImplementation(m, (IMP)BKEnq); }
 }
 
-#pragma mark - views
+#pragma mark - overlay views
 
 static UIWindow *BKWin(UIWindowLevel lv)
 {
     UIWindowScene *sc = BKScene();
-    UIWindow *w = sc ? [[UIWindow alloc] initWithWindowScene:sc] : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    UIWindow *w = sc ? [[UIWindow alloc] initWithWindowScene:sc]
+                     : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     w.frame = CGRectMake(0, 0, BKSize().width, BKSize().height);
     w.windowLevel = lv;
     w.backgroundColor = UIColor.clearColor;
@@ -488,7 +650,10 @@ static UIWindow *BKWin(UIWindowLevel lv)
     }
     self.center = c;
     int i = (int)self.tag - 300;
-    if (i >= 0 && i < (int)BKMarks().count) { BKMarks()[i][@"x"] = @(c.x / s.width); BKMarks()[i][@"y"] = @(c.y / s.height); }
+    if (i >= 0 && i < (int)BKMarks().count) {
+        BKMarks()[i][@"x"] = @(c.x / s.width);
+        BKMarks()[i][@"y"] = @(c.y / s.height);
+    }
 }
 - (void)bkPick:(UITapGestureRecognizer *)g { BKSelectMarker((int)self.tag - 300); }
 @end
@@ -497,9 +662,8 @@ static UIWindow *BKWin(UIWindowLevel lv)
 
 NSMutableArray *BKMarks(void) { return [gCore marks]; }
 int  BKSelectedMarker(void) { return gSelIdx; }
-BOOL BKEditorOpen(void) { return gEditOpen; }
-BOOL BKIsBusy(void) { return gMenuOpen || gEditOpen; }
 void BKSetInputGated(BOOL g) { gGated = g; }
+void BKUISetCanvas(UIView *v) { gCanvas = v; }
 
 void BKSelectMarker(int idx)
 {
@@ -521,6 +685,7 @@ void BKRedrawMarkers(void)
     for (UIView *v in gMarkViews) [v removeFromSuperview];
     gMarkViews = [NSMutableArray array];
     CGSize s = gCanvas.bounds.size;
+    if (s.width < 1) return;
     double k = s.width / 390.0;
     BOOL labels = [gCore boolForKey:kMarkLabels def:YES];
     double w = BKNum(kMarkSize, 76) * k, h = 40 * k;
@@ -529,14 +694,15 @@ void BKRedrawMarkers(void)
         BKMarkView *v = [[BKMarkView alloc] initWithFrame:CGRectMake(0, 0, w, h)];
         v.center = CGPointMake([m[@"x"] doubleValue] * s.width, [m[@"y"] doubleValue] * s.height);
         UIColor *c = BKUIColorFor(m[@"t"]);
-        v.backgroundColor = [c colorWithAlphaComponent:0.22];
+        v.backgroundColor = [c colorWithAlphaComponent:BKNum(kMarkOpacity, 30) / 100.0];
         v.layer.borderColor = c.CGColor;
         v.layer.borderWidth = 1.5;
         v.layer.cornerRadius = 8 * k;
         v.tag = 300 + i;
         if (labels) {
             UILabel *l = [UILabel new];
-            l.frame = v.bounds; l.text = BKNameFor(m[@"t"]);
+            l.frame = v.bounds;
+            l.text = BKNameFor(m[@"t"]);
             l.textColor = UIColor.whiteColor;
             l.font = [UIFont boldSystemFontOfSize:12 * k];
             l.textAlignment = NSTextAlignmentCenter;
@@ -563,9 +729,9 @@ void BKApplySettings(void)
         gCursor.frame = gCursorWin.bounds;
         gCursorWin.center = CGPointMake(gCx, gCy);
         [gCursor setNeedsDisplay];
-        gCursor.alpha = [gCore boolForKey:kHideCursor def:YES] && !gCursorDown ? 0.45 : 1.0;
     }
     if (gCanvas) BKRedrawMarkers();
+    [BKUI relayout];
 }
 
 void BKRelayout(void)
@@ -579,8 +745,8 @@ void BKRelayout(void)
     [BKUI relayout];
 }
 
-void BKMenuOpen(void) { [BKUI show]; gMenuOpen = YES; BKReleaseAll(); }
-void BKMenuClose(void) { [BKUI hide]; gMenuOpen = NO; }
+void BKMenuOpen(void) { gMenuOpen = YES; [BKUI show]; BKReleaseAll(); }
+void BKMenuClose(void) { gMenuOpen = NO; [BKUI hide]; }
 void BKEditorOpenUI(void) { [BKUI openEditor]; }
 
 void BKSetEditorOpen(BOOL open)
@@ -590,12 +756,963 @@ void BKSetEditorOpen(BOOL open)
     if (!open) { gCanvas = nil; gMarkViews = nil; gSelIdx = -1; BKReleaseAll(); }
 }
 
+#pragma mark - design tokens
+
+static UIColor *BKHex(NSUInteger h, CGFloat a)
+{
+    return [UIColor colorWithRed:((h >> 16) & 255) / 255.0 green:((h >> 8) & 255) / 255.0
+                            blue:(h & 255) / 255.0 alpha:a];
+}
+#define ACC   BKHex(0xFF6A2B, 1)
+#define ACCD  BKHex(0xFF6A2B, 0.16)
+#define PANEL BKHex(0x0D1119, 1)
+#define SIDE  BKHex(0x070A10, 1)
+#define ROW   BKHex(0x141A24, 1)
+#define STROK BKHex(0x1E2634, 1)
+#define TXT   BKHex(0xE8ECF4, 1)
+#define DIM   BKHex(0x8A94A6, 1)
+#define OKC   BKHex(0x2FD07A, 1)
+#define BADC  BKHex(0xFF5A5A, 1)
+
+UIColor *BKUIColorFor(NSString *t)
+{
+    if ([t isEqualToString:@"Tap"])   return BKHex(0x2FA8FF, 1);
+    if ([t isEqualToString:@"Press"]) return BKHex(0x2FD07A, 1);
+    if ([t isEqualToString:@"Dir"])   return BKHex(0xA06BFF, 1);
+    if ([t isEqualToString:@"Fps"])   return BKHex(0xFF4A7A, 1);
+    if ([t isEqualToString:@"Ads"])   return BKHex(0xFF9B2B, 1);
+    return BKHex(0xFF5A3A, 1);
+}
+NSString *BKNameFor(NSString *t)
+{
+    if ([t isEqualToString:@"Tap"])   return @"Tocar";
+    if ([t isEqualToString:@"Press"]) return @"Pressionar";
+    if ([t isEqualToString:@"Dir"])   return @"Direção";
+    if ([t isEqualToString:@"Fps"])   return @"Trava";
+    if ([t isEqualToString:@"Ads"])   return @"Mirar";
+    if ([t isEqualToString:@"Fire"])  return @"Atirar";
+    return t;
+}
+
+static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
+{
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(sz, sz)];
+    return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        CGContextRef g = ctx.CGContext;
+        CGContextSetStrokeColorWithColor(g, c.CGColor);
+        CGContextSetFillColorWithColor(g, c.CGColor);
+        CGContextSetLineWidth(g, 2.2);
+        CGContextSetLineCap(g, kCGLineCapRound);
+        CGContextSetLineJoin(g, kCGLineJoinRound);
+        CGFloat m = sz * 0.14, e = sz - m, mid = sz / 2;
+        if ([n isEqualToString:@"cursor"]) {
+            CGContextStrokeEllipseInRect(g, CGRectMake(m, m, e - m, e - m));
+            CGContextMoveToPoint(g, mid, 1); CGContextAddLineToPoint(g, mid, m - 1);
+            CGContextMoveToPoint(g, mid, e + 1); CGContextAddLineToPoint(g, mid, sz - 1);
+            CGContextMoveToPoint(g, 1, mid); CGContextAddLineToPoint(g, m - 1, mid);
+            CGContextMoveToPoint(g, e + 1, mid); CGContextAddLineToPoint(g, sz - 1, mid);
+            CGContextStrokePath(g);
+        } else if ([n isEqualToString:@"map"]) {
+            CGFloat q = sz * 0.30;
+            for (int i = 0; i < 2; i++) for (int j = 0; j < 2; j++)
+                CGContextStrokeRect(g, CGRectMake(m + i * (q + 4), m + j * (q + 4), q, q));
+        } else if ([n isEqualToString:@"keys"]) {
+            CGContextStrokeRect(g, CGRectMake(m, m + 3, e - m, e - m - 6));
+            for (int i = 0; i < 3; i++) CGContextFillRect(g, CGRectMake(m + 6 + i * 9, mid + 6, 5, 4));
+        } else if ([n isEqualToString:@"user"]) {
+            CGContextStrokeEllipseInRect(g, CGRectMake(mid - 7, m, 14, 14));
+            CGContextMoveToPoint(g, m, e); CGContextAddQuadCurveToPoint(g, mid, mid + 2, e, e);
+            CGContextStrokePath(g);
+        } else if ([n isEqualToString:@"info"]) {
+            CGContextStrokeEllipseInRect(g, CGRectMake(m, m, e - m, e - m));
+            CGContextFillRect(g, CGRectMake(mid - 1.5, mid - 4, 3, 3));
+            CGContextFillRect(g, CGRectMake(mid - 1.5, mid + 1, 3, 9));
+        } else if ([n isEqualToString:@"x"]) {
+            CGContextMoveToPoint(g, m + 2, m + 2); CGContextAddLineToPoint(g, e - 2, e - 2);
+            CGContextMoveToPoint(g, e - 2, m + 2); CGContextAddLineToPoint(g, m + 2, e - 2);
+            CGContextStrokePath(g);
+        } else if ([n isEqualToString:@"chev"]) {
+            CGContextMoveToPoint(g, mid - 5, mid - 2); CGContextAddLineToPoint(g, mid, mid + 4);
+            CGContextAddLineToPoint(g, mid + 5, mid - 2); CGContextStrokePath(g);
+        }
+    }];
+}
+
+#pragma mark - widgets
+
+@interface BKToggle : UIControl
+@property (nonatomic) BOOL on;
+- (void)setOn:(BOOL)on animated:(BOOL)a;
+@end
+@implementation BKToggle
+{
+    UIView *_track, *_knob;
+}
+- (instancetype)initWithFrame:(CGRect)f
+{
+    if (!(self = [super initWithFrame:f])) return nil;
+    _track = [[UIView alloc] initWithFrame:self.bounds];
+    _track.layer.cornerRadius = f.size.height / 2;
+    _track.backgroundColor = BKHex(0x232B38, 1);
+    _track.userInteractionEnabled = NO;
+    [self addSubview:_track];
+    _knob = [[UIView alloc] initWithFrame:CGRectMake(4, 4, f.size.height - 8, f.size.height - 8)];
+    _knob.layer.cornerRadius = _knob.bounds.size.height / 2;
+    _knob.backgroundColor = UIColor.whiteColor;
+    _knob.userInteractionEnabled = NO;
+    [self addSubview:_knob];
+    [self addTarget:self action:@selector(hit) forControlEvents:UIControlEventTouchUpInside];
+    return self;
+}
+- (void)setOn:(BOOL)on { [self setOn:on animated:NO]; }
+- (void)setOn:(BOOL)on animated:(BOOL)a
+{
+    _on = on;
+    CGRect f = _knob.frame;
+    f.origin.x = on ? self.bounds.size.width - f.size.width - 4 : 4;
+    void (^b)(void) = ^{
+        self->_knob.frame = f;
+        self->_track.backgroundColor = on ? ACC : BKHex(0x232B38, 1);
+    };
+    if (a) [UIView animateWithDuration:0.32 delay:0 usingSpringWithDamping:0.6 initialSpringVelocity:0.6
+                               options:UIViewAnimationOptionAllowUserInteraction animations:b completion:nil];
+    else b();
+}
+- (void)hit
+{
+    [self setOn:!_on animated:YES];
+    [self sendActionsForControlEvents:UIControlEventValueChanged];
+    UIImpactFeedbackGenerator *h = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+    [h impactOccurred];
+}
+@end
+
+@interface BKSlider : UIControl
+@property (nonatomic) double min, max, value;
+@end
+@implementation BKSlider
+{
+    UIView *_track, *_fill, *_knob;
+}
+- (instancetype)initWithFrame:(CGRect)f
+{
+    if (!(self = [super initWithFrame:f])) return nil;
+    _track = [[UIView alloc] initWithFrame:CGRectMake(0, f.size.height/2 - 4, f.size.width, 8)];
+    _track.layer.cornerRadius = 4;
+    _track.backgroundColor = BKHex(0x232B38, 1);
+    _track.userInteractionEnabled = NO;
+    [self addSubview:_track];
+    _fill = [[UIView alloc] initWithFrame:_track.frame];
+    _fill.layer.cornerRadius = 4;
+    _fill.backgroundColor = ACC;
+    _fill.userInteractionEnabled = NO;
+    [self addSubview:_fill];
+    _knob = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
+    _knob.layer.cornerRadius = 15;
+    _knob.backgroundColor = UIColor.whiteColor;
+    _knob.userInteractionEnabled = NO;
+    [self addSubview:_knob];
+    [self addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)]];
+    [self addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)]];
+    return self;
+}
+- (void)setValue:(double)v { _value = v; [self layoutTracks]; }
+- (void)layoutTracks
+{
+    CGFloat w = self.bounds.size.width;
+    CGFloat t = (_max > _min) ? (CGFloat)((_value - _min) / (_max - _min)) : 0;
+    _fill.frame = CGRectMake(0, self.bounds.size.height/2 - 4, MAX(8, w * t), 8);
+    _knob.center = CGPointMake(MAX(15, MIN(w - 15, w * t)), self.bounds.size.height / 2);
+}
+- (void)drag:(UIGestureRecognizer *)g
+{
+    CGPoint p = [g locationInView:self];
+    CGFloat t = MAX(0, MIN(1, (p.x - 15) / MAX(1, self.bounds.size.width - 30)));
+    _value = _min + t * (_max - _min);
+    [self layoutTracks];
+    [self sendActionsForControlEvents:UIControlEventValueChanged];
+}
+@end
+
+@interface BKPopup : UIView
+@property (nonatomic, copy) void (^onPick)(NSInteger);
+- (instancetype)initWithOptions:(NSArray *)o index:(NSInteger)i width:(CGFloat)w;
+@end
+@implementation BKPopup
+- (instancetype)initWithOptions:(NSArray *)o index:(NSInteger)i width:(CGFloat)w
+{
+    CGFloat h = o.count * 52 + 16;
+    if (!(self = [super initWithFrame:CGRectMake(0, 0, w, h)])) return nil;
+    self.backgroundColor = BKHex(0x10161F, 0.99);
+    self.layer.cornerRadius = 14;
+    self.layer.borderWidth = 1;
+    self.layer.borderColor = STROK.CGColor;
+    for (NSInteger k = 0; k < (NSInteger)o.count; k++) {
+        UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+        b.frame = CGRectMake(8, 8 + k * 52, w - 16, 44);
+        [b setTitle:o[k] forState:UIControlStateNormal];
+        [b setTitleColor:(k == i ? ACC : TXT) forState:UIControlStateNormal];
+        b.titleLabel.font = [UIFont systemFontOfSize:17 weight:(k == i ? UIFontWeightSemibold : UIFontWeightRegular)];
+        b.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+        b.contentEdgeInsets = UIEdgeInsetsMake(0, 14, 0, 0);
+        b.backgroundColor = (k == i) ? ACCD : UIColor.clearColor;
+        b.layer.cornerRadius = 9;
+        b.tag = k;
+        [b addTarget:self action:@selector(pick:) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:b];
+    }
+    return self;
+}
+- (void)pick:(UIButton *)b { if (self.onPick) self.onPick(b.tag); [self removeFromSuperview]; }
+@end
+
+#pragma mark - panel
+
+static BKUI *gUI;
+
+@interface BKUI () <UIScrollViewDelegate>
+@end
+
+@interface BKUI ()
+{
+    UIWindow *_win;
+    UIView *_dim, *_box, *_content, *_sidebar, *_pill;
+    UIScrollView *_scroll;
+    UIView *_inner;
+    NSMutableArray *_rows;
+    UILabel *_statusLbl;
+    NSInteger _tab;
+    CGFloat _userScale;
+    NSTimer *_statusTimer;
+}
+@end
+
+@implementation BKUI
+
++ (void)show { if (!gUI) gUI = [BKUI new]; [gUI present]; }
++ (void)hide { [gUI dismiss]; }
++ (void)relayout { [gUI layoutAll]; }
++ (void)openEditor { [gUI presentEditor]; }
++ (void)closeEditor { [gUI dismissEditor]; }
++ (void)editorKey:(int)u { [gUI editorGotKey:u]; }
++ (void)editorSelectionChanged { [gUI refreshEditorStatus]; }
+
+- (instancetype)init
+{
+    if (!(self = [super init])) return nil;
+    _rows = [NSMutableArray array];
+    _userScale = 1.0;
+    return self;
+}
+
+- (void)present
+{
+    CGSize s = BKSize();
+    UIWindowScene *sc = BKScene();
+    _win = sc ? [[UIWindow alloc] initWithWindowScene:sc]
+              : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    _win.windowLevel = UIWindowLevelAlert + 550;
+    _win.backgroundColor = UIColor.clearColor;
+    _win.rootViewController = [UIViewController new];
+    _win.frame = CGRectMake(0, 0, s.width, s.height);
+    _win.hidden = NO;
+    BKSetInputGated(YES);
+
+    _dim = [[UIView alloc] initWithFrame:_win.bounds];
+    _dim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.28];
+    [_win.rootViewController.view addSubview:_dim];
+
+    _box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, DW, DH)];
+    _box.backgroundColor = PANEL;
+    _box.layer.cornerRadius = 26;
+    _box.layer.borderWidth = 1;
+    _box.layer.borderColor = STROK.CGColor;
+    _box.clipsToBounds = YES;
+    [_win.rootViewController.view addSubview:_box];
+
+    [self buildChrome];
+    _userScale = [gCore doubleForKey:kUiScale def:100];
+    [self layoutAll];
+    [self setTab:0 animated:NO];
+
+    _box.transform = CGAffineTransformMakeScale(0.92, 0.92);
+    _box.alpha = 0;
+    _dim.alpha = 0;
+    [UIView animateWithDuration:0.42 delay:0 usingSpringWithDamping:0.78 initialSpringVelocity:0.9
+                        options:UIViewAnimationOptionAllowUserInteraction animations:^{
+        self->_box.transform = CGAffineTransformIdentity;
+        self->_box.alpha = 1;
+        self->_dim.alpha = 1;
+    } completion:nil];
+
+    _statusTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) { [self tickStatus]; }];
+}
+
+- (void)dismiss
+{
+    [_statusTimer invalidate];
+    _statusTimer = nil;
+    [UIView animateWithDuration:0.2 animations:^{
+        self->_box.transform = CGAffineTransformMakeScale(0.94, 0.94);
+        self->_box.alpha = 0;
+        self->_dim.alpha = 0;
+    } completion:^(BOOL f) {
+        self->_win.hidden = YES;
+        self->_win = nil;
+        gUI = nil;
+        BKSetInputGated(NO);
+    }];
+}
+
+- (void)layoutAll
+{
+    CGSize s = BKSize();
+    if (!_win) return;
+    _win.frame = CGRectMake(0, 0, s.width, s.height);
+    _dim.frame = _win.bounds;
+    UIEdgeInsets in = _win.safeAreaInsets;
+    CGFloat k = MIN((s.width - in.left - in.right - 24) / DW,
+                    (s.height - in.top - in.bottom - 24) / DH) * (_userScale / 100.0);
+    _box.transform = CGAffineTransformMakeScale(k, k);
+    _box.center = CGPointMake(s.width / 2, s.height / 2 + (in.top - in.bottom) / 2);
+    _box.alpha = [gCore doubleForKey:kMenuOpacity def:96] / 100.0;
+}
+
+#pragma mark chrome
+
+- (void)buildChrome
+{
+    _sidebar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 210, DH)];
+    _sidebar.backgroundColor = SIDE;
+    [_box addSubview:_sidebar];
+
+    UIImageView *logo = [[UIImageView alloc] initWithImage:BKIcon(@"cursor", 30, ACC)];
+    logo.frame = CGRectMake(30, 34, 30, 30);
+    [_sidebar addSubview:logo];
+    UILabel *brand = [UILabel new];
+    brand.frame = CGRectMake(68, 36, 120, 26);
+    brand.text = @"BALLKEY";
+    brand.textColor = TXT;
+    brand.font = [UIFont systemFontOfSize:19 weight:UIFontWeightHeavy];
+    brand.alpha = 0.9;
+    [_sidebar addSubview:brand];
+
+    NSArray *names = @[@"Cursor", @"Mapa", @"Teclas", @"Perfis", @"Sobre"];
+    NSArray *icons = @[@"cursor", @"map", @"keys", @"user", @"info"];
+    for (NSInteger i = 0; i < (NSInteger)names.count; i++) {
+        UIControl *c = [[UIControl alloc] initWithFrame:CGRectMake(0, 130 + i * 108, 210, 92)];
+        c.tag = i;
+        [c addTarget:self action:@selector(tabTap:) forControlEvents:UIControlEventTouchUpInside];
+        UIImageView *ic = [[UIImageView alloc] initWithImage:BKIcon(icons[i], 34, DIM)];
+        ic.frame = CGRectMake(88, 8, 34, 34);
+        ic.tag = 10;
+        [c addSubview:ic];
+        UILabel *l = [UILabel new];
+        l.frame = CGRectMake(0, 50, 210, 24);
+        l.text = names[i];
+        l.textColor = DIM;
+        l.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+        l.textAlignment = NSTextAlignmentCenter;
+        l.tag = 11;
+        [c addSubview:l];
+        [_sidebar addSubview:c];
+    }
+    _pill = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 4, 46)];
+    _pill.backgroundColor = ACC;
+    _pill.layer.cornerRadius = 2;
+    [_sidebar addSubview:_pill];
+}
+
+- (void)tabTap:(UIControl *)c { [self setTab:c.tag animated:YES]; }
+
+- (void)setTab:(NSInteger)tab animated:(BOOL)animated
+{
+    BOOL same = (tab == _tab && _content);
+    _tab = tab;
+    for (UIControl *c in _sidebar.subviews) {
+        if (![c isKindOfClass:UIControl.class] || c == _pill) continue;
+        BOOL on = (c.tag == tab);
+        [UIView animateWithDuration:0.25 animations:^{
+            UIImageView *iv = (UIImageView *)[c viewWithTag:10];
+            iv.alpha = on ? 1 : 0.85;
+            iv.tintColor = on ? ACC : DIM;
+            ((UILabel *)[c viewWithTag:11]).textColor = on ? ACC : DIM;
+        }];
+    }
+    [UIView animateWithDuration:0.4 delay:0 usingSpringWithDamping:0.72 initialSpringVelocity:0.7
+                        options:UIViewAnimationOptionAllowUserInteraction animations:^{
+        self->_pill.center = CGPointMake(2, 130 + tab * 108 + 23);
+    } completion:nil];
+
+    if (same) return;
+
+    UIView *old = _content;
+    UIView *nw = [self buildTab:tab];
+    nw.alpha = 0;
+    nw.transform = CGAffineTransformMakeTranslation(animated ? 26 : 0, 0);
+    [_box addSubview:nw];
+    _content = nw;
+    [UIView animateWithDuration:animated ? 0.24 : 0 animations:^{
+        old.alpha = 0;
+        old.transform = CGAffineTransformMakeTranslation(animated ? -26 : 0, 0);
+        nw.alpha = 1;
+        nw.transform = CGAffineTransformIdentity;
+    } completion:^(BOOL f) { [old removeFromSuperview]; }];
+
+    for (NSInteger i = 0; i < (NSInteger)_rows.count; i++) {
+        UIView *r = _rows[i];
+        r.alpha = 0;
+        r.transform = CGAffineTransformMakeTranslation(14, 0);
+        [UIView animateWithDuration:0.3 delay:0.03 + i * 0.028 usingSpringWithDamping:0.85
+             initialSpringVelocity:0.5 options:UIViewAnimationOptionAllowUserInteraction animations:^{
+            r.alpha = 1;
+            r.transform = CGAffineTransformIdentity;
+        } completion:nil];
+    }
+}
+
+#pragma mark row builders
+
+- (UILabel *)label:(NSString *)t size:(CGFloat)sz color:(UIColor *)c bold:(BOOL)b
+{
+    UILabel *l = [UILabel new];
+    l.text = t;
+    l.textColor = c;
+    l.font = [UIFont systemFontOfSize:sz weight:b ? UIFontWeightSemibold : UIFontWeightRegular];
+    return l;
+}
+
+- (UIView *)shell:(CGFloat)h
+{
+    UIView *r = [[UIView alloc] initWithFrame:CGRectMake(0, 0, DW - 210 - 76, h)];
+    r.backgroundColor = ROW;
+    r.layer.cornerRadius = 14;
+    [_rows addObject:r];
+    return r;
+}
+
+- (UIView *)header:(NSString *)title icon:(NSString *)icon note:(NSArray *)note host:(UIView *)host
+{
+    UIView *h = [[UIView alloc] initWithFrame:CGRectMake(0, 0, host.bounds.size.width, 150)];
+    UIImageView *ic = [[UIImageView alloc] initWithImage:BKIcon(icon, 26, ACC)];
+    ic.frame = CGRectMake(34, 26, 26, 26);
+    [h addSubview:ic];
+    UILabel *t = [self label:title size:24 color:ACC bold:YES];
+    t.frame = CGRectMake(70, 22, 500, 34);
+    [h addSubview:t];
+    UIButton *x = [UIButton buttonWithType:UIButtonTypeSystem];
+    x.frame = CGRectMake(h.bounds.size.width - 74, 20, 42, 42);
+    [x setImage:BKIcon(@"x", 22, ACC) forState:UIControlStateNormal];
+    [x addTarget:self action:@selector(closeTap) forControlEvents:UIControlEventTouchUpInside];
+    [h addSubview:x];
+
+    NSMutableAttributedString *a = [NSMutableAttributedString new];
+    for (NSDictionary *p in note)
+        [a appendAttributedString:[[NSAttributedString alloc] initWithString:p[@"t"] attributes:@{
+            NSFontAttributeName:[UIFont systemFontOfSize:16],
+            NSForegroundColorAttributeName:[p[@"h"] boolValue] ? ACC : DIM}]];
+    UILabel *n = [UILabel new];
+    n.frame = CGRectMake(34, 74, h.bounds.size.width - 68, 62);
+    n.numberOfLines = 0;
+    n.attributedText = a;
+    [h addSubview:n];
+    return h;
+}
+
+- (void)closeTap { [BKUI hide]; }
+
+- (void)toggleRow:(NSString *)title key:(NSString *)key y:(CGFloat)y host:(UIView *)host
+{
+    UIView *r = [self shell:66];
+    r.frame = CGRectMake(0, y, r.bounds.size.width, 66);
+    UILabel *l = [self label:title size:18 color:TXT bold:NO];
+    l.frame = CGRectMake(22, 0, r.bounds.size.width - 130, 66);
+    [r addSubview:l];
+    BKToggle *tg = [[BKToggle alloc] initWithFrame:CGRectMake(r.bounds.size.width - 90, 16, 62, 34)];
+    tg.on = [gCore boolForKey:key def:NO];
+    objc_setAssociatedObject(tg, "k", key, OBJC_ASSOCIATION_RETAIN);
+    [tg addTarget:self action:@selector(tgChanged:) forControlEvents:UIControlEventValueChanged];
+    [r addSubview:tg];
+    [host addSubview:r];
+}
+- (void)tgChanged:(BKToggle *)t
+{
+    [gCore setBool:t.on forKey:objc_getAssociatedObject(t, "k")];
+    BKApplySettings();
+}
+
+- (void)sliderRow:(NSString *)title key:(NSString *)key min:(double)mn max:(double)mx
+                y:(CGFloat)y host:(UIView *)host fmt:(NSString *(^)(double))fmt
+{
+    UIView *r = [self shell:92];
+    r.frame = CGRectMake(0, y, r.bounds.size.width, 92);
+    UILabel *l = [self label:title size:18 color:TXT bold:NO];
+    l.frame = CGRectMake(22, 14, 420, 24);
+    [r addSubview:l];
+    UILabel *v = [self label:@"" size:16 color:ACC bold:YES];
+    v.textAlignment = NSTextAlignmentRight;
+    v.frame = CGRectMake(r.bounds.size.width - 150, 14, 128, 24);
+    [r addSubview:v];
+    BKSlider *s = [[BKSlider alloc] initWithFrame:CGRectMake(22, 46, r.bounds.size.width - 44, 34)];
+    s.min = mn;
+    s.max = mx;
+    s.value = [gCore doubleForKey:key def:(mn + mx) / 2];
+    v.text = fmt ? fmt(s.value) : [NSString stringWithFormat:@"%.0f", s.value];
+    objc_setAssociatedObject(s, "k", key, OBJC_ASSOCIATION_RETAIN);
+    objc_setAssociatedObject(s, "v", v, OBJC_ASSOCIATION_RETAIN);
+    objc_setAssociatedObject(s, "f", fmt, OBJC_ASSOCIATION_RETAIN);
+    [s addTarget:self action:@selector(slChanged:) forControlEvents:UIControlEventValueChanged];
+    [r addSubview:s];
+    [host addSubview:r];
+}
+- (void)slChanged:(BKSlider *)s
+{
+    UILabel *v = objc_getAssociatedObject(s, "v");
+    NSString *(^f)(double) = objc_getAssociatedObject(s, "f");
+    v.text = f ? f(s.value) : [NSString stringWithFormat:@"%.0f", s.value];
+    [gCore setDouble:s.value forKey:objc_getAssociatedObject(s, "k")];
+    BKApplySettings();
+}
+
+- (void)dropRow:(NSString *)title key:(NSString *)key options:(NSArray *)opts y:(CGFloat)y host:(UIView *)host
+{
+    UIView *r = [self shell:66];
+    r.frame = CGRectMake(0, y, r.bounds.size.width, 66);
+    UILabel *l = [self label:title size:18 color:TXT bold:NO];
+    l.frame = CGRectMake(22, 0, 300, 66);
+    [r addSubview:l];
+    NSInteger idx = MAX(0, MIN((NSInteger)opts.count - 1, [gCore intForKey:key def:0]));
+    UILabel *v = [self label:opts[idx] size:17 color:DIM bold:NO];
+    v.textAlignment = NSTextAlignmentRight;
+    v.frame = CGRectMake(r.bounds.size.width - 320, 0, 260, 66);
+    [r addSubview:v];
+    UIImageView *ch = [[UIImageView alloc] initWithImage:BKIcon(@"chev", 18, DIM)];
+    ch.frame = CGRectMake(r.bounds.size.width - 46, 24, 18, 18);
+    [r addSubview:ch];
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+    b.frame = r.bounds;
+    objc_setAssociatedObject(b, "k", key, OBJC_ASSOCIATION_RETAIN);
+    objc_setAssociatedObject(b, "o", opts, OBJC_ASSOCIATION_RETAIN);
+    objc_setAssociatedObject(b, "l", v, OBJC_ASSOCIATION_RETAIN);
+    objc_setAssociatedObject(b, "r", r, OBJC_ASSOCIATION_RETAIN);
+    [b addTarget:self action:@selector(dropTap:) forControlEvents:UIControlEventTouchUpInside];
+    [r addSubview:b];
+    [host addSubview:r];
+}
+- (void)dropTap:(UIButton *)b
+{
+    NSString *key = objc_getAssociatedObject(b, "k");
+    NSArray *opts = objc_getAssociatedObject(b, "o");
+    UILabel *lbl = objc_getAssociatedObject(b, "l");
+    UIView *row = objc_getAssociatedObject(b, "r");
+    if (!_inner) return;
+    BKPopup *p = [[BKPopup alloc] initWithOptions:opts index:[gCore intForKey:key def:0] width:row.bounds.size.width];
+    CGRect rf = [row convertRect:row.bounds toView:_inner];
+    p.frame = CGRectMake(rf.origin.x, rf.origin.y + rf.size.height + 6, rf.size.width, p.frame.size.height);
+    p.transform = CGAffineTransformMakeScale(0.97, 0.97);
+    p.alpha = 0;
+    [_inner addSubview:p];
+    [UIView animateWithDuration:0.18 animations:^{ p.transform = CGAffineTransformIdentity; p.alpha = 1; }];
+    p.onPick = ^(NSInteger i) {
+        [gCore setInt:i forKey:key];
+        lbl.textColor = TXT;
+        [UIView transitionWithView:lbl duration:0.2 options:UIViewAnimationOptionTransitionCrossDissolve
+                        animations:^{ lbl.text = opts[i]; } completion:nil];
+        BKApplySettings();
+    };
+}
+
+- (void)buttonRow:(NSString *)title color:(UIColor *)c y:(CGFloat)y host:(UIView *)host action:(SEL)sel
+{
+    UIView *r = [self shell:62];
+    r.frame = CGRectMake(0, y, r.bounds.size.width, 62);
+    r.backgroundColor = [c colorWithAlphaComponent:0.13];
+    r.layer.borderWidth = 1;
+    r.layer.borderColor = [c colorWithAlphaComponent:0.55].CGColor;
+    UILabel *l = [self label:title size:17 color:c bold:YES];
+    l.frame = r.bounds;
+    l.textAlignment = NSTextAlignmentCenter;
+    [r addSubview:l];
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+    b.frame = r.bounds;
+    [b addTarget:self action:sel forControlEvents:UIControlEventTouchUpInside];
+    [r addSubview:b];
+    [host addSubview:r];
+}
+
+- (void)section:(NSString *)t y:(CGFloat)y host:(UIView *)host
+{
+    UILabel *l = [self label:t size:13 color:DIM bold:YES];
+    l.frame = CGRectMake(4, y, 400, 18);
+    l.alpha = 0.8;
+    [host addSubview:l];
+}
+
+#pragma mark tabs
+
+- (UIView *)buildTab:(NSInteger)tab
+{
+    [_rows removeAllObjects];
+    UIView *host = [[UIView alloc] initWithFrame:CGRectMake(210, 0, DW - 210, DH)];
+    CGFloat y = 158;
+
+    if (tab == 0) {
+        [host addSubview:[self header:@"CURSOR" icon:@"cursor" note:@[
+            @{@"t":@"Use o cursor com moderação. ", @"h":@YES},
+            @{@"t":@"Prefira curvas suaves e sensibilidade baixa para reduzir o arrasto", @"h":@NO},
+            @{@"t":@" em partidas longas.", @"h":@NO}] host:host]];
+        [self toggleRow:@"Cursor" key:kCursor y:y host:host]; y += 78;
+        [self sliderRow:@"Sensibilidade" key:kSens min:0.3 max:4.0 y:y host:host
+                    fmt:^NSString *(double v){ return [NSString stringWithFormat:@"%.2f", v]; }]; y += 104;
+        [self dropRow:@"Curva" key:kCurve options:@[@"Linear", @"Suave", @"Rápida"] y:y host:host]; y += 78;
+        [self sliderRow:@"Suavização" key:kSmooth min:0 max:100 y:y host:host
+                    fmt:^NSString *(double v){ return [NSString stringWithFormat:@"%.0f%%", v]; }]; y += 104;
+        [self sliderRow:@"Eixo Y" key:kYRatio min:50 max:150 y:y host:host
+                    fmt:^NSString *(double v){ return [NSString stringWithFormat:@"%.0f%%", v]; }]; y += 104;
+        [self section:@"TRAVA" y:y host:host]; y += 30;
+        [self toggleRow:@"Mostrar círculo de trava" key:kFovCircle y:y host:host]; y += 78;
+        [self sliderRow:@"Raio da trava" key:kLockRadius min:20 max:160 y:y host:host
+                    fmt:^NSString *(double v){ return [NSString stringWithFormat:@"%.0f", v]; }]; y += 104;
+        [self dropRow:@"Recentro" key:kRecenter options:@[@"Manual", @"Automático", @"Ao soltar"] y:y host:host]; y += 78;
+        [self toggleRow:@"Esconder cursor" key:kHideCursor y:y host:host]; y += 78;
+        [self sliderRow:@"Tamanho do cursor" key:kCursorSize min:24 max:80 y:y host:host
+                    fmt:^NSString *(double v){ return [NSString stringWithFormat:@"%.0f", v]; }]; y += 104;
+        [self buttonRow:@"Restaurar padrão" color:BADC y:y host:host action:@selector(resetTap)]; y += 76;
+        [self buttonRow:@"Fechar" color:BADC y:y host:host action:@selector(closeTap)]; y += 76;
+    } else if (tab == 1) {
+        [host addSubview:[self header:@"MAPA" icon:@"map" note:@[
+            @{@"t":@"Arraste os marcadores no editor e toque para escolher, ", @"h":@NO},
+            @{@"t":@"depois aperte a tecla", @"h":@YES},
+            @{@"t":@" que deve acionar aquele ponto.", @"h":@NO}] host:host]];
+        [self buttonRow:@"Abrir editor de mapa" color:ACC y:y host:host action:@selector(openEditorTap)]; y += 76;
+        [self sliderRow:@"Tamanho dos marcadores" key:kMarkSize min:40 max:120 y:y host:host
+                    fmt:^NSString *(double v){ return [NSString stringWithFormat:@"%.0f", v]; }]; y += 104;
+        [self sliderRow:@"Opacidade dos marcadores" key:kMarkOpacity min:20 max:100 y:y host:host
+                    fmt:^NSString *(double v){ return [NSString stringWithFormat:@"%.0f%%", v]; }]; y += 104;
+        [self toggleRow:@"Rótulos nos marcadores" key:kMarkLabels y:y host:host]; y += 78;
+        [self toggleRow:@"Grade de encaixe" key:kSnapGrid y:y host:host]; y += 78;
+        [self toggleRow:@"Mostrar marcadores no jogo" key:kShowMarks y:y host:host]; y += 78;
+        [self buttonRow:@"Limpar todos os marcadores" color:BADC y:y host:host action:@selector(clearMarksTap)]; y += 76;
+        [self buttonRow:@"Recarregar do arquivo" color:DIM y:y host:host action:@selector(reloadMarksTap)]; y += 76;
+    } else if (tab == 2) {
+        [host addSubview:[self header:@"TECLAS" icon:@"keys" note:@[
+            @{@"t":@"Modo de tiro ", @"h":@NO},
+            @{@"t":@"Multiplicar", @"h":@YES},
+            @{@"t":@" repete o toque — combine com o modo de toque para armas semi e automáticas.", @"h":@NO}] host:host]];
+        [self dropRow:@"Modo de tiro" key:kFireMode options:@[@"Toque único", @"Contínuo", @"Multiplicar"] y:y host:host]; y += 78;
+        [self dropRow:@"Modo de toque" key:kTapMode options:@[@"Contagem fixa", @"Repetir enquanto segura", @"Pressionar para alternar"] y:y host:host]; y += 78;
+        [self sliderRow:@"Repetições" key:kRepeatCount min:2 max:10 y:y host:host
+                    fmt:^NSString *(double v){ return [NSString stringWithFormat:@"%.0fx", v]; }]; y += 104;
+        [self sliderRow:@"Atraso de repetição" key:kRepeatDelay min:10 max:200 y:y host:host
+                    fmt:^NSString *(double v){ return [NSString stringWithFormat:@"%.0f ms", v]; }]; y += 104;
+        [self toggleRow:@"Segurar mira durante o tiro" key:kHoldAim y:y host:host]; y += 78;
+        [self section:@"DIRECIONAL" y:y host:host]; y += 30;
+        [self toggleRow:@"Normalizar diagonal" key:kNormDiag y:y host:host]; y += 78;
+        [self sliderRow:@"Velocidade do direcional" key:kJoySpeed min:2 max:16 y:y host:host
+                    fmt:^NSString *(double v){ return [NSString stringWithFormat:@"%.1f", v]; }]; y += 104;
+        [self dropRow:@"Centro do direcional" key:kJoyCenter options:@[@"Médio", @"Fixo", @"Aleatório"] y:y host:host]; y += 78;
+        [self buttonRow:@"Centralizar direcional" color:ACC y:y host:host action:@selector(centerJoyTap)]; y += 76;
+    } else if (tab == 3) {
+        [host addSubview:[self header:@"PERFIS" icon:@"user" note:@[
+            @{@"t":@"Salve um perfil por jogo. ", @"h":@NO},
+            @{@"t":@"Carregar automaticamente", @"h":@YES},
+            @{@"t":@" troca o conjunto certo ao abrir o título.", @"h":@NO}] host:host]];
+        [self buttonRow:@"Salvar perfil atual" color:OKC y:y host:host action:@selector(saveProfileTap)]; y += 76;
+        NSArray *names = [gCore profileNames];
+        if (!names.count) {
+            UILabel *e = [self label:@"Nenhum perfil salvo" size:15 color:DIM bold:NO];
+            e.frame = CGRectMake(6, y, 400, 22);
+            [host addSubview:e];
+            y += 34;
+        }
+        for (NSString *nm in names) {
+            UIView *r = [self shell:56];
+            r.frame = CGRectMake(0, y, r.bounds.size.width, 56);
+            UILabel *l = [self label:nm size:17 color:TXT bold:NO];
+            l.frame = CGRectMake(22, 0, r.bounds.size.width - 180, 56);
+            [r addSubview:l];
+            UIButton *ld = [UIButton buttonWithType:UIButtonTypeSystem];
+            ld.frame = CGRectMake(r.bounds.size.width - 150, 12, 66, 32);
+            [ld setTitle:@"Usar" forState:UIControlStateNormal];
+            [ld setTitleColor:OKC forState:UIControlStateNormal];
+            ld.backgroundColor = [OKC colorWithAlphaComponent:0.14];
+            ld.layer.cornerRadius = 8;
+            objc_setAssociatedObject(ld, "n", nm, OBJC_ASSOCIATION_RETAIN);
+            [ld addTarget:self action:@selector(useProfileTap:) forControlEvents:UIControlEventTouchUpInside];
+            [r addSubview:ld];
+            UIButton *dl = [UIButton buttonWithType:UIButtonTypeSystem];
+            dl.frame = CGRectMake(r.bounds.size.width - 76, 12, 54, 32);
+            [dl setTitle:@"X" forState:UIControlStateNormal];
+            [dl setTitleColor:BADC forState:UIControlStateNormal];
+            dl.backgroundColor = [BADC colorWithAlphaComponent:0.14];
+            dl.layer.cornerRadius = 8;
+            objc_setAssociatedObject(dl, "n", nm, OBJC_ASSOCIATION_RETAIN);
+            [dl addTarget:self action:@selector(delProfileTap:) forControlEvents:UIControlEventTouchUpInside];
+            [r addSubview:dl];
+            [host addSubview:r];
+            y += 68;
+        }
+        y += 10;
+        [self toggleRow:@"Carregar automaticamente" key:kAutoProfile y:y host:host]; y += 78;
+        [self buttonRow:@"Restaurar padrão" color:BADC y:y host:host action:@selector(resetTap)]; y += 76;
+    } else {
+        [host addSubview:[self header:@"SOBRE" icon:@"info" note:@[
+            @{@"t":@"Diagnóstico ao vivo e ajustes do overlay.", @"h":@NO}] host:host]];
+        UIView *box = [self shell:150];
+        box.frame = CGRectMake(0, y, box.bounds.size.width, 150);
+        box.backgroundColor = BKHex(0x0A0E15, 1);
+        _statusLbl = [self label:@"" size:13 color:DIM bold:NO];
+        _statusLbl.numberOfLines = 0;
+        _statusLbl.font = [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightRegular];
+        _statusLbl.frame = CGRectMake(20, 16, box.bounds.size.width - 40, 120);
+        [box addSubview:_statusLbl];
+        [host addSubview:box];
+        y += 164;
+        [self toggleRow:@"Esconder overlay em gravação" key:kHideRec y:y host:host]; y += 78;
+        [self sliderRow:@"Opacidade do menu" key:kMenuOpacity min:40 max:100 y:y host:host
+                    fmt:^NSString *(double v){ return [NSString stringWithFormat:@"%.0f%%", v]; }]; y += 104;
+        [self sliderRow:@"Escala da interface" key:kUiScale min:70 max:130 y:y host:host
+                    fmt:^NSString *(double v){ return [NSString stringWithFormat:@"%.0f%%", v]; }]; y += 104;
+        [self buttonRow:@"Abrir log" color:DIM y:y host:host action:@selector(logTap)]; y += 76;
+        [self buttonRow:@"Fechar" color:BADC y:y host:host action:@selector(closeTap)]; y += 76;
+        UILabel *cr = [self label:@"BallKey 5.0  •  martidev333\nMapeador de teclado e mouse" size:13 color:DIM bold:NO];
+        cr.numberOfLines = 0;
+        cr.textAlignment = NSTextAlignmentCenter;
+        cr.frame = CGRectMake(0, y + 6, host.bounds.size.width, 44);
+        [host addSubview:cr];
+        y += 60;
+        [self tickStatus];
+    }
+
+    UIScrollView *sv = [[UIScrollView alloc] initWithFrame:CGRectMake(210, 0, DW - 210, DH)];
+    sv.showsVerticalScrollIndicator = NO;
+    sv.delegate = self;
+    _scroll = sv;
+    UIView *in = [[UIView alloc] initWithFrame:CGRectMake(0, 0, DW - 210, MAX(DH, y + 40))];
+    _inner = in;
+    for (UIView *v in host.subviews) { [v removeFromSuperview]; [in addSubview:v]; }
+    sv.contentSize = in.bounds.size;
+    [sv addSubview:in];
+    return sv;
+}
+
+#pragma mark actions
+
+- (void)openEditorTap
+{
+    [BKUI hide];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 220 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        BKEditorOpenUI();
+    });
+}
+- (void)clearMarksTap { [gCore setMarks:@[]]; BKRedrawMarkers(); [self setTab:1 animated:NO]; }
+- (void)reloadMarksTap { BKReloadMarks(); [self setTab:1 animated:NO]; }
+
+- (void)centerJoyTap
+{
+    NSMutableArray *d = [NSMutableArray array];
+    for (NSDictionary *m in BKMarks()) if ([m[@"t"] isEqualToString:@"Dir"]) [d addObject:m];
+    if (!d.count) return;
+    double sx = 0, sy = 0;
+    for (NSDictionary *m in d) { sx += [m[@"x"] doubleValue]; sy += [m[@"y"] doubleValue]; }
+    [gCore setDouble:sx / d.count forKey:kJoyFx];
+    [gCore setDouble:sy / d.count forKey:kJoyFy];
+    [gCore setInt:BKJoyCenterFixed forKey:kJoyCenter];
+    [self setTab:2 animated:NO];
+}
+
+- (void)saveProfileTap
+{
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Salvar perfil"
+        message:@"Nome do perfil" preferredStyle:UIAlertControllerStyleAlert];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *t) { t.placeholder = @"Ex.: Free Fire - rush"; }];
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Salvar" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+        NSString *n = a.textFields.firstObject.text;
+        if (n.length) { [gCore saveProfile:n]; [self setTab:3 animated:NO]; }
+    }]];
+    [_win.rootViewController presentViewController:a animated:YES completion:nil];
+}
+- (void)useProfileTap:(UIButton *)b
+{
+    [gCore loadProfile:objc_getAssociatedObject(b, "n")];
+    BKApplySettings();
+    [self setTab:3 animated:NO];
+}
+- (void)delProfileTap:(UIButton *)b
+{
+    [gCore deleteProfile:objc_getAssociatedObject(b, "n")];
+    [self setTab:3 animated:NO];
+}
+- (void)resetTap
+{
+    [gCore resetDefaults];
+    BKApplySettings();
+    [self setTab:0 animated:NO];
+}
+- (void)logTap
+{
+    NSString *p = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
+                   stringByAppendingPathComponent:@"BallKey/ballkey.log"];
+    NSString *s = [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil] ?: @"vazio";
+    if (s.length > 1200) s = [s substringFromIndex:s.length - 1200];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Log" message:s
+                                                        preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    [_win.rootViewController presentViewController:a animated:YES completion:nil];
+}
+
+- (void)tickStatus
+{
+    if (!_statusLbl) return;
+    CGSize s = BKSize();
+    _statusLbl.text = [NSString stringWithFormat:
+        @"cursor     %@\nsens       %.2f\nmarcadores %lu\nmodo       %@\ntela       %.0fx%.0f\nescala     %.0f%%",
+        BKCursorOn() ? @"LIGADO" : @"desligado", [gCore doubleForKey:kSens def:1.7],
+        (unsigned long)BKMarks().count, BKCursorOn() ? @"cursor" : @"parado",
+        s.width, s.height, [gCore doubleForKey:kUiScale def:100]];
+    _statusLbl.textColor = BKCursorOn() ? OKC : DIM;
+}
+
+#pragma mark editor
+
+- (void)presentEditor
+{
+    CGSize s = BKSize();
+    UIWindowScene *sc = BKScene();
+    _win = sc ? [[UIWindow alloc] initWithWindowScene:sc]
+              : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    _win.windowLevel = UIWindowLevelAlert + 560;
+    _win.frame = CGRectMake(0, 0, s.width, s.height);
+    _win.backgroundColor = UIColor.clearColor;
+    _win.rootViewController = [UIViewController new];
+    _win.hidden = NO;
+    BKSetEditorOpen(YES);
+    BKSetInputGated(YES);
+
+    UIView *r = _win.rootViewController.view;
+    UIView *canvas = [[UIView alloc] initWithFrame:r.bounds];
+    [r addSubview:canvas];
+    BKUISetCanvas(canvas);
+    BKRedrawMarkers();
+
+    UIView *top = [[UIView alloc] initWithFrame:CGRectMake(0, 0, s.width, 150)];
+    top.backgroundColor = [PANEL colorWithAlphaComponent:0.97];
+    [r addSubview:top];
+    UILabel *hint = [self label:@"Arraste os marcadores. Toque para escolher e apertar a tecla."
+                          size:15 color:ACC bold:NO];
+    hint.frame = CGRectMake(20, 16, s.width - 40, 22);
+    hint.adjustsFontSizeToFitWidth = YES;
+    [top addSubview:hint];
+    _statusLbl = [self label:@"Nenhum marcador selecionado" size:14 color:DIM bold:NO];
+    _statusLbl.frame = CGRectMake(20, 46, s.width - 40, 22);
+    [top addSubview:_statusLbl];
+
+    UIButton *ok = [self chip:@"SALVAR" color:OKC frame:CGRectMake(s.width - 200, 84, 86, 44)];
+    [ok addTarget:self action:@selector(editorSave) forControlEvents:UIControlEventTouchUpInside];
+    [top addSubview:ok];
+    UIButton *no = [self chip:@"SAIR" color:BADC frame:CGRectMake(s.width - 104, 84, 84, 44)];
+    [no addTarget:self action:@selector(editorCancel) forControlEvents:UIControlEventTouchUpInside];
+    [top addSubview:no];
+    UIButton *del = [self chip:@"APAGAR" color:BADC frame:CGRectMake(20, 84, 96, 44)];
+    [del addTarget:self action:@selector(editorDelete) forControlEvents:UIControlEventTouchUpInside];
+    [top addSubview:del];
+
+    UIView *bar = [[UIView alloc] initWithFrame:CGRectMake(0, s.height - 82, s.width, 82)];
+    bar.backgroundColor = [PANEL colorWithAlphaComponent:0.97];
+    [r addSubview:bar];
+    NSArray *names = @[@"+ Tocar", @"+ Pressionar", @"+ Direção", @"+ Trava", @"+ Mirar", @"+ Atirar"];
+    NSArray *types = @[@"Tap", @"Press", @"Dir", @"Fps", @"Ads", @"Fire"];
+    CGFloat w = (s.width - 40) / 6.0;
+    for (int i = 0; i < 6; i++) {
+        UIButton *b = [self chip:names[i] color:BKUIColorFor(types[i])
+                           frame:CGRectMake(20 + w * i, s.height - 70, w - 6, 50)];
+        b.tag = 200 + i;
+        [b addTarget:self action:@selector(editorAdd:) forControlEvents:UIControlEventTouchUpInside];
+        [bar addSubview:b];
+    }
+    top.transform = CGAffineTransformMakeTranslation(0, -150);
+    bar.transform = CGAffineTransformMakeTranslation(0, 82);
+    [UIView animateWithDuration:0.34 delay:0 usingSpringWithDamping:0.85 initialSpringVelocity:0.6 animations:^{
+        top.transform = CGAffineTransformIdentity;
+        bar.transform = CGAffineTransformIdentity;
+    }];
+}
+
+- (UIButton *)chip:(NSString *)t color:(UIColor *)c frame:(CGRect)f
+{
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+    b.frame = f;
+    [b setTitle:t forState:UIControlStateNormal];
+    [b setTitleColor:c forState:UIControlStateNormal];
+    b.titleLabel.font = [UIFont boldSystemFontOfSize:13];
+    b.titleLabel.adjustsFontSizeToFitWidth = YES;
+    b.backgroundColor = [c colorWithAlphaComponent:0.13];
+    b.layer.borderWidth = 1;
+    b.layer.borderColor = [c colorWithAlphaComponent:0.6].CGColor;
+    b.layer.cornerRadius = 9;
+    return b;
+}
+
+- (void)editorAdd:(UIButton *)b
+{
+    NSArray *types = @[@"Tap", @"Press", @"Dir", @"Fps", @"Ads", @"Fire"];
+    NSMutableDictionary *m = [@{@"t":types[b.tag - 200], @"x":@(0.5), @"y":@(0.5), @"c":@0} mutableCopy];
+    [BKMarks() addObject:m];
+    BKRedrawMarkers();
+    BKSelectMarker((int)BKMarks().count - 1);
+}
+- (void)editorDelete:(UIButton *)b
+{
+    int i = BKSelectedMarker();
+    if (i < 0 || i >= (int)BKMarks().count) return;
+    [BKMarks() removeObjectAtIndex:i];
+    BKSelectMarker(-1);
+    BKRedrawMarkers();
+}
+- (void)editorSave { BKSaveMarks(); [self dismissEditor]; }
+- (void)editorCancel { BKReloadMarks(); [self dismissEditor]; }
+- (void)dismissEditor
+{
+    [UIView animateWithDuration:0.22 animations:^{ _win.alpha = 0; } completion:^(BOOL f) {
+        self->_win.hidden = YES;
+        self->_win = nil;
+        BKSetEditorOpen(NO);
+        BKSetInputGated(NO);
+        BKMenuOpen();
+    }];
+}
+- (void)editorGotKey:(int)u
+{
+    int i = BKSelectedMarker();
+    if (i < 0 || i >= (int)BKMarks().count) return;
+    BKMarks()[i][@"c"] = @(u);
+    _statusLbl.text = [NSString stringWithFormat:@"Tecla %d ligada em %@", u, BKNameFor(BKMarks()[i][@"t"])];
+    _statusLbl.textColor = OKC;
+    BKSaveMarks();
+}
+- (void)refreshEditorStatus
+{
+    if (!_statusLbl) return;
+    int i = BKSelectedMarker();
+    if (i < 0 || i >= (int)BKMarks().count) {
+        _statusLbl.text = @"Nenhum marcador selecionado";
+        _statusLbl.textColor = DIM;
+        return;
+    }
+    _statusLbl.text = [NSString stringWithFormat:@"%@ selecionado — aperte uma tecla", BKNameFor(BKMarks()[i][@"t"])];
+    _statusLbl.textColor = ACC;
+}
+
+@end
+
 #pragma mark - boot
 
 static void BKStart(void)
 {
     gCore = [BKCore shared];
-    NSString *base = [[NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject]
+    gCore.onChange = ^(NSString *k) { };
+    NSString *base = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
                       stringByAppendingPathComponent:@"BallKey"];
     [NSFileManager.defaultManager createDirectoryAtPath:base withIntermediateDirectories:YES attributes:nil error:nil];
     gLog = [base stringByAppendingPathComponent:@"ballkey.log"];
@@ -624,12 +1741,14 @@ static void BKStart(void)
         queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { BKAttachMouse(); }];
     [NSNotificationCenter.defaultCenter addObserverForName:GCKeyboardDidConnectNotification object:nil
         queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { BKAttachKey(); }];
-    BKAttachMouse(); BKAttachKey();
+    BKAttachMouse();
+    BKAttachKey();
 
-    [NSNotificationCenter.defaultCenter addObserverForName:UIDeviceOrientationDidChangeNotification
-        object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_MSEC), dispatch_get_main_queue(),
-                           ^{ BKRelayout(); });
+    [NSNotificationCenter.defaultCenter addObserverForName:UIDeviceOrientationDidChangeNotification object:nil
+        queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+                BKRelayout();
+            });
         }];
 
     gTick = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());

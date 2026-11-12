@@ -103,13 +103,16 @@ jobs:
           set -e
           test -f BallKeyApp/Makefile || { echo "BallKeyApp ausente"; exit 1; }
           make -C BallKeyApp clean
-          make -C BallKeyApp package FINALPACKAGE=1
+          make -C BallKeyApp FINALPACKAGE=1
 
       - name: Empacotar tipa
         run: |
           set -e
-          APP=$(find BallKeyApp/.theos/_ -maxdepth 6 -type d -name "*.app" | head -1)
-          test -n "$APP" || { echo "app nao gerado"; find BallKeyApp/.theos -maxdepth 5; exit 1; }
+          APP=$(find BallKeyApp/.theos/obj -maxdepth 4 -type d -name "*.app" | head -1)
+          if [ -z "$APP" ]; then
+            APP=$(find BallKeyApp/.theos/_ -maxdepth 8 -type d -name "*.app" | head -1)
+          fi
+          test -n "$APP" || { echo "app nao gerado"; find BallKeyApp/.theos -maxdepth 6; exit 1; }
           DEB=$(ls "${{ steps.mk.outputs.dir }}"/packages/*.deb | head -1)
           test -n "$DEB" || { echo "deb nao encontrado"; exit 1; }
           NAME=$(basename "$APP")

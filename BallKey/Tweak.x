@@ -31,6 +31,7 @@ typedef uint32_t IOOptionBits;
 #define DH 760.0
 #define BK_GAME @"com.dts.freefireth"
 #define BK_GAMEMAX @"com.dts.freefiremax"
+#define BK_ME @"com.wjf.ballkeyapp"
 
 CGSize BKSize(void);
 void BKRelayout(void); void BKSetInputGated(BOOL g); void BKSetEditorOpen(BOOL open);
@@ -175,7 +176,7 @@ static BKCore *gCore; static BKUI *gUI; static NSString *gLog;
 static UIWindow *gBallWin, *gCursorWin; static UIView *gBall, *gCursor, *gCanvas;
 static NSMutableArray *gMarkViews;
 static BOOL gMenuOpen, gEditOpen, gCursorOn, gGated, gFps, gFpsHeld;
-static BOOL gHidOk, gGcMouse, gGcKey, gCursorDown, gLastValid, gFront, gStarted;
+static BOOL gHidOk, gGcMouse, gGcKey, gCursorDown, gLastValid, gFront, gStarted, gEnabled;
 static int gFpsIdx = -1, gSelIdx = -1, gInjecting, gPtrMask;
 static int gFingerOwner[BK_FINGERS]; static int gHoldKey[512];
 static double gCx, gCy, gLastX, gLastY;
@@ -245,10 +246,32 @@ static void BKLog(NSString *fmt, ...)
 static double BKClamp(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
 static double BKNum(NSString *k, double d) { return [gCore doubleForKey:k def:d]; }
 
+// ---- estado ligado/desligado ----
+static NSString *BKStateDir(void)
+{
+    return [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
+            stringByAppendingPathComponent:@"BallKey"];
+}
+static void BKSetEnabled(BOOL on)
+{
+    gEnabled = on;
+    [NSFileManager.defaultManager createDirectoryAtPath:BKStateDir() withIntermediateDirectories:YES attributes:nil error:nil];
+    [@(on ? @"1" : @"0") writeToFile:[BKStateDir() stringByAppendingPathComponent:@"enabled"]
+                          atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+static void BKLoadEnabled(void)
+{
+    NSString *s = [NSString stringWithContentsOfFile:[BKStateDir() stringByAppendingPathComponent:@"enabled"]
+                                            encoding:NSUTF8StringEncoding error:nil];
+    gEnabled = [s isEqualToString:@"1"];
+}
+
 // ---- ativador externo (app BallKey) ----
 #define BK_NOTE_PANEL "com.wjf.ballkey.panel"
 #define BK_NOTE_GAME  "com.wjf.ballkey.panelgame"
+#define BK_NOTE_OFF   "com.wjf.ballkey.off"
 
+static void BKTickFront(void);
 static void BKLaunchGame(void)
 {
     Class ws = NSClassFromString(@"LSApplicationWorkspace");
@@ -260,12 +283,21 @@ static void BKLaunchGame(void)
 static void BKOnNotify(CFNotificationCenterRef c, void *o, CFStringRef name, const void *obj, CFDictionaryRef info)
 {
     NSString *n = (__bridge NSString *)name;
-    BOOL game = [n isEqualToString:@BK_NOTE_GAME];
     dispatch_async(dispatch_get_main_queue(), ^{
         BKLog(@"notify %@", n);
+        if ([n isEqualToString:@BK_NOTE_OFF]) {
+            BKSetEnabled(NO);
+            BKMenuClose();
+            BKReleaseAll();
+            BKTickFront();
+            return;
+        }
+        BOOL game = [n isEqualToString:@BK_NOTE_GAME];
+        BKSetEnabled(YES);
         if (gMenuOpen) BKMenuClose();
         BKMenuOpen();
-        if (game) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 320 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        BKTickFront();
+        if (game) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 340 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
             BKLaunchGame();
         });
     });
@@ -276,11 +308,13 @@ static void BKActivatorInstall(void)
         CFSTR(BK_NOTE_PANEL), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, BKOnNotify,
         CFSTR(BK_NOTE_GAME), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, BKOnNotify,
+        CFSTR(BK_NOTE_OFF), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
     BKLog(@"ativador ok");
 }
 // ---- fim ativador ----
 
-// ---- gate: so age com o Free Fire na frente
+// ---- gate: so age com o Free Fire na frente ----
 static NSString *BKFrontApp(void)
 {
     id app = nil;
@@ -300,11 +334,12 @@ static void BKTickFront(void)
 {
     NSString *f = BKFrontApp();
     BOOL on = [f isEqualToString:BK_GAME] || [f isEqualToString:BK_GAMEMAX];
-    if (on == gFront) return;
+    BOOL mine = [f isEqualToString:BK_ME];
+    BOOL show = gEnabled && (on || mine);
     gFront = on;
-    if (gBallWin) gBallWin.hidden = !on;
+    if (gBallWin) gBallWin.hidden = !show;
     if (gCursorWin) gCursorWin.hidden = !(on && gCursorOn);
-    if (!on) {
+    if (!show) {
         if (gMenuOpen) BKMenuClose();
         if (gEditOpen) [BKUI closeEditor];
         BKReleaseAll();
@@ -429,7 +464,7 @@ static double BKCurveValue(double v)
 
 void BKPointerDelta(double dx, double dy)
 {
-    if (!gCursorOn || !gFront) return;
+    if (!gCursorOn || !gFront || !gEnabled) return;
     CGSize s = BKSize();
     double sens = BKNum(kSens, 1.0);
     dx = BKCurveValue(dx * sens);
@@ -568,7 +603,7 @@ static void BKEnq(id self, SEL cmd, IOHIDEventRef ev)
 
 void BKButtonDown(int btn, BOOL down)
 {
-    if (gGated || gMenuOpen || gEditOpen || !gFront) return;
+    if (gGated || gMenuOpen || gEditOpen || !gFront || !gEnabled) return;
     if (btn == 1) { if (down) BKTapAt(gCx, gCy); return; }
     if (btn == 2) {
         CGSize s = BKSize();
@@ -587,7 +622,7 @@ void BKButtonDown(int btn, BOOL down)
 void BKKeyUsage(int usage, BOOL down)
 {
     if (gGated || gMenuOpen || gEditOpen) { if (gEditOpen && down) [BKUI editorKey:usage]; return; }
-    if (!gFront) return;
+    if (!gFront || !gEnabled) return;
     for (int i = 0; i < (int)BKMarks().count; i++) {
         if ([BKMarks()[i][@"c"] intValue] != usage) continue;
         NSString *t = BKMarks()[i][@"t"];
@@ -2056,12 +2091,12 @@ static void BKStart(void)
     if (gStarted) return;
     gStarted = YES;
     gCore = [BKCore shared];
-    NSString *base = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
-                      stringByAppendingPathComponent:@"BallKey"];
+    NSString *base = BKStateDir();
     [NSFileManager.defaultManager createDirectoryAtPath:base withIntermediateDirectories:YES attributes:nil error:nil];
     gLog = [base stringByAppendingPathComponent:@"ballkey.log"];
     [@"" writeToFile:gLog atomically:NO encoding:NSUTF8StringEncoding error:nil];
-    BKLog(@"boot v6 springboard");
+    BKLoadEnabled();
+    BKLog(@"boot v6 springboard enabled:%d", gEnabled);
 
     BKInstall();
     if (!gHidOk) { BKLog(@"hid fail"); return; }

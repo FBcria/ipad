@@ -243,8 +243,10 @@ static BOOL BKLandscape(void)
     UIDeviceOrientation o = UIDevice.currentDevice.orientation;
     if (o == UIDeviceOrientationLandscapeLeft || o == UIDeviceOrientationLandscapeRight) return YES;
     if (o == UIDeviceOrientationPortrait || o == UIDeviceOrientationPortraitUpsideDown) return NO;
-    @try { return UIInterfaceOrientationIsLandscape(UIApplication.sharedApplication.statusBarOrientation); }
-    @catch (id e) {}
+    @try {
+        UIWindowScene *sc = BKScene();
+        if (sc) return UIInterfaceOrientationIsLandscape(sc.interfaceOrientation);
+    } @catch (id e) {}
     return NO;
 }
 static BOOL BKNeedsRotation(void)
@@ -2366,8 +2368,6 @@ static void BKEnsure(void)
             } @catch (id e) {}
         };
         [NSNotificationCenter.defaultCenter addObserverForName:UIDeviceOrientationDidChangeNotification
-            object:nil queue:NSOperationQueue.mainQueue usingBlock:relay];
-        [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidChangeStatusBarOrientationNotification
             object:nil queue:NSOperationQueue.mainQueue usingBlock:relay];
 
         gTick = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());

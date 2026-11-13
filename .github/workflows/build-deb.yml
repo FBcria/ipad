@@ -87,7 +87,7 @@ jobs:
         run: |
           set -e
           make -C "${{ steps.mk.outputs.dir }}" clean
-          make -C "${{ steps.mk.outputs.dir }}" package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootful
+          make -C "${{ steps.mk.outputs.dir }}" package FINALPACKAGE=1
           
       - name: Conferir layout do pacote
         run: |

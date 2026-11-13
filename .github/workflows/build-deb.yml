@@ -63,6 +63,7 @@ jobs:
         id: mk
         run: |
           set -e
+          echo "pwd: $(pwd)"
           ls -la
           if [ -f BallKey/Makefile ]; then
             echo "dir=BallKey" >> $GITHUB_OUTPUT
@@ -73,19 +74,23 @@ jobs:
             find . -maxdepth 3 -name Makefile -print
             exit 1
           fi
+          echo "dir escolhido: $(cat $GITHUB_OUTPUT)"
 
       - name: Normalizar control e esquema
         run: |
           set -e
           D="${{ steps.mk.outputs.dir }}"
+          echo "diretorio do projeto: $D"
+          ls -la "$D"
           echo "--- control antes ---"
           cat "$D/control"
           sed -i 's/^Architecture:.*/Architecture: iphoneos-arm/' "$D/control"
           grep -q '^Architecture: iphoneos-arm$' "$D/control" || echo "Architecture: iphoneos-arm" >> "$D/control"
           echo "--- control depois ---"
           cat "$D/control"
-          echo "--- esquema no Makefile ---"
-          grep -n 'THEOS_PACKAGE_SCHEME' "$D/Makefile" || echo "(nenhum)"
+          grep -qx 'Architecture: iphoneos-arm' "$D/control" || { echo "falha ao normalizar Architecture"; exit 1; }
+          echo "--- variaveis de esquema no Makefile ---"
+          grep -nE 'THEOS_PACKAGE_(SCHEME|INSTALL_PREFIX)' "$D/Makefile" || echo "(nenhuma)"
 
       - name: Versão do control
         id: ver
@@ -95,13 +100,14 @@ jobs:
           V=$(grep -m1 '^Version:' "$C" | awk '{print $2}')
           test -n "$V" || { echo "Version ausente no control"; exit 1; }
           echo "version=$V" >> $GITHUB_OUTPUT
+          echo "versao lida: $V"
 
       - name: Build
         run: |
           set -e
           D="${{ steps.mk.outputs.dir }}"
           make -C "$D" clean
-          make -C "$D" package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=
+          make -C "$D" package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME= THEOS_PACKAGE_INSTALL_PREFIX=
 
       - name: Conferir layout do pacote
         run: |
@@ -109,7 +115,8 @@ jobs:
           DEB=$(ls "${{ steps.mk.outputs.dir }}"/packages/*.deb | head -1)
           test -n "$DEB" || { echo "deb nao gerado"; exit 1; }
           echo "pacote: $DEB"
-          dpkg-deb -f "$DEB" Architecture
+          echo "--- control do deb ---"
+          dpkg-deb -f "$DEB"
           LIST=$(dpkg-deb -c "$DEB" | awk '{print $NF}')
           echo "$LIST" | head -30
           if echo "$LIST" | grep -qE '(^|/)(var/jb|rootfs)/'; then
@@ -126,7 +133,7 @@ jobs:
           set -e
           test -f BallKeyApp/Makefile || { echo "BallKeyApp ausente"; exit 1; }
           make -C BallKeyApp clean
-          make -C BallKeyApp FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=
+          make -C BallKeyApp FINALPACKAGE=1 THEOS_PACKAGE_SCHEME= THEOS_PACKAGE_INSTALL_PREFIX=
 
       - name: Empacotar tipa
         run: |

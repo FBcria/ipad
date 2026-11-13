@@ -1,4 +1,4 @@
-// BallKey 6.0 - mapeador de teclado e mouse (SpringBoard) - martidev333
+// BallKey 6.0 - mapeador de teclado e mouse (in-game) - martidev333
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <GameController/GameController.h>
@@ -203,16 +203,10 @@ static void (*pSetSender)(IOHIDEventRef,uint64_t);
 static int (*pGetType)(IOHIDEventRef);
 static double (*pGetFloat)(IOHIDEventRef,uint32_t);
 static int64_t (*pGetInt)(IOHIDEventRef,uint32_t);
-static uint64_t (*pGetSender)(IOHIDEventRef);
 static void (*origEnq)(id,SEL,IOHIDEventRef);
 static IOHIDEventSystemClientRef (*pClientCreate)(CFAllocatorRef,int,CFDictionaryRef);
 static void (*pSysDispatch)(IOHIDEventSystemClientRef,IOHIDEventRef);
 static IOHIDEventSystemClientRef gSys;
-
-static void (*pMonMatch)(IOHIDEventSystemClientRef,CFTypeRef);
-static void (*pMonReg)(IOHIDEventSystemClientRef,void *,void *,void *);
-static void (*pMonSched)(IOHIDEventSystemClientRef,CFRunLoopRef,CFStringRef);
-static IOHIDEventSystemClientRef gMon;
 
 @interface BKPassWindow : UIWindow @end
 @implementation BKPassWindow
@@ -338,16 +332,6 @@ static void BKAlive(void)
 
 static void BKTickFront(void);
 static void BKEnsure(void);
-static void BKLaunchGame(void)
-{
-    @try {
-        Class ws = NSClassFromString(@"LSApplicationWorkspace");
-        if (!ws) return;
-        id w = [ws respondsToSelector:@selector(defaultWorkspace)] ? [ws performSelector:@selector(defaultWorkspace)] : nil;
-        if (w && [w respondsToSelector:@selector(openApplicationWithBundleID:)])
-            [w performSelector:@selector(openApplicationWithBundleID:) withObject:BK_GAME];
-    } @catch (id e) {}
-}
 static void BKOnNotify(CFNotificationCenterRef c, void *o, CFStringRef name, const void *obj, CFDictionaryRef info)
 {
     NSString *n = (__bridge NSString *)name;
@@ -361,15 +345,11 @@ static void BKOnNotify(CFNotificationCenterRef c, void *o, CFStringRef name, con
                 BKTickFront();
                 return;
             }
-            BOOL game = [n isEqualToString:@BK_NOTE_GAME];
             BKSetEnabled(YES);
             BKEnsure();
             if (gMenuOpen) BKMenuClose();
             BKMenuOpen();
             BKTickFront();
-            if (game) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 340 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-                BKLaunchGame();
-            });
         } @catch (id e) { BKLog(@"notify fail %@", e); }
     });
 }
@@ -387,20 +367,13 @@ static void BKActivatorInstall(void)
 // ---- fim ativador ----
 
 // ---- gate ----
+// dentro do jogo estamos sempre em primeiro plano; so usamos o bundle para nao
+// desenhar nada se o processo for outro (ex.: extensao)
 static NSString *BKFrontApp(void)
 {
-    id app = nil;
     @try {
-        Class c = NSClassFromString(@"SBApplicationController");
-        id ctrl = c ? [c performSelector:@selector(sharedInstance)] : nil;
-        if ([ctrl respondsToSelector:@selector(frontmostApplication)]) app = [ctrl performSelector:@selector(frontmostApplication)];
-        if (!app) {
-            Class wc = NSClassFromString(@"SBWorkspace");
-            id ws = wc ? [wc performSelector:@selector(sharedInstance)] : nil;
-            if ([ws respondsToSelector:@selector(frontmostApplication)]) app = [ws performSelector:@selector(frontmostApplication)];
-        }
-        if ([app respondsToSelector:@selector(displayIdentifier)]) return [app performSelector:@selector(displayIdentifier)];
-        if ([app respondsToSelector:@selector(bundleIdentifier)]) return [app performSelector:@selector(bundleIdentifier)];
+        NSString *b = NSBundle.mainBundle.bundleIdentifier;
+        if (b.length) return b;
     } @catch (id e) {}
     return nil;
 }
@@ -408,13 +381,9 @@ static void BKTickFront(void)
 {
     @try {
         NSString *f = BKFrontApp();
-        static NSString *lastF;
-        if (![lastF isEqualToString:(f ?: @"")]) { lastF = (f ?: @""); BKLog(@"front %@", f.length ? f : @"nil"); }
-
-        BOOL on = [f isEqualToString:BK_GAME] || [f isEqualToString:BK_GAMEMAX];
-        BOOL mine = [f isEqualToString:BK_ME];
-        if (!f.length) on = YES;
-        BOOL show = gEnabled && (on || mine);
+        BOOL on = YES;
+        if (f.length) on = [f isEqualToString:BK_GAME] || [f isEqualToString:BK_GAMEMAX];
+        BOOL show = gEnabled && on;
         gFront = on;
         if (gBallWin) gBallWin.hidden = !show;
         if (gCursorWin) gCursorWin.hidden = !(on && gCursorOn);
@@ -465,8 +434,8 @@ static void BKInjectNorm(int finger, double fx, double fy, BOOL down, BOOL move)
         if (pSetDigitizerInfo) pSetDigitizerInfo(parent, 0, false, false, NULL, 0, 0);
 
         gInjecting++;
-        if (gSys && pSysDispatch) pSysDispatch(gSys, parent);
-        else if (origEnq) origEnq(UIApplication.sharedApplication, @selector(_enqueueHIDEvent:), parent);
+        if (origEnq) origEnq(UIApplication.sharedApplication, @selector(_enqueueHIDEvent:), parent);
+        else if (gSys && pSysDispatch) pSysDispatch(gSys, parent);
         gInjecting--;
         CFRelease(parent);
 
@@ -690,37 +659,12 @@ static void BKCaptureEvent(IOHIDEventRef ev)
 }
 static void BKEnq(id self, SEL cmd, IOHIDEventRef ev)
 {
-    if (gInjecting == 0) @try { BKCaptureEvent(ev); } @catch (id e) {}
+    if (gInjecting == 0) {
+        int t = pGetType ? pGetType(ev) : 0;
+        if (t == 3) @try { BKCaptureEvent(ev); } @catch (id e) {}
+        else if (!gGcMouse && (t == 17 || t == 18)) @try { BKCaptureEvent(ev); } @catch (id e) {}
+    }
     if (origEnq) origEnq(self, cmd, ev);
-}
-
-// ---- monitor HID (teclado e ponteiro) ----
-static void BKMonCb(void *target, void *refcon, void *service, IOHIDEventRef ev)
-{
-    if (!ev || gInjecting > 0) return;
-    if (pGetSender && pGetSender(ev) == BK_SENDER) return;
-    int type = pGetType ? pGetType(ev) : 0;
-    if (type != 3 && type != 17 && type != 18) return;
-    @try { BKCaptureEvent(ev); } @catch (id e) {}
-}
-static BOOL BKMonitorStart(void)
-{
-    if (gMon) return YES;
-    if (!pClientCreate || !pMonMatch || !pMonReg || !pMonSched) return NO;
-    @try {
-        IOHIDEventSystemClientRef c = pClientCreate(kCFAllocatorDefault, 1, NULL);
-        if (!c) return NO;
-        NSArray *match = @[@{@"PrimaryUsagePage":@1, @"PrimaryUsage":@6},
-                           @{@"PrimaryUsagePage":@1, @"PrimaryUsage":@2},
-                           @{@"PrimaryUsagePage":@1, @"PrimaryUsage":@1}];
-        pMonMatch(c, (__bridge CFTypeRef)match);
-        pMonReg(c, (void *)BKMonCb, NULL, NULL);
-        pMonSched(c, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-        gMon = c;
-        BKLog(@"monitor on");
-        return YES;
-    } @catch (id e) { BKLog(@"monitor fail %@", e); }
-    return NO;
 }
 
 void BKButtonDown(int btn, BOOL down)
@@ -809,7 +753,6 @@ static void BKJoystick(void)
 
 static void BKAttachMouse(void)
 {
-    if (gMon) return;
     GCMouse *m = GCMouse.current;
     gGcMouse = (m != nil);
     if (!m) return;
@@ -821,7 +764,6 @@ static void BKAttachMouse(void)
 }
 static void BKAttachKey(void)
 {
-    if (gMon) return;
     GCKeyboard *k = [GCKeyboard coalescedKeyboard];
     gGcKey = (k != nil);
     if (!k) return;
@@ -842,20 +784,15 @@ static void BKInstall(void)
         pGetType = dlsym(h, "IOHIDEventGetType");
         pGetFloat = dlsym(h, "IOHIDEventGetFloatValue");
         pGetInt = dlsym(h, "IOHIDEventGetIntegerValue");
-        pGetSender = dlsym(h, "IOHIDEventGetSenderID");
         pClientCreate = dlsym(h, "IOHIDEventSystemClientCreateWithType");
         pSysDispatch = dlsym(h, "IOHIDEventSystemClientDispatchEvent");
-        pMonMatch = dlsym(h, "IOHIDEventSystemClientSetMatching");
-        pMonReg = dlsym(h, "IOHIDEventSystemClientRegisterEventCallback");
-        pMonSched = dlsym(h, "IOHIDEventSystemClientScheduleWithRunLoop");
     }
     void *b = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_LAZY);
     if (b) pSetDigitizerInfo = dlsym(b, "BKSHIDEventSetDigitizerInfo");
 
     if (pClientCreate) gSys = pClientCreate(kCFAllocatorDefault, 1, NULL);
     gHidOk = (pCreateFinger != NULL && pCreateDigitizer != NULL);
-    BKLog(@"hid:%d sys:%d mon:%d", gHidOk, gSys != NULL,
-          (pMonMatch && pMonReg && pMonSched));
+    BKLog(@"hid:%d sys:%d", gHidOk, gSys != NULL);
 }
 static void BKHook(void)
 {
@@ -2389,7 +2326,8 @@ static void BKEnsure(void)
     @try {
         BKLog(@"ensure 1");
         BKInstall();
-        BKLog(@"ensure 2 hid:%d sys:%d", gHidOk, gSys != NULL);
+        BKHook();
+        BKLog(@"ensure 2 hid:%d sys:%d hook:%d", gHidOk, gSys != NULL, gHook);
 
         gBallWin = BKWin(UIWindowLevelAlert + 500, YES);
         gBallStage = BKStageIn(gBallWin);
@@ -2410,17 +2348,13 @@ static void BKEnsure(void)
         gCursorWin.hidden = YES;
         BKLog(@"ensure 4 cursor");
 
-        BOOL mon = BKMonitorStart();
-        if (!mon) {
-            [NSNotificationCenter.defaultCenter addObserverForName:GCMouseDidConnectNotification object:nil
-                queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { @try { BKAttachMouse(); } @catch (id e) {} }];
-            [NSNotificationCenter.defaultCenter addObserverForName:GCKeyboardDidConnectNotification object:nil
-                queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { @try { BKAttachKey(); } @catch (id e) {} }];
-            BKAttachMouse();
-            BKAttachKey();
-            if (!gGcMouse && !gGcKey) BKHook();
-        }
-        BKLog(@"ensure 5 mon:%d hook:%d", gMon != NULL, gHook);
+        [NSNotificationCenter.defaultCenter addObserverForName:GCMouseDidConnectNotification object:nil
+            queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { @try { BKAttachMouse(); } @catch (id e) {} }];
+        [NSNotificationCenter.defaultCenter addObserverForName:GCKeyboardDidConnectNotification object:nil
+            queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { @try { BKAttachKey(); } @catch (id e) {} }];
+        BKAttachMouse();
+        BKAttachKey();
+        BKLog(@"ensure 5 mouse:%d key:%d", gGcMouse, gGcKey);
 
         void (^relay)(NSNotification *) = ^(NSNotification *n) {
             @try {

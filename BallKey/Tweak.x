@@ -203,10 +203,16 @@ static void (*pSetSender)(IOHIDEventRef,uint64_t);
 static int (*pGetType)(IOHIDEventRef);
 static double (*pGetFloat)(IOHIDEventRef,uint32_t);
 static int64_t (*pGetInt)(IOHIDEventRef,uint32_t);
+static uint64_t (*pGetSender)(IOHIDEventRef);
 static void (*origEnq)(id,SEL,IOHIDEventRef);
 static IOHIDEventSystemClientRef (*pClientCreate)(CFAllocatorRef,int,CFDictionaryRef);
 static void (*pSysDispatch)(IOHIDEventSystemClientRef,IOHIDEventRef);
 static IOHIDEventSystemClientRef gSys;
+
+static void (*pMonMatch)(IOHIDEventSystemClientRef,CFTypeRef);
+static void (*pMonReg)(IOHIDEventSystemClientRef,void *,void *,void *);
+static void (*pMonSched)(IOHIDEventSystemClientRef,CFRunLoopRef,CFStringRef);
+static IOHIDEventSystemClientRef gMon;
 
 @interface BKPassWindow : UIWindow @end
 @implementation BKPassWindow
@@ -214,7 +220,8 @@ static IOHIDEventSystemClientRef gSys;
 {
     UIView *v = [super hitTest:p withEvent:e];
     if (!v) return nil;
-    if (v == self.rootViewController.view || v.tag == BK_STAGE_TAG) return nil;
+    if (v == self.rootViewController.view) return nil;
+    if (v.tag == BK_STAGE_TAG) return (gMenuOpen || gEditOpen) ? v : nil;
     return v;
 }
 @end
@@ -468,11 +475,19 @@ static void BKInjectNorm(int finger, double fx, double fy, BOOL down, BOOL move)
         }
     } @catch (id e) {}
 }
+// ponto em coordenadas da interface atual -> coordenadas do painel (em pe)
 static void BKInject(int finger, double x, double y, BOOL down, BOOL move)
 {
     CGSize s = BKSize();
     if (s.width < 1 || s.height < 1) return;
-    BKInjectNorm(finger, x / s.width, y / s.height, down, move);
+    double u = x / s.width, v = y / s.height;
+    double nx = u, ny = v;
+    if (s.width > s.height) {
+        UIDeviceOrientation o = UIDevice.currentDevice.orientation;
+        if (o == UIDeviceOrientationLandscapeRight) { nx = 1.0 - v; ny = 1.0 - u; }
+        else { nx = v; ny = u; }
+    }
+    BKInjectNorm(finger, BKClamp(nx, 0.0, 1.0), BKClamp(ny, 0.0, 1.0), down, move);
 }
 
 static void BKTapAt(double x, double y)
@@ -541,7 +556,8 @@ static double BKCurveValue(double v)
 
 void BKPointerDelta(double dx, double dy)
 {
-    if (!gCursorOn || !gFront || !gEnabled) return;
+    if (!gCursorOn) return;
+    if (!gMenuOpen && !gEditOpen && (!gFront || !gEnabled)) return;
     CGSize s = BKSize();
     double sens = BKNum(kSens, 1.0);
     dx = BKCurveValue(dx * sens);
@@ -565,7 +581,7 @@ void BKPointerDelta(double dx, double dy)
         gCy = BKClamp(gCy + dy, 2, s.height - 2);
     }
     BKPlaceCursor();
-    if (gCursorDown) {
+    if (gCursorDown && !gMenuOpen && !gEditOpen) {
         double n = ((double)arc4random_uniform(400) / 1000.0) - 0.2;
         BKInject(31, gCx + n, gCy - n, YES, YES);
     }
@@ -678,10 +694,43 @@ static void BKEnq(id self, SEL cmd, IOHIDEventRef ev)
     if (origEnq) origEnq(self, cmd, ev);
 }
 
+// ---- monitor HID (teclado e ponteiro) ----
+static void BKMonCb(void *target, void *refcon, void *service, IOHIDEventRef ev)
+{
+    if (!ev || gInjecting > 0) return;
+    if (pGetSender && pGetSender(ev) == BK_SENDER) return;
+    int type = pGetType ? pGetType(ev) : 0;
+    if (type != 3 && type != 17 && type != 18) return;
+    @try { BKCaptureEvent(ev); } @catch (id e) {}
+}
+static BOOL BKMonitorStart(void)
+{
+    if (gMon) return YES;
+    if (!pClientCreate || !pMonMatch || !pMonReg || !pMonSched) return NO;
+    @try {
+        IOHIDEventSystemClientRef c = pClientCreate(kCFAllocatorDefault, 1, NULL);
+        if (!c) return NO;
+        NSArray *match = @[@{@"PrimaryUsagePage":@1, @"PrimaryUsage":@6},
+                           @{@"PrimaryUsagePage":@1, @"PrimaryUsage":@2},
+                           @{@"PrimaryUsagePage":@1, @"PrimaryUsage":@1}];
+        pMonMatch(c, (__bridge CFTypeRef)match);
+        pMonReg(c, (void *)BKMonCb, NULL, NULL);
+        pMonSched(c, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+        gMon = c;
+        BKLog(@"monitor on");
+        return YES;
+    } @catch (id e) { BKLog(@"monitor fail %@", e); }
+    return NO;
+}
+
 void BKButtonDown(int btn, BOOL down)
 {
+    if (btn == 1) {
+        if (!down || !gEnabled || !gCursorOn) return;
+        BKTapAt(gCx, gCy);
+        return;
+    }
     if (gGated || gMenuOpen || gEditOpen || !gFront || !gEnabled) return;
-    if (btn == 1) { if (down) BKTapAt(gCx, gCy); return; }
     if (btn == 2) {
         CGSize s = BKSize();
         for (int i = 0; i < (int)BKMarks().count; i++) {
@@ -760,6 +809,7 @@ static void BKJoystick(void)
 
 static void BKAttachMouse(void)
 {
+    if (gMon) return;
     GCMouse *m = GCMouse.current;
     gGcMouse = (m != nil);
     if (!m) return;
@@ -771,6 +821,7 @@ static void BKAttachMouse(void)
 }
 static void BKAttachKey(void)
 {
+    if (gMon) return;
     GCKeyboard *k = [GCKeyboard coalescedKeyboard];
     gGcKey = (k != nil);
     if (!k) return;
@@ -791,15 +842,20 @@ static void BKInstall(void)
         pGetType = dlsym(h, "IOHIDEventGetType");
         pGetFloat = dlsym(h, "IOHIDEventGetFloatValue");
         pGetInt = dlsym(h, "IOHIDEventGetIntegerValue");
+        pGetSender = dlsym(h, "IOHIDEventGetSenderID");
         pClientCreate = dlsym(h, "IOHIDEventSystemClientCreateWithType");
         pSysDispatch = dlsym(h, "IOHIDEventSystemClientDispatchEvent");
+        pMonMatch = dlsym(h, "IOHIDEventSystemClientSetMatching");
+        pMonReg = dlsym(h, "IOHIDEventSystemClientRegisterEventCallback");
+        pMonSched = dlsym(h, "IOHIDEventSystemClientScheduleWithRunLoop");
     }
     void *b = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_LAZY);
     if (b) pSetDigitizerInfo = dlsym(b, "BKSHIDEventSetDigitizerInfo");
 
     if (pClientCreate) gSys = pClientCreate(kCFAllocatorDefault, 1, NULL);
     gHidOk = (pCreateFinger != NULL && pCreateDigitizer != NULL);
-    BKLog(@"hid:%d sys:%d", gHidOk, gSys != NULL);
+    BKLog(@"hid:%d sys:%d mon:%d", gHidOk, gSys != NULL,
+          (pMonMatch && pMonReg && pMonSched));
 }
 static void BKHook(void)
 {
@@ -1984,6 +2040,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     CGRect sb = UIScreen.mainScreen.bounds;
     _win = sc ? [[UIWindow alloc] initWithWindowScene:sc]
               : [[UIWindow alloc] initWithFrame:sb];
+    object_setClass(_win, [BKPassWindow class]);
     _win.windowLevel = UIWindowLevelAlert + 560;
     _win.frame = sb;
     _win.backgroundColor = UIColor.clearColor;
@@ -2353,14 +2410,17 @@ static void BKEnsure(void)
         gCursorWin.hidden = YES;
         BKLog(@"ensure 4 cursor");
 
-        [NSNotificationCenter.defaultCenter addObserverForName:GCMouseDidConnectNotification object:nil
-            queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { @try { BKAttachMouse(); } @catch (id e) {} }];
-        [NSNotificationCenter.defaultCenter addObserverForName:GCKeyboardDidConnectNotification object:nil
-            queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { @try { BKAttachKey(); } @catch (id e) {} }];
-        BKAttachMouse();
-        BKAttachKey();
-        if (!gGcMouse && !gGcKey) BKHook();
-        BKLog(@"ensure 5 input hook:%d", gHook);
+        BOOL mon = BKMonitorStart();
+        if (!mon) {
+            [NSNotificationCenter.defaultCenter addObserverForName:GCMouseDidConnectNotification object:nil
+                queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { @try { BKAttachMouse(); } @catch (id e) {} }];
+            [NSNotificationCenter.defaultCenter addObserverForName:GCKeyboardDidConnectNotification object:nil
+                queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { @try { BKAttachKey(); } @catch (id e) {} }];
+            BKAttachMouse();
+            BKAttachKey();
+            if (!gGcMouse && !gGcKey) BKHook();
+        }
+        BKLog(@"ensure 5 mon:%d hook:%d", gMon != NULL, gHook);
 
         void (^relay)(NSNotification *) = ^(NSNotification *n) {
             @try {

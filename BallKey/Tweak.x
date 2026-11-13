@@ -701,9 +701,13 @@ static BOOL BKMonitorStart(void)
     @try {
         IOHIDEventSystemClientRef c = pClientCreate(kCFAllocatorDefault, 1, NULL);
         if (!c) { BKLog(@"mon create fail"); return NO; }
-        NSArray *m = @[@{@"PrimaryUsagePage":@(1), @"PrimaryUsage":@(6)},
-                       @{"PrimaryUsagePage":@(1), @"PrimaryUsage":@(2)},
-                       @{@"PrimaryUsagePage":@(1), @"PrimaryUsage":@(1)}];
+        NSDictionary *kd = [NSDictionary dictionaryWithObjectsAndKeys:
+                            @(1), @"PrimaryUsagePage", @(6), @"PrimaryUsage", nil];
+        NSDictionary *md = [NSDictionary dictionaryWithObjectsAndKeys:
+                            @(1), @"PrimaryUsagePage", @(2), @"PrimaryUsage", nil];
+        NSDictionary *pd = [NSDictionary dictionaryWithObjectsAndKeys:
+                            @(1), @"PrimaryUsagePage", @(1), @"PrimaryUsage", nil];
+        NSArray *m = [NSArray arrayWithObjects:kd, md, pd, nil];
         if (pMonMatchMulti) pMonMatchMulti(c, (__bridge CFTypeRef)m);
         else for (NSDictionary *d in m) pMonMatch(c, (__bridge CFTypeRef)d);
         pMonReg(c, BKMonCb, NULL, NULL);

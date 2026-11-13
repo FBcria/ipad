@@ -106,13 +106,16 @@ jobs:
         run: |
           set -e
           D="${{ steps.mk.outputs.dir }}"
+          rm -f "$D"/packages/*.deb
           make -C "$D" clean
           make -C "$D" package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME= THEOS_PACKAGE_INSTALL_PREFIX=
-
+          ls -lt "$D"/packages/
+          
       - name: Conferir layout do pacote
         run: |
           set -e
-          DEB=$(ls "${{ steps.mk.outputs.dir }}"/packages/*.deb | head -1)
+          D="${{ steps.mk.outputs.dir }}"
+          DEB=$(ls -t "$D"/packages/*.deb 2>/dev/null | head -1)
           test -n "$DEB" || { echo "deb nao gerado"; exit 1; }
           echo "pacote: $DEB"
           echo "--- control do deb ---"
@@ -127,7 +130,7 @@ jobs:
           dpkg-deb -f "$DEB" Architecture | grep -qx 'iphoneos-arm' \
             || { echo "arquitetura diferente de iphoneos-arm"; exit 1; }
           echo "layout rootful ok"
-
+          
       - name: Build app instalador
         run: |
           set -e
@@ -140,7 +143,7 @@ jobs:
           set -e
           BIN=$(find BallKeyApp/.theos/obj -maxdepth 4 -type f -name "BallKeyApp" | head -1)
           test -n "$BIN" || { echo "binario nao gerado"; find BallKeyApp/.theos -maxdepth 6; exit 1; }
-          DEB=$(ls "${{ steps.mk.outputs.dir }}"/packages/*.deb | head -1)
+          DEB=$(ls -t "${{ steps.mk.outputs.dir }}"/packages/*.deb | head -1)
           test -n "$DEB" || { echo "deb nao encontrado"; exit 1; }
 
           rm -rf Payload

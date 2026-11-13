@@ -24,7 +24,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/theos
-          key: theos-roothide-linux-v3
+          key: theos-linux-v4
 
       - name: Dependências
         if: steps.tc.outputs.cache-hit != 'true'
@@ -50,15 +50,6 @@ jobs:
 
       - name: Definir THEOS
         run: echo "THEOS=$HOME/theos" >> $GITHUB_ENV
-
-      - name: Aplicar fork RootHide
-        run: |
-          set -e
-          test -d "$THEOS/.git" || { echo "theos incompleto"; exit 1; }
-          git -C "$THEOS" remote set-url origin https://github.com/roothide/theos.git
-          git -C "$THEOS" fetch --depth 1 origin master
-          git -C "$THEOS" reset --hard FETCH_HEAD
-          grep -rq roothide "$THEOS/makefiles/" || { echo "fork nao aplicado"; exit 1; }
 
       - name: Conferir toolchain
         run: |
@@ -96,7 +87,7 @@ jobs:
         run: |
           set -e
           make -C "${{ steps.mk.outputs.dir }}" clean
-          make -C "${{ steps.mk.outputs.dir }}" package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+          make -C "${{ steps.mk.outputs.dir }}" package FINALPACKAGE=1
 
       - name: Conferir layout do pacote
         run: |
@@ -107,10 +98,12 @@ jobs:
           dpkg-deb -f "$DEB" Architecture
           LIST=$(dpkg-deb -c "$DEB" | awk '{print $NF}')
           echo "$LIST" | head -30
-          echo "$LIST" | grep -qE '(^|/)var/jb/' || { echo "pacote fora do layout rootless"; exit 1; }
-          if echo "$LIST" | grep -qE '(^|/)rootfs/'; then echo "prefixo rootfs/ presente"; exit 1; fi
-          if echo "$LIST" | grep -qE '^\.?/?Library/'; then echo "caminho na raiz (pacote rootful)"; exit 1; fi
-          echo "layout rootless ok"
+          if echo "$LIST" | grep -qE '(^|/)(var/jb|rootfs)/'; then
+            echo "pacote nao esta rootful (var/jb ou rootfs presente)"; exit 1
+          fi
+          echo "$LIST" | grep -qE '^\.?/?Library/MobileSubstrate/DynamicLibraries/' \
+            || { echo "dylib fora de Library/MobileSubstrate"; exit 1; }
+          echo "layout rootful ok"
 
       - name: Build app instalador
         run: |

@@ -1,7 +1,7 @@
 Package: com.wjf.ballkey
 Name: BallKey
-Version: 6.0.1
-Architecture: iphoneos-arm64
+Version: 6.0.2
+Architecture: iphoneos-arm
 Description: Mapeador de teclado e mouse para o Free Fire
 Maintainer: martidev333
 Author: martidev333

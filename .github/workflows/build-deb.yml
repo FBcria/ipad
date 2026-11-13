@@ -105,9 +105,11 @@ jobs:
           test -n "$DEB" || { echo "deb nao gerado"; exit 1; }
           echo "pacote: $DEB"
           dpkg-deb -f "$DEB" Architecture
-          dpkg-deb -c "$DEB" | head -30
-          dpkg-deb -c "$DEB" | grep -q './var/jb/' || { echo "pacote fora do layout rootless (rootfs/ ou raiz)"; exit 1; }
-          if dpkg-deb -c "$DEB" | grep -q './rootfs/'; then echo "prefixo rootfs/ presente"; exit 1; fi
+          LIST=$(dpkg-deb -c "$DEB" | awk '{print $NF}')
+          echo "$LIST" | head -30
+          echo "$LIST" | grep -qE '(^|/)var/jb/' || { echo "pacote fora do layout rootless"; exit 1; }
+          if echo "$LIST" | grep -qE '(^|/)rootfs/'; then echo "prefixo rootfs/ presente"; exit 1; fi
+          if echo "$LIST" | grep -qE '^\.?/?Library/'; then echo "caminho na raiz (pacote rootful)"; exit 1; fi
           echo "layout rootless ok"
 
       - name: Build app instalador

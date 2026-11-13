@@ -5,6 +5,7 @@
 #import <objc/runtime.h>
 #import <dlfcn.h>
 #import <string.h>
+#import <unistd.h>
 #import <mach/mach.h>
 #import <mach/mach_time.h>
 #import <mach/vm_prot.h>
@@ -2465,6 +2466,16 @@ static void BKEnsure(void)
 __attribute__((constructor))
 static void BKInit(void)
 {
+    // marca de carga: primeiro de tudo, antes de qualquer outro codigo
+    @try {
+        [NSFileManager.defaultManager createDirectoryAtPath:@"/var/mobile/Documents/BallKey"
+                                 withIntermediateDirectories:YES attributes:nil error:nil];
+        [[NSString stringWithFormat:@"%.3f load pid:%d bundle:%@\n",
+          CFAbsoluteTimeGetCurrent(), getpid(), NSBundle.mainBundle.bundleIdentifier ?: @"?"]
+            writeToFile:@"/var/mobile/Documents/BallKey/load.log"
+            atomically:NO encoding:NSUTF8StringEncoding error:nil];
+    } @catch (id e) {}
+
     @try {
         gCore = [BKCore shared];
         NSString *base = BKStateDir();
@@ -2492,8 +2503,8 @@ static void BKInit(void)
         }
     } @catch (id e) {}
 
-    if (![[NSFileManager defaultManager] fileExistsAtPath:BK_SAFE])
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/mobile/Documents/BallKey/stealth"])
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             @autoreleasepool { @try { BKStealth(); } @catch (id e) {} }
         });
 }

@@ -208,6 +208,18 @@ static IOHIDEventSystemClientRef (*pClientCreate)(CFAllocatorRef,int,CFDictionar
 static void (*pSysDispatch)(IOHIDEventSystemClientRef,IOHIDEventRef);
 static IOHIDEventSystemClientRef gSys;
 
+// ---- monitor de HID (captura de teclado e ponteiro reais) ----
+typedef void (*BKMonFn)(void *, void *, void *, IOHIDEventRef);
+static void (*pMonMatch)(IOHIDEventSystemClientRef,CFTypeRef);
+static void (*pMonMatchMulti)(IOHIDEventSystemClientRef,CFTypeRef);
+static void (*pMonReg)(IOHIDEventSystemClientRef,BKMonFn,void *,void *);
+static void (*pMonSched)(IOHIDEventSystemClientRef,CFRunLoopRef,CFStringRef);
+static uint64_t (*pGetSender)(IOHIDEventRef);
+static IOHIDEventSystemClientRef gMon;
+static int gMonN;
+static BOOL BKMonLive(void);
+static BOOL BKMonitorStart(void);
+
 @interface BKPassWindow : UIWindow @end
 @implementation BKPassWindow
 - (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e
@@ -664,9 +676,43 @@ static void BKEnq(id self, SEL cmd, IOHIDEventRef ev)
     if (gInjecting == 0) {
         int t = pGetType ? pGetType(ev) : 0;
         if (t == 3) @try { BKCaptureEvent(ev); } @catch (id e) {}
-        else if (!gGcMouse && (t == 17 || t == 18)) @try { BKCaptureEvent(ev); } @catch (id e) {}
+        else if (!BKMonLive() && !gGcMouse && (t == 17 || t == 18)) @try { BKCaptureEvent(ev); } @catch (id e) {}
     }
     if (origEnq) origEnq(self, cmd, ev);
+}
+
+// ---- monitor HID (teclado e ponteiro) ----
+static BOOL BKMonLive(void) { return (gMon != NULL) && gMonN > 0; }
+static void BKMonCb(void *target, void *refcon, void *service, IOHIDEventRef ev)
+{
+    if (!ev || gInjecting > 0) return;
+    if (pGetSender && pGetSender(ev) == BK_SENDER) return;
+    int type = pGetType ? pGetType(ev) : 0;
+    if (type != 3 && type != 17 && type != 18) return;
+    if (gMonN < 3) BKLog(@"mon ev %d", type);
+    gMonN++;
+    @try { BKCaptureEvent(ev); } @catch (id e) {}
+}
+static BOOL BKMonitorStart(void)
+{
+    if (gMon) return YES;
+    if (!pClientCreate || !pMonReg || !pMonSched) { BKLog(@"mon sem simbolos"); return NO; }
+    if (!pMonMatchMulti && !pMonMatch) { BKLog(@"mon sem matching"); return NO; }
+    @try {
+        IOHIDEventSystemClientRef c = pClientCreate(kCFAllocatorDefault, 1, NULL);
+        if (!c) { BKLog(@"mon create fail"); return NO; }
+        NSArray *m = @[@{@"PrimaryUsagePage":@(1), @"PrimaryUsage":@(6)},
+                       @{@"PrimaryUsagePage":@(1), @"PrimaryUsage":@(2)},
+                       @{@"PrimaryUsagePage":@(1), @"PrimaryUsage":@(1)}];
+        if (pMonMatchMulti) pMonMatchMulti(c, (__bridge CFTypeRef)m);
+        else for (NSDictionary *d in m) pMonMatch(c, (__bridge CFTypeRef)d);
+        pMonReg(c, BKMonCb, NULL, NULL);
+        pMonSched(c, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+        gMon = c;
+        BKLog(@"mon on multi:%d", pMonMatchMulti != NULL);
+        return YES;
+    } @catch (id e) { BKLog(@"mon fail %@", e); }
+    return NO;
 }
 
 void BKButtonDown(int btn, BOOL down)
@@ -759,10 +805,18 @@ static void BKAttachMouse(void)
     gGcMouse = (m != nil);
     if (!m) return;
     BKLog(@"gc mouse ok");
-    m.mouseInput.mouseMovedHandler = ^(GCMouseInput *in, float dx, float dy) { @try { BKPointerDelta(dx, dy); } @catch (id e) {} };
-    m.mouseInput.leftButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) { @try { BKButtonDown(1, p); } @catch (id e) {} };
-    m.mouseInput.rightButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) { @try { BKButtonDown(2, p); } @catch (id e) {} };
-    m.mouseInput.middleButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) { @try { BKButtonDown(3, p); } @catch (id e) {} };
+    m.mouseInput.mouseMovedHandler = ^(GCMouseInput *in, float dx, float dy) {
+        @try { if (BKMonLive()) return; BKPointerDelta(dx, dy); } @catch (id e) {}
+    };
+    m.mouseInput.leftButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) {
+        @try { if (BKMonLive()) return; BKButtonDown(1, p); } @catch (id e) {}
+    };
+    m.mouseInput.rightButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) {
+        @try { if (BKMonLive()) return; BKButtonDown(2, p); } @catch (id e) {}
+    };
+    m.mouseInput.middleButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) {
+        @try { if (BKMonLive()) return; BKButtonDown(3, p); } @catch (id e) {}
+    };
 }
 static void BKAttachKey(void)
 {
@@ -788,13 +842,19 @@ static void BKInstall(void)
         pGetInt = dlsym(h, "IOHIDEventGetIntegerValue");
         pClientCreate = dlsym(h, "IOHIDEventSystemClientCreateWithType");
         pSysDispatch = dlsym(h, "IOHIDEventSystemClientDispatchEvent");
+        pMonMatch = dlsym(h, "IOHIDEventSystemClientSetMatching");
+        pMonMatchMulti = dlsym(h, "IOHIDEventSystemClientSetMatchingMultiple");
+        pMonReg = dlsym(h, "IOHIDEventSystemClientRegisterEventCallback");
+        pMonSched = dlsym(h, "IOHIDEventSystemClientScheduleWithRunLoop");
+        pGetSender = dlsym(h, "IOHIDEventGetSenderID");
     }
     void *b = dlopen("/System/Library/PrivateFrameworks/BackBoardServices.framework/BackBoardServices", RTLD_LAZY);
     if (b) pSetDigitizerInfo = dlsym(b, "BKSHIDEventSetDigitizerInfo");
 
     if (pClientCreate) gSys = pClientCreate(kCFAllocatorDefault, 1, NULL);
     gHidOk = (pCreateFinger != NULL && pCreateDigitizer != NULL);
-    BKLog(@"hid:%d sys:%d", gHidOk, gSys != NULL);
+    BKLog(@"hid:%d sys:%d mon:%d/%d/%d", gHidOk, gSys != NULL,
+          pMonMatch != NULL, pMonReg != NULL, pMonSched != NULL);
 }
 static void BKHook(void)
 {
@@ -1962,11 +2022,11 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     if (!_statusLbl) return;
     CGSize s = BKSize();
     _statusLbl.text = [NSString stringWithFormat:
-        @"cursor     %@\nsens       %.2f\nmarcadores %lu\nmodo       %@\ntela       %.0fx%.0f\npainel     %.0fx%.0f\nescala     %.0f%%",
+        @"cursor     %@\nsens       %.2f\nmarcadores %lu\nmodo       %@\ntela       %.0fx%.0f\npainel     %.0fx%.0f\nescala     %.0f%%\nhid        mon:%d ev:%d hook:%d",
         BKCursorOn() ? @"LIGADO" : @"desligado", [gCore doubleForKey:kSens def:1.0],
         (unsigned long)BKMarks().count, BKCursorOn() ? @"cursor" : @"parado",
         s.width, s.height, _builtW * _fit, _builtH * _fit,
-        [gCore doubleForKey:kUiScale def:100]];
+        [gCore doubleForKey:kUiScale def:100], gMon != NULL, gMonN, gHook];
     _statusLbl.textColor = BKCursorOn() ? OKC : DIM;
 }
 
@@ -2328,8 +2388,7 @@ static void BKEnsure(void)
     @try {
         BKLog(@"ensure 1");
         BKInstall();
-        BKHook();
-        BKLog(@"ensure 2 hid:%d sys:%d hook:%d", gHidOk, gSys != NULL, gHook);
+        BKLog(@"ensure 2 hid:%d sys:%d mon:%d", gHidOk, gSys != NULL, gMon != NULL);
 
         gBallWin = BKWin(UIWindowLevelAlert + 500, YES);
         gBallStage = BKStageIn(gBallWin);
@@ -2350,13 +2409,30 @@ static void BKEnsure(void)
         gCursorWin.hidden = YES;
         BKLog(@"ensure 4 cursor");
 
-        [NSNotificationCenter.defaultCenter addObserverForName:GCMouseDidConnectNotification object:nil
-            queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { @try { BKAttachMouse(); } @catch (id e) {} }];
-        [NSNotificationCenter.defaultCenter addObserverForName:GCKeyboardDidConnectNotification object:nil
-            queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { @try { BKAttachKey(); } @catch (id e) {} }];
-        BKAttachMouse();
-        BKAttachKey();
-        BKLog(@"ensure 5 mouse:%d key:%d", gGcMouse, gGcKey);
+        BOOL mon = BKMonitorStart();
+        if (!mon) {
+            [NSNotificationCenter.defaultCenter addObserverForName:GCMouseDidConnectNotification object:nil
+                queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { @try { BKAttachMouse(); } @catch (id e) {} }];
+            [NSNotificationCenter.defaultCenter addObserverForName:GCKeyboardDidConnectNotification object:nil
+                queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { @try { BKAttachKey(); } @catch (id e) {} }];
+            [GCController startWirelessControllerDiscoveryWithCompletionHandler:nil];
+            BKAttachMouse();
+            BKAttachKey();
+            if (!gGcMouse && !gGcKey) BKHook();
+        } else {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                @try {
+                    if (!BKMonLive()) {
+                        BKLog(@"mon mudo -> fallback");
+                        BKHook();
+                        [GCController startWirelessControllerDiscoveryWithCompletionHandler:nil];
+                        BKAttachMouse();
+                        BKAttachKey();
+                    }
+                } @catch (id e) {}
+            });
+        }
+        BKLog(@"ensure 5 mon:%d mouse:%d key:%d hook:%d", gMon != NULL, gGcMouse, gGcKey, gHook);
 
         void (^relay)(NSNotification *) = ^(NSNotification *n) {
             @try {

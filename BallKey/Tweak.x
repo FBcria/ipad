@@ -702,7 +702,7 @@ static BOOL BKMonitorStart(void)
         IOHIDEventSystemClientRef c = pClientCreate(kCFAllocatorDefault, 1, NULL);
         if (!c) { BKLog(@"mon create fail"); return NO; }
         NSArray *m = @[@{@"PrimaryUsagePage":@(1), @"PrimaryUsage":@(6)},
-                       @{@"PrimaryUsagePage":@(1), @"PrimaryUsage":@(2)},
+                       @{"PrimaryUsagePage":@(1), @"PrimaryUsage":@(2)},
                        @{@"PrimaryUsagePage":@(1), @"PrimaryUsage":@(1)}];
         if (pMonMatchMulti) pMonMatchMulti(c, (__bridge CFTypeRef)m);
         else for (NSDictionary *d in m) pMonMatch(c, (__bridge CFTypeRef)d);
@@ -2472,7 +2472,20 @@ static void BKInit(void)
         BKAlive();
         [NSTimer scheduledTimerWithTimeInterval:20 repeats:YES block:^(NSTimer *t) { BKAlive(); }];
         BKActivatorInstall();
+        if (![[NSFileManager defaultManager] fileExistsAtPath:
+              [BKStateDir() stringByAppendingPathComponent:@"enabled"]]) BKSetEnabled(YES);
         BKLog(@"ctor ok enabled:%d", gEnabled);
+        if (gEnabled) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1200 * NSEC_PER_MSEC)),
+                           dispatch_get_main_queue(), ^{
+                @try {
+                    BKEnsure();
+                    BKMenuOpen();
+                    BKTickFront();
+                    BKLog(@"auto open");
+                } @catch (id e) { BKLog(@"auto fail %@", e); }
+            });
+        }
     } @catch (id e) {}
 
     if (![[NSFileManager defaultManager] fileExistsAtPath:BK_SAFE])

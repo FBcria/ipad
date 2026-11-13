@@ -96,7 +96,19 @@ jobs:
         run: |
           set -e
           make -C "${{ steps.mk.outputs.dir }}" clean
-          make -C "${{ steps.mk.outputs.dir }}" package FINALPACKAGE=1
+          make -C "${{ steps.mk.outputs.dir }}" package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+
+      - name: Conferir layout do pacote
+        run: |
+          set -e
+          DEB=$(ls "${{ steps.mk.outputs.dir }}"/packages/*.deb | head -1)
+          test -n "$DEB" || { echo "deb nao gerado"; exit 1; }
+          echo "pacote: $DEB"
+          dpkg-deb -f "$DEB" Architecture
+          dpkg-deb -c "$DEB" | head -30
+          dpkg-deb -c "$DEB" | grep -q './var/jb/' || { echo "pacote fora do layout rootless (rootfs/ ou raiz)"; exit 1; }
+          if dpkg-deb -c "$DEB" | grep -q './rootfs/'; then echo "prefixo rootfs/ presente"; exit 1; fi
+          echo "layout rootless ok"
 
       - name: Build app instalador
         run: |

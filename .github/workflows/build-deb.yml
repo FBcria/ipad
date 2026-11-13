@@ -74,6 +74,19 @@ jobs:
             exit 1
           fi
 
+      - name: Normalizar control e esquema
+        run: |
+          set -e
+          D="${{ steps.mk.outputs.dir }}"
+          echo "--- control antes ---"
+          cat "$D/control"
+          sed -i 's/^Architecture:.*/Architecture: iphoneos-arm/' "$D/control"
+          grep -q '^Architecture: iphoneos-arm$' "$D/control" || echo "Architecture: iphoneos-arm" >> "$D/control"
+          echo "--- control depois ---"
+          cat "$D/control"
+          echo "--- esquema no Makefile ---"
+          grep -n 'THEOS_PACKAGE_SCHEME' "$D/Makefile" || echo "(nenhum)"
+
       - name: Versão do control
         id: ver
         run: |
@@ -86,9 +99,10 @@ jobs:
       - name: Build
         run: |
           set -e
-          make -C "${{ steps.mk.outputs.dir }}" clean
-          make -C "${{ steps.mk.outputs.dir }}" package FINALPACKAGE=1
-          
+          D="${{ steps.mk.outputs.dir }}"
+          make -C "$D" clean
+          make -C "$D" package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=
+
       - name: Conferir layout do pacote
         run: |
           set -e
@@ -103,6 +117,8 @@ jobs:
           fi
           echo "$LIST" | grep -qE '^\.?/?Library/MobileSubstrate/DynamicLibraries/' \
             || { echo "dylib fora de Library/MobileSubstrate"; exit 1; }
+          dpkg-deb -f "$DEB" Architecture | grep -qx 'iphoneos-arm' \
+            || { echo "arquitetura diferente de iphoneos-arm"; exit 1; }
           echo "layout rootful ok"
 
       - name: Build app instalador
@@ -110,7 +126,7 @@ jobs:
           set -e
           test -f BallKeyApp/Makefile || { echo "BallKeyApp ausente"; exit 1; }
           make -C BallKeyApp clean
-          make -C BallKeyApp FINALPACKAGE=1
+          make -C BallKeyApp FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=
 
       - name: Empacotar tipa
         run: |

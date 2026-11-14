@@ -1,9 +1,12 @@
-TARGET := iphone:clang:latest:14.0
-ARCHS := arm64 arm64e
+TARGET := iphone:clang:16.5:13.0
+ARCHS := arm64
+
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME := BallKey
-BallKey_FILES := Tweak.x
-BallKey_CFLAGS := -fobjc-arc -Wno-deprecated-declarations
-BallKey_FRAMEWORKS := UIKit Foundation GameController
-include $(THEOS_MAKE_PATH)/tweak.mk
+LIBRARY_NAME := ballkey
+ballkey_FILES := Tweak.x
+ballkey_CFLAGS := -fobjc-arc -O2 -Wno-deprecated-declarations -Wno-unused-parameter
+ballkey_FRAMEWORKS := UIKit Foundation GameController
+ballkey_LDFLAGS := -Wl,-install_name,@rpath/libballkey.dylib
+
+include $(THEOS_MAKE_PATH)/library.mk

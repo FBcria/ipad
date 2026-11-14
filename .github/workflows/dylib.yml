@@ -1,0 +1,30 @@
+name: dylib
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Randomblock1/theos-action@v1
+        with:
+          theos-sdks: 'https://github.com/theos/sdks'
+      - name: Compilar
+        run: |
+          cd BallKey
+          make clean
+          make FINALPACKAGE=1
+      - name: Assinar e publicar
+        run: |
+          cp BallKey/.theos/obj/arm64/libballkey.dylib ./libballkey.dylib
+          "$THEOS/bin/ldid" -S ./libballkey.dylib
+          file ./libballkey.dylib
+          gh release delete dylib --yes --cleanup-tag || true
+          gh release create dylib ./libballkey.dylib -t "dylib" -n "build $(date -u +%FT%TZ)"
+        env:
+          GH_TOKEN: ${{ github.token }}

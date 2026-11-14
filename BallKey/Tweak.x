@@ -8,6 +8,9 @@
 
 #define BK_CONFIG "/var/mobile/Documents/ballkey.json"
 
+// o header vendor não declara este campo; valor segue a ordem de IOHIDEventTypes.h
+#define BK_FIELD_DISPLAY_INTEGRATED (kIOHIDEventFieldDigitizer | 0x0019)
+
 @interface UIApplication (BKPrivate)
 - (void)_enqueueHIDEvent:(IOHIDEventRef)event;
 @end
@@ -25,7 +28,6 @@ static UIStackView *gStack;
 
 static BOOL gEnabled = YES;
 static BOOL gPanelOpen = YES;
-static BOOL gMouseLook = YES;
 static CGFloat gSensitivity = 1.6;
 
 static NSMutableDictionary *gCapture;
@@ -36,13 +38,15 @@ static CGPoint gPointerPos;
 #pragma mark - Toque
 
 static void BKInject(CGPoint p, BOOL down, uint32_t finger) {
+    // (allocator, timeStamp, type, index, identity, eventMask, buttonMask,
+    //  x, y, z, tipPressure, barrelPressure, range, touch, options)
     IOHIDEventRef ev = IOHIDEventCreateDigitizerEvent(
         kCFAllocatorDefault, mach_absolute_time(),
-        kIOHIDDigitizerTransducerTypeHand, 0, finger, 0,
-        down ? kIOHIDDigitizerEventTouch : 0, down, 0,
-        p.x, p.y, 0, 0, 0, 0, 0);
+        kIOHIDDigitizerTransducerTypeHand, 0, finger,
+        down ? kIOHIDDigitizerEventTouch : 0, down,
+        p.x, p.y, 0, 0, 0, 1, down, 0);
     if (!ev) return;
-    IOHIDEventSetIntegerValue(ev, kIOHIDEventFieldDigitizerIsDisplayIntegrated, 1);
+    IOHIDEventSetIntegerValue(ev, BK_FIELD_DISPLAY_INTEGRATED, 1);
     [[UIApplication sharedApplication] _enqueueHIDEvent:ev];
     CFRelease(ev);
 }
@@ -164,7 +168,7 @@ static void BKRefresh(void) {
         del.frame = CGRectMake(190, 2, 30, 26);
         [del setTitle:@"×" forState:UIControlStateNormal];
         del.tag = [gBinds indexOfObject:b];
-        [del addTarget:(id)gHUD.rootViewController action:@selector(bkDelete:) forControlEvents:UIControlEventTouchUpInside];
+        [del addTarget:gHUD.rootViewController action:@selector(bkDelete:) forControlEvents:UIControlEventTouchUpInside];
         [row addSubview:del];
 
         row.frame = CGRectMake(0, 0, 220, 30);
@@ -181,6 +185,9 @@ static void BKTogglePanel(void) {
     BKSave();
 }
 
+@interface BKRoot : UIViewController
+@end
+
 #pragma mark - Instalação do HUD
 
 static void BKInstallHUD(void) {
@@ -189,18 +196,16 @@ static void BKInstallHUD(void) {
     UIWindow *w = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     w.windowLevel = UIWindowLevelAlert - 1;
     w.backgroundColor = UIColor.clearColor;
-    UIViewController *vc = [UIViewController new];
+    BKRoot *vc = [BKRoot new];
     vc.view.backgroundColor = UIColor.clearColor;
     w.rootViewController = vc;
     gHUD = w;
     gRootView = vc.view;
 
-    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:(id)w.rootViewController
-                                                                         action:@selector(bkTap:)];
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:vc action:@selector(bkTap:)];
     tap.cancelsTouchesInView = NO;
     [gRootView addGestureRecognizer:tap];
 
-    // ponteiro do mouse
     gPointer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 14, 14)];
     gPointer.backgroundColor = [UIColor colorWithRed:1 green:0.2 blue:0.3 alpha:0.85];
     gPointer.layer.cornerRadius = 7;
@@ -210,7 +215,6 @@ static void BKInstallHUD(void) {
     gPointerPos = CGPointMake(UIScreen.mainScreen.bounds.size.width / 2,
                               UIScreen.mainScreen.bounds.size.height / 2);
 
-    // painel
     gPanel = [[UIView alloc] initWithFrame:CGRectMake(16, 60, 260, 340)];
     gPanel.backgroundColor = [UIColor colorWithWhite:0.05 alpha:0.88];
     gPanel.layer.cornerRadius = 12;
@@ -234,26 +238,26 @@ static void BKInstallHUD(void) {
     power.frame = CGRectMake(150, 8, 100, 30);
     [power setTitle:@"Ligar/Desligar" forState:UIControlStateNormal];
     power.titleLabel.font = [UIFont systemFontOfSize:11];
-    [power addTarget:(id)w.rootViewController action:@selector(bkPower:) forControlEvents:UIControlEventTouchUpInside];
+    [power addTarget:vc action:@selector(bkPower:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:power];
 
     UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
     close.frame = CGRectMake(228, 6, 26, 26);
     [close setTitle:@"–" forState:UIControlStateNormal];
-    [close addTarget:(id)w.rootViewController action:@selector(bkToggle:) forControlEvents:UIControlEventTouchUpInside];
+    [close addTarget:vc action:@selector(bkToggle:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:close];
 
     UIButton *add = [UIButton buttonWithType:UIButtonTypeSystem];
     add.frame = CGRectMake(14, 52, 110, 30);
     [add setTitle:@"+ bind" forState:UIControlStateNormal];
-    [add addTarget:(id)w.rootViewController action:@selector(bkAdd:) forControlEvents:UIControlEventTouchUpInside];
+    [add addTarget:vc action:@selector(bkAdd:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:add];
 
     UIButton *sens = [UIButton buttonWithType:UIButtonTypeSystem];
     sens.frame = CGRectMake(130, 52, 116, 30);
     [sens setTitle:@"Sensib. 1.6" forState:UIControlStateNormal];
     sens.titleLabel.font = [UIFont systemFontOfSize:11];
-    [sens addTarget:(id)w.rootViewController action:@selector(bkSens:) forControlEvents:UIControlEventTouchUpInside];
+    [sens addTarget:vc action:@selector(bkSens:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:sens];
 
     UIScrollView *sv = [[UIScrollView alloc] initWithFrame:CGRectMake(14, 90, 232, 236)];
@@ -267,13 +271,11 @@ static void BKInstallHUD(void) {
 
     [w makeKeyAndVisible];
     w.hidden = NO;
+    gPanel.hidden = !gPanelOpen;
     BKRefresh();
 }
 
-#pragma mark - Handlers
-
-@interface BKRoot : UIViewController
-@end
+#pragma mark - Ações
 
 @implementation BKRoot
 
@@ -324,7 +326,7 @@ static void BKInstallHUD(void) {
 
 #pragma mark - Entrada
 
-static void BKKeyEvent(GCKeyCode code, BOOL pressed) {
+static void BKKeyEvent(CFIndex code, BOOL pressed) {
     int c = (int)code;
 
     if (pressed && gCapture) {
@@ -345,33 +347,35 @@ static void BKKeyEvent(GCKeyCode code, BOOL pressed) {
 }
 
 static void BKInstallInput(void) {
-    GCKeyboard *kb = GCKeyboard.coalescedKeyboard;
-    if (kb) {
-        kb.keyboardInput.keyboardInputHandler = ^(GCKeyboardInput *k, GCControllerButtonInput *btn,
-                                                  GCKeyCode code, BOOL pressed) {
-            BKKeyEvent(code, pressed);
-        };
-    }
+    if (@available(iOS 14.0, *)) {
+        GCKeyboard *kb = GCKeyboard.coalescedKeyboard;
+        if (kb) {
+            kb.keyboardInput.keyChangedHandler = ^(GCKeyboardInput *k, GCControllerButtonInput *btn,
+                                                   GCKeyCode code, BOOL pressed) {
+                BKKeyEvent((CFIndex)code, pressed);
+            };
+        }
 
-    GCMouse *m = GCMouse.current;
-    if (m) {
-        m.mouseInput.mouseMovedHandler = ^(GCMouseInput *mi, float dx, float dy) {
-            if (!gEnabled) return;
-            CGSize s = UIScreen.mainScreen.bounds.size;
-            gPointerPos.x += dx * gSensitivity;
-            gPointerPos.y += dy * gSensitivity;
-            gPointerPos.x = MAX(0, MIN(s.width, gPointerPos.x));
-            gPointerPos.y = MAX(0, MIN(s.height, gPointerPos.y));
-            gPointer.hidden = NO;
-            gPointer.center = gPointerPos;
-        };
-        m.mouseInput.leftButton.pressedChangedHandler = ^(GCControllerButtonInput *btn, float v, BOOL pressed) {
-            if (!gEnabled) return;
-            BKInject(gPointerPos, pressed, 999);
-        };
-        m.mouseInput.rightButton.pressedChangedHandler = ^(GCControllerButtonInput *btn, float v, BOOL pressed) {
-            if (pressed) BKTogglePanel();
-        };
+        GCMouse *m = GCMouse.current;
+        if (m) {
+            m.mouseInput.mouseMovedHandler = ^(GCMouseInput *mi, float dx, float dy) {
+                if (!gEnabled) return;
+                CGSize s = UIScreen.mainScreen.bounds.size;
+                gPointerPos.x += dx * gSensitivity;
+                gPointerPos.y += dy * gSensitivity;
+                gPointerPos.x = MAX(0, MIN(s.width, gPointerPos.x));
+                gPointerPos.y = MAX(0, MIN(s.height, gPointerPos.y));
+                gPointer.hidden = NO;
+                gPointer.center = gPointerPos;
+            };
+            m.mouseInput.leftButton.pressedChangedHandler = ^(GCControllerButtonInput *btn, float v, BOOL pressed) {
+                if (!gEnabled) return;
+                BKInject(gPointerPos, pressed, 999);
+            };
+            m.mouseInput.rightButton.pressedChangedHandler = ^(GCControllerButtonInput *btn, float v, BOOL pressed) {
+                if (pressed) BKTogglePanel();
+            };
+        }
     }
 }
 
@@ -400,8 +404,10 @@ static void BKInstallInput(void) {
                 usingBlock:^(NSNotification *n) {
         BKReleaseAll();
     }];
-    [nc addObserverForName:GCKeyboardDidConnectNotification object:nil queue:nil
-                usingBlock:^(NSNotification *n) {
-        dispatch_async(dispatch_get_main_queue(), ^{ BKInstallInput(); });
-    }];
+    if (@available(iOS 14.0, *)) {
+        [nc addObserverForName:GCKeyboardDidConnectNotification object:nil queue:nil
+                    usingBlock:^(NSNotification *n) {
+            dispatch_async(dispatch_get_main_queue(), ^{ BKInstallInput(); });
+        }];
+    }
 }

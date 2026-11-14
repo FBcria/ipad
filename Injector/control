@@ -1,0 +1,9 @@
+Package: com.wjf.ballkeyinjector
+Name: BallKey
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: Injetor do painel BallKey no Free Fire
+Maintainer: wjf
+Author: wjf
+Section: Utilities
+Depends: firmware (>= 13.0)

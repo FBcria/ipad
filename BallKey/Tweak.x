@@ -44,7 +44,7 @@ static void (*pSchedule)(BKClient, CFRunLoopRef, CFStringRef);
 static uint64_t (*pGetSender)(BKEvent);
 static int (*pGetType)(BKEvent);
 static int64_t (*pGetInt)(BKEvent, uint32_t);
-static BKEvent (*pCreateFinger)(CFAllocatorRef, AbsoluteTime, uint32_t, uint32_t, uint32_t,
+static BKEvent (*pCreateFinger)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t,
                                 uint32_t, double, double, double, Boolean, Boolean, Boolean);
 static void (*pSetSender)(BKEvent, uint64_t);
 
@@ -72,6 +72,10 @@ enum { kTypeKeyboard = 3 };
 enum { kDigitizerRange = 0x01, kDigitizerTouch = 0x02, kDigitizerPosition = 0x04 };
 static const uint32_t kFieldKeyboardUsage = 0x00030001;
 static const uint32_t kFieldKeyboardDown  = 0x00030002;
+
+@interface UIApplication (BKPrivate)
+- (void)_enqueueHIDEvent:(id)event;
+@end
 
 #pragma mark - Declarações
 
@@ -114,9 +118,9 @@ static UIApplication *BKApp(void) { return UIApplication.sharedApplication; }
 static BKClient gClient;
 static BOOL gMonLive, gHookOn, gEnabled;
 static NSUInteger gEvCount, gKeyCount;
-static NSMutableDictionary<NSString *, NSString *> *gKeyMap;   // usage -> ação
-static NSMutableDictionary<NSString *, NSValue *> *gPoints;    // ação -> ponto
-static NSMutableDictionary<NSString *, NSNumber *> *gHeld;     // ação -> ident
+static NSMutableDictionary<NSString *, NSString *> *gKeyMap;
+static NSMutableDictionary<NSString *, NSValue *> *gPoints;
+static NSMutableDictionary<NSString *, NSNumber *> *gHeld;
 static uint32_t gIdent = 100, gClickIdent;
 static BOOL gClickDown;
 
@@ -141,7 +145,7 @@ static void BKSendTouch(CGPoint norm, BOOL down, uint32_t ident) {
                                down ? 1 : 0, norm.x, norm.y, 0, true, down, false);
     if (!ev) return;
     if (pSetSender) pSetSender(ev, BK_SENDER);
-    [(id)BKApp() _enqueueHIDEvent:(id)ev];
+    [BKApp() _enqueueHIDEvent:(__bridge id)ev];
     CFRelease(ev);
     gEvCount++;
 }
@@ -173,20 +177,20 @@ static NSDictionary *BKDefaultKeys(void) {
 }
 
 static NSDictionary *BKDefaultPoints(void) {
-    return @{ @"Frente":     [NSValue valueWithCGPoint:CGPointMake(0.42, 0.80)],
-              @"Trás":       [NSValue valueWithCGPoint:CGPointMake(0.42, 0.93)],
-              @"Esquerda":   [NSValue valueWithCGPoint:CGPointMake(0.33, 0.86)],
-              @"Direita":    [NSValue valueWithCGPoint:CGPointMake(0.51, 0.86)],
-              @"Pular":      [NSValue valueWithCGPoint:CGPointMake(0.90, 0.62)],
-              @"Agachar":    [NSValue valueWithCGPoint:CGPointMake(0.90, 0.78)],
-              @"Recarregar": [NSValue valueWithCGPoint:CGPointMake(0.78, 0.88)],
-              @"Pegar":      [NSValue valueWithCGPoint:CGPointMake(0.66, 0.55)],
-              @"Porta":      [NSValue valueWithCGPoint:CGPointMake(0.72, 0.50)],
+    return @{ @"Frente":      [NSValue valueWithCGPoint:CGPointMake(0.42, 0.80)],
+              @"Trás":        [NSValue valueWithCGPoint:CGPointMake(0.42, 0.93)],
+              @"Esquerda":    [NSValue valueWithCGPoint:CGPointMake(0.33, 0.86)],
+              @"Direita":     [NSValue valueWithCGPoint:CGPointMake(0.51, 0.86)],
+              @"Pular":       [NSValue valueWithCGPoint:CGPointMake(0.90, 0.62)],
+              @"Agachar":     [NSValue valueWithCGPoint:CGPointMake(0.90, 0.78)],
+              @"Recarregar":  [NSValue valueWithCGPoint:CGPointMake(0.78, 0.88)],
+              @"Pegar":       [NSValue valueWithCGPoint:CGPointMake(0.66, 0.55)],
+              @"Porta":       [NSValue valueWithCGPoint:CGPointMake(0.72, 0.50)],
               @"Trocar arma": [NSValue valueWithCGPoint:CGPointMake(0.80, 0.72)],
-              @"Mira":       [NSValue valueWithCGPoint:CGPointMake(0.72, 0.80)],
-              @"Curar":      [NSValue valueWithCGPoint:CGPointMake(0.60, 0.88)],
-              @"Mochila":    [NSValue valueWithCGPoint:CGPointMake(0.68, 0.88)],
-              @"Mapa":       [NSValue valueWithCGPoint:CGPointMake(0.55, 0.12)] };
+              @"Mira":        [NSValue valueWithCGPoint:CGPointMake(0.72, 0.80)],
+              @"Curar":       [NSValue valueWithCGPoint:CGPointMake(0.60, 0.88)],
+              @"Mochila":     [NSValue valueWithCGPoint:CGPointMake(0.68, 0.88)],
+              @"Mapa":        [NSValue valueWithCGPoint:CGPointMake(0.55, 0.12)] };
 }
 
 static void BKLoadConfig(void) {
@@ -416,6 +420,8 @@ static void BKSaveConfig(void) {
     [self rebuild];
 }
 
+- (CGFloat)width { return self.body.bounds.size.width ?: self.bounds.size.width; }
+
 - (void)rebuild {
     for (UIView *v in self.body.subviews) [v removeFromSuperview];
     self.body.contentOffset = CGPointZero;
@@ -423,8 +429,6 @@ static void BKSaveConfig(void) {
     else if (self.tab == 1) [self buildSettings];
     else [self buildAbout];
 }
-
-- (CGFloat)width { return self.body.bounds.size.width ?: self.bounds.size.width; }
 
 - (void)buildMap {
     CGFloat y = 8, w = [self width];
@@ -658,7 +662,7 @@ static IMP gOrigEnqueue;
 
 static void BKEnqueue(id self, SEL _cmd, id event) {
     if (event && pGetType && pGetInt) {
-        BKEvent ev = (BKEvent)event;
+        BKEvent ev = (__bridge BKEvent)event;
         BOOL own = pGetSender && pGetSender(ev) == BK_SENDER;
         if (!own) {
             gEvCount++;
@@ -685,40 +689,42 @@ static void BKInstallHook(void) {
 #pragma mark - GameController
 
 static void BKStartGC(void) {
-    GCKeyboard *kbd = GCKeyboard.coalescedKeyboard;
-    if (kbd) {
-        kbd.keyboardInput.keyChangedHandler =
-            ^(GCKeyboardInput *input, GCControllerButtonInput *key, GCKeyCode code, BOOL pressed) {
-            (void)input; (void)key;
-            BKHandleUsage((uint32_t)code, pressed);
+    if (@available(iOS 14.0, *)) {
+        GCKeyboard *kbd = GCKeyboard.coalescedKeyboard;
+        if (kbd) {
+            kbd.keyboardInput.keyChangedHandler =
+                ^(GCKeyboardInput *input, GCControllerButtonInput *key, GCKeyCode code, BOOL pressed) {
+                (void)input; (void)key;
+                BKHandleUsage((uint32_t)code, pressed);
+            };
+        }
+        [NSNotificationCenter.defaultCenter addObserverForName:GCKeyboardDidConnectNotification
+                                                        object:nil queue:NSOperationQueue.mainQueue
+                                                    usingBlock:^(NSNotification *n) {
+            GCKeyboard *k = n.object;
+            k.keyboardInput.keyChangedHandler =
+                ^(GCKeyboardInput *input, GCControllerButtonInput *key, GCKeyCode code, BOOL pressed) {
+                (void)input; (void)key;
+                BKHandleUsage((uint32_t)code, pressed);
+            };
+        }];
+
+        void (^bindMouse)(GCMouse *) = ^(GCMouse *mouse) {
+            mouse.mouseInput.mouseMovedHandler = ^(GCMouseInput *in, float dx, float dy) {
+                (void)in;
+                [gContainer moveBy:dx dy:dy];
+            };
+            mouse.mouseInput.leftButton.pressedChangedHandler =
+                ^(GCControllerButtonInput *b, float v, BOOL pressed) { (void)b; (void)v; [gContainer click:pressed]; };
+            mouse.mouseInput.rightButton.pressedChangedHandler =
+                ^(GCControllerButtonInput *b, float v, BOOL pressed) { (void)b; (void)v; if (pressed) [gContainer clickRight]; };
         };
+
+        if (GCMouse.current) bindMouse(GCMouse.current);
+        [NSNotificationCenter.defaultCenter addObserverForName:GCMouseDidBecomeCurrentNotification
+                                                        object:nil queue:NSOperationQueue.mainQueue
+                                                    usingBlock:^(NSNotification *n) { bindMouse(n.object); }];
     }
-    [NSNotificationCenter.defaultCenter addObserverForName:GCKeyboardDidConnectNotification
-                                                    object:nil queue:NSOperationQueue.mainQueue
-                                                usingBlock:^(NSNotification *n) {
-        GCKeyboard *k = n.object;
-        k.keyboardInput.keyChangedHandler =
-            ^(GCKeyboardInput *input, GCControllerButtonInput *key, GCKeyCode code, BOOL pressed) {
-            (void)input; (void)key;
-            BKHandleUsage((uint32_t)code, pressed);
-        };
-    }];
-
-    void (^bindMouse)(GCMouse *) = ^(GCMouse *mouse) {
-        mouse.mouseInput.mouseMovedHandler = ^(GCMouseInput *in, float dx, float dy) {
-            (void)in;
-            [gContainer moveBy:dx dy:dy];
-        };
-        mouse.mouseInput.leftButton.pressedChangedHandler =
-            ^(GCControllerButtonInput *b, float v, BOOL pressed) { (void)b; (void)v; [gContainer click:pressed]; };
-        mouse.mouseInput.rightButton.pressedChangedHandler =
-            ^(GCControllerButtonInput *b, float v, BOOL pressed) { (void)b; (void)v; if (pressed) [gContainer clickRight]; };
-    };
-
-    if (GCMouse.current) bindMouse(GCMouse.current);
-    [NSNotificationCenter.defaultCenter addObserverForName:GCMouseDidBecomeCurrentNotification
-                                                    object:nil queue:NSOperationQueue.mainQueue
-                                                usingBlock:^(NSNotification *n) { bindMouse(n.object); }];
 }
 
 #pragma mark - Montagem

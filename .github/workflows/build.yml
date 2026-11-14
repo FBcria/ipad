@@ -98,7 +98,7 @@ jobs:
           set -e
           cd Injector
           make clean
-          make FINALPACKAGE=1
+          make package FINALPACKAGE=1
           ls -la .theos/_/Applications
 
       - name: Empacotar e assinar tipa

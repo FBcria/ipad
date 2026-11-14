@@ -186,7 +186,7 @@ static UIWindow *gBallWin, *gCursorWin; static UIView *gBall, *gCursor, *gCanvas
 static NSMutableArray *gMarkViews;
 static BOOL gMenuOpen, gEditOpen, gCursorOn, gGated, gFps, gFpsHeld;
 static BOOL gHidOk, gGcMouse, gGcKey, gCursorDown, gLastValid, gFront, gBuilt, gEnabled, gHook;
-static int gFpsIdx = -1, gSelIdx = -1, gInjecting, gPtrMask;
+static int gFpsIdx = -1, gSelIdx = -1, gInjecting, gPtrMask, gVisTries;
 static int gFingerOwner[BK_FINGERS]; static int gHoldKey[512];
 static double gCx, gCy, gLastX, gLastY;
 static double gFingerX[BK_FINGERS], gFingerY[BK_FINGERS];
@@ -248,6 +248,20 @@ static UIWindowScene *BKScene(void)
                 return (UIWindowScene *)s;
         for (UIScene *s in UIApplication.sharedApplication.connectedScenes)
             if ([s isKindOfClass:UIWindowScene.class]) return (UIWindowScene *)s;
+    } @catch (id e) {}
+    return nil;
+}
+// cena de qualquer janela existente (o jogo pode nao expor cena ativa)
+static UIWindowScene *BKAnyScene(void)
+{
+    UIWindowScene *sc = BKScene();
+    if (sc) return sc;
+    @try {
+        UIWindow *best = nil;
+        for (UIWindow *w in UIApplication.sharedApplication.windows) {
+            if (w.windowScene) { best = w; if (w.isKeyWindow) break; }
+        }
+        if (best.windowScene) return best.windowScene;
     } @catch (id e) {}
     return nil;
 }
@@ -392,9 +406,21 @@ static NSString *BKFrontApp(void)
     } @catch (id e) {}
     return nil;
 }
+static void BKEnsureScenes(void)
+{
+    if (!gBallWin && !gCursorWin) return;
+    UIWindowScene *sc = BKAnyScene();
+    if (!sc) return;
+    @try {
+        if (gBallWin && gBallWin.windowScene != sc) { gBallWin.windowScene = sc; BKLog(@"ball scene"); }
+        if (gCursorWin && gCursorWin.windowScene != sc) { gCursorWin.windowScene = sc; BKLog(@"cursor scene"); }
+    } @catch (id e) { BKLog(@"scene fail %@", e); }
+}
 static void BKTickFront(void)
 {
     @try {
+        if ((gBallWin && !gBallWin.windowScene) || (gCursorWin && !gCursorWin.windowScene)) BKEnsureScenes();
+
         NSString *f = BKFrontApp();
         BOOL on = YES;
         if (f.length) on = [f isEqualToString:BK_GAME] || [f isEqualToString:BK_GAMEMAX];
@@ -402,6 +428,12 @@ static void BKTickFront(void)
         gFront = on;
         if (gBallWin) gBallWin.hidden = !show;
         if (gCursorWin) gCursorWin.hidden = !(on && gCursorOn);
+
+        if (show && gBallWin && gBallWin.windowScene == nil && gVisTries < 6) {
+            gVisTries++;
+            BKLog(@"vis try %d", gVisTries);
+            [gBallWin makeKeyAndVisible];
+        }
         if (!show) {
             if (gMenuOpen) BKMenuClose();
             if (gEditOpen) [BKUI closeEditor];
@@ -888,7 +920,7 @@ static void BKFitStage(UIWindow *w, UIView *stg)
 
 static UIWindow *BKWin(UIWindowLevel lv, BOOL passThrough)
 {
-    UIWindowScene *sc = BKScene();
+    UIWindowScene *sc = BKAnyScene();
     CGRect sb = UIScreen.mainScreen.bounds;
     UIWindow *w = sc ? [[UIWindow alloc] initWithWindowScene:sc]
                      : [[UIWindow alloc] initWithFrame:sb];
@@ -1373,7 +1405,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
 
 - (void)present
 {
-    UIWindowScene *sc = BKScene();
+    UIWindowScene *sc = BKAnyScene();
     CGRect sb = UIScreen.mainScreen.bounds;
     _win = sc ? [[UIWindow alloc] initWithWindowScene:sc]
               : [[UIWindow alloc] initWithFrame:sb];
@@ -2040,7 +2072,7 @@ static UIImage *BKIcon(NSString *n, CGFloat sz, UIColor *c)
     CGSize s = BKSize();
     if (s.width < 40 || s.height < 40) s = CGSizeMake(414, 736);
 
-    UIWindowScene *sc = BKScene();
+    UIWindowScene *sc = BKAnyScene();
     CGRect sb = UIScreen.mainScreen.bounds;
     _win = sc ? [[UIWindow alloc] initWithWindowScene:sc]
               : [[UIWindow alloc] initWithFrame:sb];
@@ -2393,16 +2425,17 @@ static void BKEnsure(void)
     @try {
         BKLog(@"ensure 1");
         BKInstall();
-        BKLog(@"ensure 2 hid:%d sys:%d mon:%d", gHidOk, gSys != NULL, gMon != NULL);
+        BKLog(@"ensure 2 hid:%d sys:%d scenes:%lu", gHidOk, gSys != NULL,
+              (unsigned long)UIApplication.sharedApplication.connectedScenes.count);
 
         gBallWin = BKWin(UIWindowLevelAlert + 500, YES);
+        BKLog(@"ensure 3 ball scene:%d", gBallWin.windowScene != nil);
         gBallStage = BKStageIn(gBallWin);
         gBall = [[BKBallView alloc] initWithFrame:CGRectMake(0, 0, 56, 56)];
         gBall.center = CGPointMake(28, 44);
         gBall.backgroundColor = UIColor.clearColor;
         [gBall addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:gBall action:@selector(bkTap:)]];
         [gBallStage addSubview:gBall];
-        BKLog(@"ensure 3 ball");
 
         gCursorWin = BKWin(UIWindowLevelAlert + 600, YES);
         gCursorWin.userInteractionEnabled = NO;

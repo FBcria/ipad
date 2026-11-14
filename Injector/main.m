@@ -3,13 +3,15 @@
 #import <mach-o/dyld_images.h>
 #import <sys/sysctl.h>
 #import <dlfcn.h>
-#import <notify.h>
 
 static NSString *const kDir   = @"/var/mobile/Library/Caches/ballkey";
 static NSString *const kDylib = @"/var/mobile/Library/Caches/ballkey/libballkey.dylib";
-static NSString *const kURL   = @"https://github.com/SEU_USUARIO/SEU_REPO/releases/latest/download/libballkey.dylib";
-static NSString *const kBundleFF  = @"com.dts.freefireth";
-static NSString *const kBundleMax = @"com.dts.freefiremax";
+
+// Release com o asset libballkey.dylib anexado. Se não houver release, cai no raw do repo.
+static NSString *const kURLRelease = @"https://github.com/FBcria/ipad/releases/latest/download/libballkey.dylib";
+static NSString *const kURLRaw     = @"https://raw.githubusercontent.com/FBcria/ipad/main/BallKey/libballkey.dylib";
+static NSString *const kBundleFF   = @"com.dts.freefireth";
+static NSString *const kBundleMax  = @"com.dts.freefiremax";
 
 #pragma mark - PID
 
@@ -24,10 +26,7 @@ static pid_t BKFindPID(void) {
     size_t n = size / sizeof(struct kinfo_proc);
     for (size_t i = 0; i < n; i++) {
         const char *name = procs[i].kp_proc.p_comm;
-        if (!strcmp(name, "FreeFire") || !strcmp(name, "FreeFireMAX")) {
-            found = procs[i].kp_proc.p_pid;
-            break;
-        }
+        if (!strcmp(name, "FreeFire") || !strcmp(name, "FreeFireMAX")) { found = procs[i].kp_proc.p_pid; break; }
     }
     free(procs);
     return found;
@@ -36,7 +35,6 @@ static pid_t BKFindPID(void) {
 #pragma mark - Injeção
 
 static uint64_t BKRemoteAddress(task_t task, uint64_t localAddr) {
-    // slide do alvo a partir do dyld_all_image_infos; local deslizado de volta para o endereço não deslizado
     struct task_dyld_info dyldInfo = {0};
     mach_msg_type_number_t count = TASK_DYLD_INFO_COUNT;
     if (task_info(task, TASK_DYLD_INFO, (task_info_t)&dyldInfo, &count) != KERN_SUCCESS) return 0;
@@ -44,24 +42,22 @@ static uint64_t BKRemoteAddress(task_t task, uint64_t localAddr) {
     struct dyld_all_image_infos *remote = (struct dyld_all_image_infos *)dyldInfo.all_image_info_addr;
     struct dyld_all_image_infos local = {0};
     mach_vm_size_t readSize = 0;
-    if (mach_vm_read_overwrite(task, (mach_vm_address_t)remote,
-                               sizeof(local), (mach_vm_address_t)&local, &readSize) != KERN_SUCCESS)
-        return 0;
+    if (mach_vm_read_overwrite(task, (mach_vm_address_t)remote, sizeof(local),
+                               (mach_vm_address_t)&local, &readSize) != KERN_SUCCESS) return 0;
 
     uint64_t targetDyld = (uint64_t)local.dyldImageLoadAddress;
     uint64_t ourSlide = (uint64_t)_dyld_get_image_vmaddr_slide(0);
     uint64_t unslidDyld = (uint64_t)_dyld_get_image_header(0) - ourSlide;
     if (!targetDyld || !unslidDyld) return 0;
 
-    int64_t targetSlide = (int64_t)targetDyld - (int64_t)unslidDyld;
-    return localAddr + (uint64_t)targetSlide;
+    return localAddr + (uint64_t)((int64_t)targetDyld - (int64_t)unslidDyld);
 }
 
 static kern_return_t BKInject(pid_t pid, const char *path, NSString **err) {
     task_t task = MACH_PORT_NULL;
     kern_return_t kr = task_for_pid(mach_task_self(), pid, &task);
     if (kr != KERN_SUCCESS) {
-        *err = [NSString stringWithFormat:@"task_for_pid falhou (0x%x). O jogo está aberto?", kr];
+        *err = [NSString stringWithFormat:@"task_for_pid falhou (0x%x). O Free Fire foi instalado pelo TrollStore?", kr];
         return kr;
     }
 
@@ -69,17 +65,16 @@ static kern_return_t BKInject(pid_t pid, const char *path, NSString **err) {
     uint64_t exitAddr   = BKRemoteAddress(task, (uint64_t)dlsym(RTLD_DEFAULT, "pthread_exit"));
     if (!dlopenAddr || !exitAddr) {
         mach_port_deallocate(mach_task_self(), task);
-        *err = @"não consegui resolver os símbolos no alvo";
+        *err = @"não resolvi os símbolos no alvo";
         return KERN_FAILURE;
     }
 
     size_t pathLen = strlen(path) + 1;
-    mach_vm_address_t code = 0, stack = 0;
     vm_size_t pageSize = 0x4000;
+    mach_vm_address_t code = 0, stack = 0;
 
     kr = mach_vm_allocate(task, &code, pageSize * 2, VM_FLAGS_ANYWHERE);
     if (kr != KERN_SUCCESS) { mach_port_deallocate(mach_task_self(), task); *err = @"mach_vm_allocate (código)"; return kr; }
-
     kr = mach_vm_allocate(task, &stack, pageSize * 2, VM_FLAGS_ANYWHERE);
     if (kr != KERN_SUCCESS) { mach_vm_deallocate(task, code, pageSize * 2); mach_port_deallocate(mach_task_self(), task); *err = @"mach_vm_allocate (pilha)"; return kr; }
 
@@ -87,11 +82,8 @@ static kern_return_t BKInject(pid_t pid, const char *path, NSString **err) {
     kr = mach_vm_write(task, pathAddr, (vm_offset_t)path, (mach_msg_type_number_t)pathLen);
     if (kr != KERN_SUCCESS) { *err = @"mach_vm_write (caminho)"; goto fail; }
 
-    // stub arm64: ldr x0,path / mov x1,#2 / ldr x16,dlopen / blr x16 / mov x0,#0 / ldr x16,exit / blr x16 / b .
-    uint32_t stub[] = {
-        0x58000100, 0xD2800041, 0x58000110, 0xD63F0200,
-        0xD2800000, 0x580000F0, 0xD63F0200, 0x14000000
-    };
+    uint32_t stub[] = { 0x58000100, 0xD2800041, 0x58000110, 0xD63F0200,
+                        0xD2800000, 0x580000F0, 0xD63F0200, 0x14000000 };
     uint64_t literals[] = { (uint64_t)pathAddr, dlopenAddr, exitAddr };
 
     kr = mach_vm_write(task, code, (vm_offset_t)stub, sizeof(stub));
@@ -108,8 +100,7 @@ static kern_return_t BKInject(pid_t pid, const char *path, NSString **err) {
     state.__lr = 0;
 
     thread_act_t thread = MACH_PORT_NULL;
-    kr = thread_create_running(task, ARM_THREAD_STATE64, (thread_state_t)&state,
-                               ARM_THREAD_STATE64_COUNT, &thread);
+    kr = thread_create_running(task, ARM_THREAD_STATE64, (thread_state_t)&state, ARM_THREAD_STATE64_COUNT, &thread);
     if (kr != KERN_SUCCESS) { *err = [NSString stringWithFormat:@"thread_create_running (0x%x)", kr]; goto fail; }
 
     mach_port_deallocate(mach_task_self(), task);
@@ -120,6 +111,23 @@ fail:
     mach_vm_deallocate(task, stack, pageSize * 2);
     mach_port_deallocate(mach_task_self(), task);
     return kr;
+}
+
+#pragma mark - Download
+
+static BOOL BKDownloadDylib(NSString **err) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    [fm createDirectoryAtPath:kDir withIntermediateDirectories:YES attributes:nil error:nil];
+
+    NSDate *mod = [fm attributesOfItemAtPath:kDylib error:nil][NSFileModificationDate];
+    if (mod && -[mod timeIntervalSinceNow] < 60 * 60 * 12) return YES;
+
+    for (NSString *u in @[kURLRelease, kURLRaw]) {
+        NSData *data = [NSData dataWithContentsOfURL:[NSURL URLWithString:u]];
+        if (data.length > 4096 && [data writeToFile:kDylib atomically:YES]) return YES;
+    }
+    *err = @"download do dylib falhou";
+    return NO;
 }
 
 #pragma mark - UI
@@ -135,7 +143,6 @@ fail:
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.10 alpha:1];
-    self.title = @"BallKey";
 
     UILabel *title = [UILabel new];
     title.text = @"BALLKEY";
@@ -180,10 +187,11 @@ fail:
 }
 
 - (void)refresh {
+    if (!self.start.enabled && !self.status.text.length) return;
     pid_t pid = BKFindPID();
     BOOL have = [[NSFileManager defaultManager] fileExistsAtPath:kDylib];
     self.status.text = pid
-        ? [NSString stringWithFormat:@"Jogo aberto (PID %d).\nDylib %@.", pid, have ? @"pronta" : @"ausente"]
+        ? [NSString stringWithFormat:@"Jogo aberto (PID %d).\nDylib %@.", pid, have ? @"em cache" : @"será baixada"]
         : @"Jogo fechado.\nAbra o Free Fire, volte aqui e toque em START.";
     self.start.enabled = pid != 0;
     self.start.alpha = pid ? 1.0 : 0.45;
@@ -194,15 +202,19 @@ fail:
     if (!pid) { [self refresh]; return; }
     self.start.enabled = NO;
     self.status.text = @"Preparando...";
+
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        [self ensureDylib];
         NSString *err = nil;
+        if (!BKDownloadDylib(&err)) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.status.text = err; self.start.enabled = YES;
+            });
+            return;
+        }
         kern_return_t kr = BKInject(pid, kDylib.fileSystemRepresentation, &err);
         dispatch_async(dispatch_get_main_queue(), ^{
             if (kr == KERN_SUCCESS) {
                 self.status.text = @"Injetado. Voltando ao jogo...";
-                [[NSFileManager defaultManager] createDirectoryAtPath:kDir withIntermediateDirectories:YES attributes:nil error:nil];
-                [[NSUserDefaults standardUserDefaults] setObject:[NSDate date] forKey:@"lastInject"];
                 [self performSelector:@selector(backToGame) withObject:nil afterDelay:0.8];
             } else {
                 self.status.text = err ?: @"falhou";
@@ -215,36 +227,24 @@ fail:
 - (void)backToGame {
     Class ws = NSClassFromString(@"LSApplicationWorkspace");
     id workspace = [ws performSelector:@selector(defaultWorkspace)];
+    if (!workspace) return;
+    NSString *target = BKFindPID() ? kBundleFF : kBundleMax;
     if ([workspace respondsToSelector:@selector(openApplicationWithBundleID:)])
-        [workspace performSelector:@selector(openApplicationWithBundleID:) withObject:kBundleFF];
-    else
-        [workspace performSelector:@selector(openApplicationWithBundleID:) withObject:kBundleMax];
-}
-
-- (void)ensureDylib {
-    NSFileManager *fm = NSFileManager.defaultManager;
-    [fm createDirectoryAtPath:kDir withIntermediateDirectories:YES attributes:nil error:nil];
-
-    NSDictionary *attrs = [fm attributesOfItemAtPath:kDylib error:nil];
-    NSDate *local = attrs[NSFileModificationDate];
-    if (local && -[local timeIntervalSinceNow] < 60 * 60 * 12) return;  // cache de 12h
-
-    NSURL *url = [NSURL URLWithString:kURL];
-    NSData *data = [NSData dataWithContentsOfURL:url];
-    if (data.length > 4096) [data writeToFile:kDylib atomically:YES];
+        [workspace performSelector:@selector(openApplicationWithBundleID:) withObject:target];
 }
 
 @end
 
 @interface BKDelegate : UIResponder <UIApplicationDelegate>
+@property (nonatomic, strong) UIWindow *window;
 @end
 
 @implementation BKDelegate
-- (UIWindow *)window { return _window; }
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
-    _window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    _window.rootViewController = [[UINavigationController alloc] initWithRootViewController:[BKVC new]];
-    [_window makeKeyAndVisible];
+    (void)app; (void)opts;
+    self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    self.window.rootViewController = [[UINavigationController alloc] initWithRootViewController:[BKVC new]];
+    [self.window makeKeyAndVisible];
     return YES;
 }
 @end

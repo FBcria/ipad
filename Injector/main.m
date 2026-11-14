@@ -1,6 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <mach/mach.h>
-#import <mach/mach_vm.h>
+#import <mach/vm_map.h>
 #import <mach-o/dyld.h>
 #import <mach-o/dyld_images.h>
 #import <sys/sysctl.h>
@@ -39,11 +39,10 @@ static uint64_t BKRemoteAddress(task_t task, uint64_t localAddr) {
     mach_msg_type_number_t count = TASK_DYLD_INFO_COUNT;
     if (task_info(task, TASK_DYLD_INFO, (task_info_t)&dyldInfo, &count) != KERN_SUCCESS) return 0;
 
-    struct dyld_all_image_infos *remote = (struct dyld_all_image_infos *)dyldInfo.all_image_info_addr;
+    vm_address_t remote = (vm_address_t)dyldInfo.all_image_info_addr;
     struct dyld_all_image_infos local = {0};
-    mach_vm_size_t readSize = 0;
-    if (mach_vm_read_overwrite(task, (mach_vm_address_t)remote, sizeof(local),
-                               (mach_vm_address_t)&local, &readSize) != KERN_SUCCESS) return 0;
+    vm_size_t readSize = 0;
+    if (vm_read_overwrite(task, remote, sizeof(local), (vm_address_t)&local, &readSize) != KERN_SUCCESS) return 0;
 
     uint64_t targetDyld = (uint64_t)local.dyldImageLoadAddress;
     uint64_t ourSlide = (uint64_t)_dyld_get_image_vmaddr_slide(0);
@@ -71,28 +70,28 @@ static kern_return_t BKInject(pid_t pid, const char *path, NSString **err) {
 
     size_t pathLen = strlen(path) + 1;
     vm_size_t pageSize = 0x4000;
-    mach_vm_address_t code = 0, stack = 0;
+    vm_address_t code = 0, stack = 0;
 
-    kr = mach_vm_allocate(task, &code, pageSize * 2, VM_FLAGS_ANYWHERE);
-    if (kr != KERN_SUCCESS) { mach_port_deallocate(mach_task_self(), task); *err = @"mach_vm_allocate (codigo)"; return kr; }
-    kr = mach_vm_allocate(task, &stack, pageSize * 2, VM_FLAGS_ANYWHERE);
-    if (kr != KERN_SUCCESS) { mach_vm_deallocate(task, code, pageSize * 2); mach_port_deallocate(mach_task_self(), task); *err = @"mach_vm_allocate (pilha)"; return kr; }
+    kr = vm_allocate(task, &code, pageSize * 2, VM_FLAGS_ANYWHERE);
+    if (kr != KERN_SUCCESS) { mach_port_deallocate(mach_task_self(), task); *err = @"vm_allocate (codigo)"; return kr; }
+    kr = vm_allocate(task, &stack, pageSize * 2, VM_FLAGS_ANYWHERE);
+    if (kr != KERN_SUCCESS) { vm_deallocate(task, code, pageSize * 2); mach_port_deallocate(mach_task_self(), task); *err = @"vm_allocate (pilha)"; return kr; }
 
-    mach_vm_address_t pathAddr = code + 0x100;
-    kr = mach_vm_write(task, pathAddr, (vm_offset_t)path, (mach_msg_type_number_t)pathLen);
-    if (kr != KERN_SUCCESS) { *err = @"mach_vm_write (caminho)"; goto fail; }
+    vm_address_t pathAddr = code + 0x100;
+    kr = vm_write(task, pathAddr, (vm_address_t)path, (mach_msg_type_number_t)pathLen);
+    if (kr != KERN_SUCCESS) { *err = @"vm_write (caminho)"; goto fail; }
 
     uint32_t stub[] = { 0x58000100, 0xD2800041, 0x58000110, 0xD63F0200,
                         0xD2800000, 0x580000F0, 0xD63F0200, 0x14000000 };
     uint64_t literals[] = { (uint64_t)pathAddr, dlopenAddr, exitAddr };
 
-    kr = mach_vm_write(task, code, (vm_offset_t)stub, sizeof(stub));
-    if (kr != KERN_SUCCESS) { *err = @"mach_vm_write (stub)"; goto fail; }
-    kr = mach_vm_write(task, code + 0x20, (vm_offset_t)literals, sizeof(literals));
-    if (kr != KERN_SUCCESS) { *err = @"mach_vm_write (literais)"; goto fail; }
+    kr = vm_write(task, code, (vm_address_t)stub, sizeof(stub));
+    if (kr != KERN_SUCCESS) { *err = @"vm_write (stub)"; goto fail; }
+    kr = vm_write(task, code + 0x20, (vm_address_t)literals, sizeof(literals));
+    if (kr != KERN_SUCCESS) { *err = @"vm_write (literais)"; goto fail; }
 
-    mach_vm_protect(task, code, pageSize * 2, FALSE, VM_PROT_READ | VM_PROT_EXECUTE | VM_PROT_WRITE);
-    mach_vm_protect(task, stack, pageSize * 2, FALSE, VM_PROT_READ | VM_PROT_WRITE);
+    vm_protect(task, code, pageSize * 2, FALSE, VM_PROT_READ | VM_PROT_EXECUTE | VM_PROT_WRITE);
+    vm_protect(task, stack, pageSize * 2, FALSE, VM_PROT_READ | VM_PROT_WRITE);
 
     arm_thread_state64_t state = {0};
     state.__pc = code;
@@ -107,8 +106,8 @@ static kern_return_t BKInject(pid_t pid, const char *path, NSString **err) {
     return KERN_SUCCESS;
 
 fail:
-    mach_vm_deallocate(task, code, pageSize * 2);
-    mach_vm_deallocate(task, stack, pageSize * 2);
+    vm_deallocate(task, code, pageSize * 2);
+    vm_deallocate(task, stack, pageSize * 2);
     mach_port_deallocate(mach_task_self(), task);
     return kr;
 }

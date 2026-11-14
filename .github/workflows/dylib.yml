@@ -27,6 +27,7 @@ jobs:
       - name: Assinar
         run: |
           set -e
+
           DYLIB=$(find BallKey/.theos -type f -name '*.dylib' | head -n 1)
           if [ -z "$DYLIB" ]; then
             echo "::error::nenhum dylib foi gerado"
@@ -35,7 +36,25 @@ jobs:
           fi
           echo "dylib gerado em: $DYLIB"
           cp "$DYLIB" ./libballkey.dylib
-          "$THEOS/bin/ldid" -S ./libballkey.dylib
+
+          LDID=""
+          for c in "${THEOS:-}/bin/ldid" "$(command -v ldid || true)" /opt/homebrew/bin/ldid /usr/local/bin/ldid; do
+            if [ -n "$c" ] && [ -x "$c" ]; then LDID="$c"; break; fi
+          done
+          if [ -z "$LDID" ]; then
+            echo "ldid nao encontrado, tentando instalar"
+            brew install ldid >/dev/null 2>&1 || true
+            LDID="$(command -v ldid || true)"
+          fi
+
+          if [ -n "$LDID" ]; then
+            echo "assinando com $LDID"
+            "$LDID" -S ./libballkey.dylib
+          else
+            echo "::warning::ldid indisponivel, usando codesign ad-hoc"
+            codesign -s - -f ./libballkey.dylib
+          fi
+
           ls -lh ./libballkey.dylib
           file ./libballkey.dylib
           codesign -dv ./libballkey.dylib 2>&1 || true

@@ -6,10 +6,8 @@
 
 static NSString *const kDir   = @"/var/mobile/Library/Caches/ballkey";
 static NSString *const kDylib = @"/var/mobile/Library/Caches/ballkey/libballkey.dylib";
-
-// Release com o asset libballkey.dylib anexado. Se não houver release, cai no raw do repo.
 static NSString *const kURLRelease = @"https://github.com/FBcria/ipad/releases/latest/download/libballkey.dylib";
-static NSString *const kURLRaw     = @"https://raw.githubusercontent.com/FBcria/ipad/main/BallKey/libballkey.dylib";
+static NSString *const kURLRaw     = @"https://raw.githubusercontent.com/FBcria/ipad/main/libballkey.dylib";
 static NSString *const kBundleFF   = @"com.dts.freefireth";
 static NSString *const kBundleMax  = @"com.dts.freefiremax";
 
@@ -57,7 +55,7 @@ static kern_return_t BKInject(pid_t pid, const char *path, NSString **err) {
     task_t task = MACH_PORT_NULL;
     kern_return_t kr = task_for_pid(mach_task_self(), pid, &task);
     if (kr != KERN_SUCCESS) {
-        *err = [NSString stringWithFormat:@"task_for_pid falhou (0x%x). O Free Fire foi instalado pelo TrollStore?", kr];
+        *err = [NSString stringWithFormat:@"task_for_pid falhou (0x%x). Instale o Free Fire pelo TrollStore.", kr];
         return kr;
     }
 
@@ -65,7 +63,7 @@ static kern_return_t BKInject(pid_t pid, const char *path, NSString **err) {
     uint64_t exitAddr   = BKRemoteAddress(task, (uint64_t)dlsym(RTLD_DEFAULT, "pthread_exit"));
     if (!dlopenAddr || !exitAddr) {
         mach_port_deallocate(mach_task_self(), task);
-        *err = @"não resolvi os símbolos no alvo";
+        *err = @"nao resolvi os simbolos no alvo";
         return KERN_FAILURE;
     }
 
@@ -74,7 +72,7 @@ static kern_return_t BKInject(pid_t pid, const char *path, NSString **err) {
     mach_vm_address_t code = 0, stack = 0;
 
     kr = mach_vm_allocate(task, &code, pageSize * 2, VM_FLAGS_ANYWHERE);
-    if (kr != KERN_SUCCESS) { mach_port_deallocate(mach_task_self(), task); *err = @"mach_vm_allocate (código)"; return kr; }
+    if (kr != KERN_SUCCESS) { mach_port_deallocate(mach_task_self(), task); *err = @"mach_vm_allocate (codigo)"; return kr; }
     kr = mach_vm_allocate(task, &stack, pageSize * 2, VM_FLAGS_ANYWHERE);
     if (kr != KERN_SUCCESS) { mach_vm_deallocate(task, code, pageSize * 2); mach_port_deallocate(mach_task_self(), task); *err = @"mach_vm_allocate (pilha)"; return kr; }
 
@@ -120,7 +118,7 @@ static BOOL BKDownloadDylib(NSString **err) {
     [fm createDirectoryAtPath:kDir withIntermediateDirectories:YES attributes:nil error:nil];
 
     NSDate *mod = [fm attributesOfItemAtPath:kDylib error:nil][NSFileModificationDate];
-    if (mod && -[mod timeIntervalSinceNow] < 60 * 60 * 12) return YES;
+    if (mod && -[mod timeIntervalSinceNow] < 60 * 60 * 6) return YES;
 
     for (NSString *u in @[kURLRelease, kURLRaw]) {
         NSData *data = [NSData dataWithContentsOfURL:[NSURL URLWithString:u]];
@@ -136,6 +134,7 @@ static BOOL BKDownloadDylib(NSString **err) {
 @property (nonatomic, strong) UILabel *status;
 @property (nonatomic, strong) UIButton *start;
 @property (nonatomic, strong) NSTimer *poll;
+@property (nonatomic, assign) BOOL busy;
 @end
 
 @implementation BKVC
@@ -187,11 +186,11 @@ static BOOL BKDownloadDylib(NSString **err) {
 }
 
 - (void)refresh {
-    if (!self.start.enabled && !self.status.text.length) return;
+    if (self.busy) return;
     pid_t pid = BKFindPID();
     BOOL have = [[NSFileManager defaultManager] fileExistsAtPath:kDylib];
     self.status.text = pid
-        ? [NSString stringWithFormat:@"Jogo aberto (PID %d).\nDylib %@.", pid, have ? @"em cache" : @"será baixada"]
+        ? [NSString stringWithFormat:@"Jogo aberto (PID %d).\nDylib %@.", pid, have ? @"em cache" : @"sera baixada"]
         : @"Jogo fechado.\nAbra o Free Fire, volte aqui e toque em START.";
     self.start.enabled = pid != 0;
     self.start.alpha = pid ? 1.0 : 0.45;
@@ -200,25 +199,25 @@ static BOOL BKDownloadDylib(NSString **err) {
 - (void)startTapped {
     pid_t pid = BKFindPID();
     if (!pid) { [self refresh]; return; }
+    self.busy = YES;
     self.start.enabled = NO;
     self.status.text = @"Preparando...";
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSString *err = nil;
         if (!BKDownloadDylib(&err)) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                self.status.text = err; self.start.enabled = YES;
-            });
+            dispatch_async(dispatch_get_main_queue(), ^{ self.busy = NO; self.status.text = err; [self refresh]; });
             return;
         }
         kern_return_t kr = BKInject(pid, kDylib.fileSystemRepresentation, &err);
         dispatch_async(dispatch_get_main_queue(), ^{
+            self.busy = NO;
             if (kr == KERN_SUCCESS) {
                 self.status.text = @"Injetado. Voltando ao jogo...";
                 [self performSelector:@selector(backToGame) withObject:nil afterDelay:0.8];
             } else {
                 self.status.text = err ?: @"falhou";
-                self.start.enabled = YES;
+                [self refresh];
             }
         });
     });

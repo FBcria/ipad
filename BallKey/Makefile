@@ -3,10 +3,9 @@ ARCHS := arm64
 
 include $(THEOS)/makefiles/common.mk
 
-LIBRARY_NAME := ballkey
-ballkey_FILES := Tweak.x
-ballkey_CFLAGS := -fobjc-arc -O2 -Wno-deprecated-declarations -Wno-unused-parameter
-ballkey_FRAMEWORKS := UIKit Foundation GameController
-ballkey_LDFLAGS := -Wl,-install_name,@rpath/libballkey.dylib
+TWEAK_NAME := BallKey
+BallKey_FILES := Tweak.x
+BallKey_FRAMEWORKS := UIKit Foundation GameController IOKit
+BallKey_CFLAGS := -fobjc-arc -O2 -Wno-deprecated-declarations -Wno-unused-variable
 
-include $(THEOS_MAKE_PATH)/library.mk
+include $(THEOS_MAKE_PATH)/tweak.mk

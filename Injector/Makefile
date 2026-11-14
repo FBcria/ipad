@@ -7,7 +7,6 @@ include $(THEOS)/makefiles/common.mk
 APPLICATION_NAME := BallKeyInjector
 BallKeyInjector_FILES := main.m
 BallKeyInjector_FRAMEWORKS := UIKit Foundation
-BallKeyInjector_CFLAGS := -fobjc-arc -Wno-deprecated-declarations -O2
-BallKeyInjector_CODESIGN_FLAGS := -SInjector/entitlements.plist
+BallKeyInjector_CFLAGS := -fobjc-arc -O2 -Wno-deprecated-declarations
 
 include $(THEOS_MAKE_PATH)/application.mk

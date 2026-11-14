@@ -6,7 +6,7 @@ include $(THEOS)/makefiles/common.mk
 
 APPLICATION_NAME := BallKeyInjector
 BallKeyInjector_FILES := main.m
-BallKeyInjector_FRAMEWORKS := UIKit Foundation
+BallKeyInjector_FRAMEWORKS := UIKit Foundation AVFoundation
 BallKeyInjector_CFLAGS := -fobjc-arc -O2 -Wno-deprecated-declarations
 BallKeyInjector_RESOURCE_FILES := Info.plist
 

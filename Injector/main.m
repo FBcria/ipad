@@ -1,5 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <mach/mach.h>
+#import <mach/mach_vm.h>
+#import <mach-o/dyld.h>
 #import <mach-o/dyld_images.h>
 #import <sys/sysctl.h>
 #import <dlfcn.h>

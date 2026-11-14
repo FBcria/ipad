@@ -1,0 +1,143 @@
+name: build
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  dylib:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Randomblock1/theos-action@v1
+        with:
+          theos-sdks: 'https://github.com/theos/sdks'
+
+      - name: Resolver ldid
+        run: |
+          set -e
+          LDID=""
+          for c in "${THEOS:-}/bin/ldid" "$(command -v ldid || true)" /opt/homebrew/bin/ldid /usr/local/bin/ldid; do
+            if [ -n "$c" ] && [ -x "$c" ]; then LDID="$c"; break; fi
+          done
+          if [ -z "$LDID" ]; then
+            brew install ldid >/dev/null 2>&1 || true
+            LDID="$(command -v ldid || true)"
+          fi
+          echo "LDID=$LDID" >> "$GITHUB_ENV"
+
+      - name: Compilar dylib
+        run: |
+          set -e
+          cd BallKey
+          make clean
+          make FINALPACKAGE=1
+          find .theos -type f -name '*.dylib' -exec ls -lh {} \;
+
+      - name: Assinar dylib
+        run: |
+          set -e
+          DYLIB=$(find BallKey/.theos -type f -name '*.dylib' | head -n 1)
+          if [ -z "$DYLIB" ]; then
+            echo "::error::nenhum dylib gerado"
+            find BallKey/.theos -type f | head -n 80
+            exit 1
+          fi
+          cp "$DYLIB" ./libballkey.dylib
+          if [ -n "$LDID" ]; then
+            "$LDID" -S ./libballkey.dylib
+          else
+            codesign -s - -f ./libballkey.dylib
+          fi
+          file ./libballkey.dylib
+          codesign -dv ./libballkey.dylib 2>&1 || true
+
+      - name: Publicar release com o dylib
+        run: |
+          set -e
+          gh release delete dylib --yes --cleanup-tag || true
+          gh release create dylib ./libballkey.dylib -t "build $(date -u +%FT%TZ)" -n "dylib + tipa"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libballkey
+          path: libballkey.dylib
+
+  tipa:
+    needs: dylib
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Randomblock1/theos-action@v1
+        with:
+          theos-sdks: 'https://github.com/theos/sdks'
+
+      - name: Resolver ldid
+        run: |
+          set -e
+          LDID=""
+          for c in "${THEOS:-}/bin/ldid" "$(command -v ldid || true)" /opt/homebrew/bin/ldid /usr/local/bin/ldid; do
+            if [ -n "$c" ] && [ -x "$c" ]; then LDID="$c"; break; fi
+          done
+          if [ -z "$LDID" ]; then
+            brew install ldid >/dev/null 2>&1 || true
+            LDID="$(command -v ldid || true)"
+          fi
+          echo "LDID=$LDID" >> "$GITHUB_ENV"
+
+      - name: Compilar app
+        run: |
+          set -e
+          cd Injector
+          make clean
+          make FINALPACKAGE=1
+          find .theos -type d -name '*.app'
+
+      - name: Empacotar e assinar tipa
+        run: |
+          set -e
+          APP=$(find Injector/.theos -type d -name '*.app' | head -n 1)
+          if [ -z "$APP" ]; then
+            echo "::error::app nao gerado"
+            find Injector/.theos -type f | head -n 80
+            exit 1
+          fi
+          NAME=$(basename "$APP")
+
+          rm -rf Payload BallKey.tipa
+          mkdir -p Payload
+          cp -R "$APP" "Payload/$NAME"
+
+          BIN="Payload/$NAME/$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "Payload/$NAME/Info.plist")"
+          echo "binario: $BIN"
+
+          if [ -n "$LDID" ]; then
+            "$LDID" -SInjector/entitlements.plist "$BIN"
+          else
+            codesign -s - -f --entitlements Injector/entitlements.plist "$BIN"
+          fi
+
+          zip -qr BallKey.tipa Payload
+          unzip -l BallKey.tipa
+          ls -lh BallKey.tipa
+
+      - name: Anexar tipa ao release
+        run: |
+          set -e
+          gh release upload dylib ./BallKey.tipa --clobber
+          gh release view dylib --json assets -q '.assets[].name'
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BallKey-tipa
+          path: BallKey.tipa

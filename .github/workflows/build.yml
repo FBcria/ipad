@@ -99,25 +99,36 @@ jobs:
           cd Injector
           make clean
           make FINALPACKAGE=1
-          find .theos -type d -name '*.app'
+          ls -la .theos/_/Applications
 
       - name: Empacotar e assinar tipa
         run: |
           set -e
-          APP=$(find Injector/.theos -type d -name '*.app' | head -n 1)
-          if [ -z "$APP" ]; then
-            echo "::error::app nao gerado"
-            find Injector/.theos -type f | head -n 80
+
+          APP="Injector/.theos/_/Applications/BallKeyInjector.app"
+          if [ ! -d "$APP" ]; then
+            echo "::error::app nao estagiado em $APP"
+            find Injector/.theos -maxdepth 4 -type d | head -n 80
             exit 1
           fi
-          NAME=$(basename "$APP")
+          if [ ! -f "$APP/Info.plist" ]; then
+            echo "::error::Info.plist ausente no app estagiado"
+            ls -la "$APP"
+            exit 1
+          fi
+          echo "app estagiado: $APP"
+          ls -la "$APP"
 
           rm -rf Payload BallKey.tipa
           mkdir -p Payload
-          cp -R "$APP" "Payload/$NAME"
+          cp -R "$APP" Payload/
 
-          BIN="Payload/$NAME/$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "Payload/$NAME/Info.plist")"
-          echo "binario: $BIN"
+          BIN="Payload/BallKeyInjector.app/BallKeyInjector"
+          if [ ! -f "$BIN" ]; then
+            echo "::error::binario ausente"
+            ls -la "Payload/BallKeyInjector.app"
+            exit 1
+          fi
 
           if [ -n "$LDID" ]; then
             "$LDID" -SInjector/entitlements.plist "$BIN"

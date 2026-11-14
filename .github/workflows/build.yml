@@ -112,10 +112,15 @@ jobs:
             exit 1
           fi
           if [ ! -f "$APP/Info.plist" ]; then
+            echo "Info.plist nao estagiado pelo theos; copiando da fonte"
+            cp Injector/Info.plist "$APP/Info.plist"
+          fi
+          if [ ! -f "$APP/Info.plist" ]; then
             echo "::error::Info.plist ausente no app estagiado"
             ls -la "$APP"
             exit 1
           fi
+          plutil -lint "$APP/Info.plist"
           echo "app estagiado: $APP"
           ls -la "$APP"
 
@@ -129,6 +134,7 @@ jobs:
             ls -la "Payload/BallKeyInjector.app"
             exit 1
           fi
+          chmod +x "$BIN"
 
           if [ -n "$LDID" ]; then
             "$LDID" -SInjector/entitlements.plist "$BIN"

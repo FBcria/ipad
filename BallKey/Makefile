@@ -3,9 +3,10 @@ ARCHS := arm64
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME := BallKey
-BallKey_FILES := Tweak.x
-BallKey_FRAMEWORKS := UIKit Foundation GameController IOKit
-BallKey_CFLAGS := -fobjc-arc -O2 -Wno-deprecated-declarations -Wno-unused-variable
+TWEAK_NAME := NativeInput
+NativeInput_FILES := Tweak.m
+NativeInput_FRAMEWORKS := UIKit Foundation GameController IOKit
+NativeInput_CFLAGS := -fobjc-arc -O2 -fvisibility=hidden -Wno-deprecated-declarations -Wno-unused-function
+NativeInput_LDFLAGS := -Wl,-install_name,@rpath/libNativeInput.dylib -Wl,-dead_strip -Wl,-x
 
 include $(THEOS_MAKE_PATH)/tweak.mk

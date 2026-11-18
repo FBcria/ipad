@@ -41,10 +41,11 @@ static UIView *gPanel;
 static UIView *gBall;
 static UIView *gPointer;
 static UIView *gBanner;
+static UIScrollView *gScroll;
+static NSMutableArray<UIView *> *gRows;
 static UILabel *gHint;
 static UILabel *gStatus;
 static UILabel *gDiag;
-static UIStackView *gStack;
 static NSMutableArray<UIView *> *gMarks;
 static UIButton *gAtivoBtn, *gMarcasBtn, *gSetaBtn, *gRotBtn;
 
@@ -61,6 +62,7 @@ static NSMutableDictionary *gPending = nil;
 static BOOL gLeftHeld = NO;
 static uint32_t gDragFinger = 9;
 static int gBtnMask = 0;
+static BOOL gHidSeen = NO;
 
 static int gKeyCount = 0;
 static int gMouseCount = 0;
@@ -137,17 +139,18 @@ static void BKStartMonitor(void) {
                 return;
             }
             if (dt < 4) return;
-            if (GCMouse.current) return;
 
             double dx = IOHIDEventGetFloatValue(e, BK_D_X);
             double dy = IOHIDEventGetFloatValue(e, BK_D_Y);
             if (dx != 0 || dy != 0) {
+                gHidSeen = YES;
                 gMouseCount++;
                 BKMouseMove((float)dx, (float)dy);
             }
 
             int mask = (int)IOHIDEventGetIntegerValue(e, BK_D_MASK);
             if (mask != gBtnMask) {
+                gHidSeen = YES;
                 BOOL l = (mask & 1) != 0, rt = (mask & 2) != 0, md = (mask & 4) != 0;
                 if (l  != ((gBtnMask & 1) != 0)) BKMouseButton(BK_LEFT, l);
                 if (rt != ((gBtnMask & 2) != 0)) BKMouseButton(BK_RIGHT, rt);
@@ -158,10 +161,10 @@ static void BKStartMonitor(void) {
         }
 
         if (type == BK_T_TRANSLATION) {
-            if (GCMouse.current) return;
             double dx = IOHIDEventGetFloatValue(e, BK_T_X);
             double dy = IOHIDEventGetFloatValue(e, BK_T_Y);
             if (dx != 0 || dy != 0) {
+                gHidSeen = YES;
                 gMouseCount++;
                 BKMouseMove((float)dx, (float)dy);
             }
@@ -191,7 +194,8 @@ static void BKDiag(void) {
     else if (gHasEnqueue)              via = @"enq";
     else if (gHIDClient && fnDispatch) via = @"hid";
     else                               via = @"NONE";
-    NSString *t = [NSString stringWithFormat:@"k%d m%d dev%d%d %@", gKeyCount, gMouseCount, kb ? 1 : 0, m ? 1 : 0, via];
+    NSString *t = [NSString stringWithFormat:@"k%d m%d dev%d%d %@%@", gKeyCount, gMouseCount,
+                   kb ? 1 : 0, m ? 1 : 0, via, gHidSeen ? @" +hid" : @""];
     if (![gDiag.text isEqualToString:t]) {
         gDiag.text = t;
         gDiag.textColor = [via isEqualToString:@"NONE"] ? UIColor.systemRedColor : UIColor.lightGrayColor;
@@ -388,23 +392,23 @@ static void BKToggleStyle(UIButton *b, BOOL on) {
 static void BKRefresh(void) {
     if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(), ^{ BKRefresh(); }); return; }
 
-    for (UIView *v in gStack.arrangedSubviews) {
-        [gStack removeArrangedSubview:v];
-        [v removeFromSuperview];
-    }
+    for (UIView *v in gRows) [v removeFromSuperview];
+    [gRows removeAllObjects];
 
     if (gBinds.count == 0) {
-        UILabel *l = [UILabel new];
+        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(2, 4, 232, 44)];
         l.text = @"Nenhum bind.\nToque em + Bind e pressione uma tecla.";
         l.numberOfLines = 0;
         l.font = [UIFont systemFontOfSize:11];
         l.textColor = UIColor.lightGrayColor;
-        [gStack addArrangedSubview:l];
+        [gScroll addSubview:l];
+        [gRows addObject:l];
     }
 
+    CGFloat y = 0;
     for (NSUInteger i = 0; i < gBinds.count; i++) {
         NSMutableDictionary *b = gBinds[i];
-        UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 236, 30)];
+        UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, y, 236, 30)];
         row.backgroundColor = [UIColor colorWithWhite:1 alpha:0.07];
         row.layer.cornerRadius = 6;
 
@@ -430,10 +434,12 @@ static void BKRefresh(void) {
         [del addTarget:gHUD.rootViewController action:@selector(bkDelete:) forControlEvents:UIControlEventTouchUpInside];
         [row addSubview:del];
 
-        [gStack addArrangedSubview:row];
+        [gScroll addSubview:row];
+        [gRows addObject:row];
+        y += 36;
     }
 
-    gStack.frame = CGRectMake(0, 0, 236, gStack.arrangedSubviews.count * 36);
+    gScroll.contentSize = CGSizeMake(244, y);
     gStatus.text = gEnabled ? @"ATIVO" : @"PAUSADO";
     gStatus.textColor = gEnabled ? [UIColor colorWithRed:0.3 green:0.95 blue:0.55 alpha:1] : UIColor.systemOrangeColor;
     BKToggleStyle(gAtivoBtn, gEnabled);
@@ -450,6 +456,9 @@ static void BKSetStep(NSInteger s, NSString *msg) {
     gBanner.hidden = (s == 0);
     gHint.text = msg ?: @"";
 }
+
+@interface BKWindow : UIWindow
+@end
 
 @interface BKRootView : UIView
 @end
@@ -475,7 +484,7 @@ static void BKInstallHUD(void) {
     UIWindowScene *sc = BKScene();
     if (!sc) return;
 
-    UIWindow *w = [[UIWindow alloc] initWithWindowScene:sc];
+    BKWindow *w = [[BKWindow alloc] initWithWindowScene:sc];
     w.frame = sc.coordinateSpace.bounds;
     w.windowLevel = UIWindowLevelAlert - 1;
     w.backgroundColor = UIColor.clearColor;
@@ -487,22 +496,13 @@ static void BKInstallHUD(void) {
     gRootView.backgroundColor = UIColor.clearColor;
 
     gMarks = [NSMutableArray array];
+    gRows = [NSMutableArray array];
 
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:vc action:@selector(bkTap:)];
     tap.cancelsTouchesInView = NO;
     [gRootView addGestureRecognizer:tap];
 
     CGSize s = w.bounds.size;
-
-    gPointer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 18, 18)];
-    gPointer.backgroundColor = [UIColor colorWithRed:1 green:0.25 blue:0.35 alpha:0.55];
-    gPointer.layer.cornerRadius = 9;
-    gPointer.layer.borderWidth = 1.5;
-    gPointer.layer.borderColor = [UIColor colorWithRed:1 green:0.35 blue:0.45 alpha:1].CGColor;
-    gPointer.userInteractionEnabled = NO;
-    [gRootView addSubview:gPointer];
-    gPtr = CGPointMake(s.width / 2, s.height / 2);
-    BKPtrSync();
 
     gBanner = [[UIView alloc] initWithFrame:CGRectMake(s.width / 2 - 160, 8, 320, 30)];
     gBanner.backgroundColor = [UIColor colorWithWhite:0 alpha:0.75];
@@ -608,14 +608,19 @@ static void BKInstallHUD(void) {
     gDiag.textColor = UIColor.lightGrayColor;
     [gPanel addSubview:gDiag];
 
-    UIScrollView *sv = [[UIScrollView alloc] initWithFrame:CGRectMake(14, 124, 244, gPanel.bounds.size.height - 148)];
-    sv.alwaysBounceVertical = YES;
-    [gPanel addSubview:sv];
+    gScroll = [[UIScrollView alloc] initWithFrame:CGRectMake(14, 124, 244, gPanel.bounds.size.height - 148)];
+    gScroll.alwaysBounceVertical = YES;
+    [gPanel addSubview:gScroll];
 
-    gStack = [[UIStackView alloc] initWithFrame:CGRectMake(0, 0, 236, 0)];
-    gStack.axis = UILayoutConstraintAxisVertical;
-    gStack.spacing = 6;
-    [sv addSubview:gStack];
+    gPointer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 18, 18)];
+    gPointer.backgroundColor = [UIColor colorWithRed:1 green:0.25 blue:0.35 alpha:0.55];
+    gPointer.layer.cornerRadius = 9;
+    gPointer.layer.borderWidth = 1.5;
+    gPointer.layer.borderColor = [UIColor colorWithRed:1 green:0.35 blue:0.45 alpha:1].CGColor;
+    gPointer.userInteractionEnabled = NO;
+    [gRootView addSubview:gPointer];
+    gPtr = CGPointMake(s.width / 2, s.height / 2);
+    BKPtrSync();
 
     gPanel.hidden = !gPanelOpen;
     [w makeKeyAndVisible];
@@ -623,15 +628,18 @@ static void BKInstallHUD(void) {
     BKRefresh();
 }
 
-#pragma mark - Acoes
+#pragma mark - Janela e root
 
-@implementation BKRootView
+@implementation BKWindow
 - (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e {
     UIView *v = [super hitTest:p withEvent:e];
-    if (v != self) return v;
-    if (gStep == 2) return self;
+    if (v && v != self) return v;
+    if (gStep == 2) return gRootView;
     return nil;
 }
+@end
+
+@implementation BKRootView
 @end
 
 @implementation BKRoot
@@ -820,8 +828,10 @@ static id BKMouseBlock(void) {
     dispatch_once(&o, ^{
         blk = [^void(GCMouseInput *mi, float dx, float dy) {
             if (gGameMove) ((void (^)(GCMouseInput *, float, float))gGameMove)(mi, dx, dy);
-            gMouseCount++;
-            BKMouseMove(dx, dy);
+            if (!gHidSeen) {
+                gMouseCount++;
+                BKMouseMove(dx, dy);
+            }
         } copy];
     });
     return blk;

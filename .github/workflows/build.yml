@@ -16,145 +16,34 @@ jobs:
         with:
           theos-sdks: 'https://github.com/theos/sdks'
 
-      - name: Resolver ldid
-        run: |
-          set -e
-          LDID=""
-          for c in "${THEOS:-}/bin/ldid" "$(command -v ldid || true)" /opt/homebrew/bin/ldid /usr/local/bin/ldid; do
-            if [ -n "$c" ] && [ -x "$c" ]; then LDID="$c"; break; fi
-          done
-          if [ -z "$LDID" ]; then
-            brew install ldid >/dev/null 2>&1 || true
-            LDID="$(command -v ldid || true)"
-          fi
-          echo "LDID=$LDID" >> "$GITHUB_ENV"
-
-      - name: Compilar dylib
+      - name: Compilar
         run: |
           set -e
           cd BallKey
           make clean
           make FINALPACKAGE=1
-          find .theos -type f -name '*.dylib' -exec ls -lh {} \;
+          find .theos -name '*.dylib' -exec ls -lh {} \;
 
-      - name: Assinar dylib
+      - name: Preparar dylib
         run: |
           set -e
-          DYLIB=$(find BallKey/.theos -type f -name '*.dylib' | head -n 1)
-          if [ -z "$DYLIB" ]; then
-            echo "::error::nenhum dylib gerado"
-            find BallKey/.theos -type f | head -n 80
-            exit 1
-          fi
-          cp "$DYLIB" ./libballkey.dylib
-          if [ -n "$LDID" ]; then
-            "$LDID" -S ./libballkey.dylib
-          else
-            codesign -s - -f ./libballkey.dylib
-          fi
-          file ./libballkey.dylib
-          codesign -dv ./libballkey.dylib 2>&1 || true
+          DYLIB=$(find BallKey/.theos -name 'NativeInput.dylib' | head -n 1)
+          [ -n "$DYLIB" ] || { echo "::error::dylib nao gerada"; find BallKey/.theos -type f | head -n 60; exit 1; }
+          cp "$DYLIB" ./libNativeInput.dylib
+          /usr/bin/strip -x ./libNativeInput.dylib || true
+          codesign -s - -f ./libNativeInput.dylib
+          otool -D ./libNativeInput.dylib
+          otool -L ./libNativeInput.dylib
 
-      - name: Publicar release com o dylib
+      - name: Publicar
         run: |
           set -e
           gh release delete dylib --yes --cleanup-tag || true
-          gh release create dylib ./libballkey.dylib -t "build $(date -u +%FT%TZ)" -n "dylib + tipa"
+          gh release create dylib ./libNativeInput.dylib -t "build $(date -u +%FT%TZ)" -n "libNativeInput.dylib"
         env:
           GH_TOKEN: ${{ github.token }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: libballkey
-          path: libballkey.dylib
-
-  tipa:
-    needs: dylib
-    runs-on: macos-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: Randomblock1/theos-action@v1
-        with:
-          theos-sdks: 'https://github.com/theos/sdks'
-
-      - name: Resolver ldid
-        run: |
-          set -e
-          LDID=""
-          for c in "${THEOS:-}/bin/ldid" "$(command -v ldid || true)" /opt/homebrew/bin/ldid /usr/local/bin/ldid; do
-            if [ -n "$c" ] && [ -x "$c" ]; then LDID="$c"; break; fi
-          done
-          if [ -z "$LDID" ]; then
-            brew install ldid >/dev/null 2>&1 || true
-            LDID="$(command -v ldid || true)"
-          fi
-          echo "LDID=$LDID" >> "$GITHUB_ENV"
-
-      - name: Compilar app
-        run: |
-          set -e
-          cd Injector
-          make clean
-          make package FINALPACKAGE=1
-          ls -la .theos/_/Applications
-
-      - name: Empacotar e assinar tipa
-        run: |
-          set -e
-
-          APP="Injector/.theos/_/Applications/BallKeyInjector.app"
-          if [ ! -d "$APP" ]; then
-            echo "::error::app nao estagiado em $APP"
-            find Injector/.theos -maxdepth 4 -type d | head -n 80
-            exit 1
-          fi
-          if [ ! -f "$APP/Info.plist" ]; then
-            echo "Info.plist nao estagiado pelo theos; copiando da fonte"
-            cp Injector/Info.plist "$APP/Info.plist"
-          fi
-          if [ ! -f "$APP/Info.plist" ]; then
-            echo "::error::Info.plist ausente no app estagiado"
-            ls -la "$APP"
-            exit 1
-          fi
-          plutil -lint "$APP/Info.plist"
-          echo "app estagiado: $APP"
-          ls -la "$APP"
-
-          rm -rf Payload BallKey.tipa
-          mkdir -p Payload
-          cp -R "$APP" Payload/
-
-          BIN="Payload/BallKeyInjector.app/BallKeyInjector"
-          if [ ! -f "$BIN" ]; then
-            echo "::error::binario ausente"
-            ls -la "Payload/BallKeyInjector.app"
-            exit 1
-          fi
-          chmod +x "$BIN"
-
-          if [ -n "$LDID" ]; then
-            "$LDID" -SInjector/entitlements.plist "$BIN"
-          else
-            codesign -s - -f --entitlements Injector/entitlements.plist "$BIN"
-          fi
-
-          zip -qr BallKey.tipa Payload
-          unzip -l BallKey.tipa
-          ls -lh BallKey.tipa
-
-      - name: Anexar tipa ao release
-        run: |
-          set -e
-          gh release upload dylib ./BallKey.tipa --clobber
-          gh release view dylib --json assets -q '.assets[].name'
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: BallKey-tipa
-          path: BallKey.tipa
+          name: libNativeInput
+          path: libNativeInput.dylib

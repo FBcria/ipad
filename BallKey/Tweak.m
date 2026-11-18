@@ -13,7 +13,6 @@
 #import <unistd.h>
 #import <string.h>
 
-// kIOHIDEventFieldBase(kIOHIDEventTypeDigitizer) | campo
 #define BK_D_X        0xB0001
 #define BK_D_Y        0xB0002
 #define BK_D_MASK     0xB0004
@@ -47,7 +46,7 @@ static UILabel *gHint;
 static UILabel *gStatus;
 static UILabel *gDiag;
 static NSMutableArray<UIView *> *gMarks;
-static UIButton *gAtivoBtn, *gMarcasBtn, *gSetaBtn, *gRotBtn;
+static UIButton *gAtivoBtn, *gMarcasBtn, *gSetaBtn, *gRotBtn, *gSumirBtn;
 
 static BOOL gEnabled = YES;
 static BOOL gPanelOpen = YES;
@@ -72,9 +71,11 @@ static void *gHIDClient = NULL;
 static void (*fnDispatch)(void *, IOHIDEventRef) = NULL;
 static uint64_t (*fnGetSender)(IOHIDEventRef) = NULL;
 static void (*fnSetSender)(IOHIDEventRef, uint64_t) = NULL;
+static void (*fnSetMatching)(void *, CFDictionaryRef) = NULL;
 static uint64_t gSenderID = 0;
 static id gMonitorBlock = nil;
-static void *gMonitor = NULL;
+static void *gMonitor[3] = {NULL, NULL, NULL};
+static int gMonitorCount = 0;
 
 static void (*orig_setKeyChanged)(id, SEL, id) = NULL;
 static void (*orig_setMouseMoved)(id, SEL, id) = NULL;
@@ -102,11 +103,17 @@ static void BKStartMonitor(void);
 static void BKSetupInject(void) {
     static dispatch_once_t o;
     dispatch_once(&o, ^{
-        void *c = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreate");
+        void *createT = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreateWithType");
+        void *create = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreate");
         fnDispatch = (void (*)(void *, IOHIDEventRef))dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientDispatchEvent");
         fnGetSender = (uint64_t (*)(IOHIDEventRef))dlsym(RTLD_DEFAULT, "IOHIDEventGetSenderID");
         fnSetSender = (void (*)(IOHIDEventRef, uint64_t))dlsym(RTLD_DEFAULT, "IOHIDEventSetSenderID");
-        if (c && fnDispatch) gHIDClient = ((void *(*)(CFAllocatorRef))c)(kCFAllocatorDefault);
+        fnSetMatching = (void (*)(void *, CFDictionaryRef))dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientSetMatching");
+
+        if (fnDispatch) {
+            if (createT) gHIDClient = ((void *(*)(CFAllocatorRef, int, void *))createT)(kCFAllocatorDefault, 1, NULL);
+            if (!gHIDClient && create) gHIDClient = ((void *(*)(CFAllocatorRef))create)(kCFAllocatorDefault);
+        }
         gHasEnqueue = [UIApplication.sharedApplication respondsToSelector:sel_registerName("_enqueueHIDEvent:")];
         BKStartMonitor();
     });
@@ -116,15 +123,8 @@ static void BKStartMonitor(void) {
     void *reg = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientRegisterEventBlock");
     void *sched = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientScheduleWithRunLoop");
     void *createT = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreateWithType");
+    void *create = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreate");
     if (!reg || !sched) return;
-
-    if (createT) gMonitor = ((void *(*)(CFAllocatorRef, int, void *))createT)(kCFAllocatorDefault, 2, NULL);
-    if (!gMonitor) {
-        void *c = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreate");
-        if (!c) return;
-        gMonitor = ((void *(*)(CFAllocatorRef))c)(kCFAllocatorDefault);
-    }
-    if (!gMonitor) return;
 
     void (^blk)(void *, void *, void *, IOHIDEventRef) = ^(void *t, void *r, void *s, IOHIDEventRef e) {
         if (!e) return;
@@ -171,12 +171,28 @@ static void BKStartMonitor(void) {
         }
     };
     gMonitorBlock = [blk copy];
-    ((void (*)(void *, void *, void *, void *))reg)(gMonitor, (__bridge void *)gMonitorBlock, NULL, NULL);
-    ((void (*)(void *, CFRunLoopRef, CFStringRef))sched)(gMonitor, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+
+    int types[3] = {2, 1, 0};
+    for (int i = 0; i < 3; i++) {
+        void *cl = NULL;
+        if (createT) cl = ((void *(*)(CFAllocatorRef, int, void *))createT)(kCFAllocatorDefault, types[i], NULL);
+        else if (i == 0 && create) cl = ((void *(*)(CFAllocatorRef))create)(kCFAllocatorDefault);
+        if (!cl) continue;
+
+        if (fnSetMatching && types[i] != 2) {
+            NSDictionary *m = @{ @"PrimaryUsagePage": @(0x0D), @"PrimaryUsage": @(0x04) };
+            fnSetMatching(cl, (__bridge CFDictionaryRef)m);
+        }
+        ((void (*)(void *, void *, void *, void *))reg)(cl, (__bridge void *)gMonitorBlock, NULL, NULL);
+        ((void (*)(void *, CFRunLoopRef, CFStringRef))sched)(cl, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+        gMonitor[gMonitorCount++] = cl;
+    }
 }
 
 static CGPoint BKToDevice(CGPoint p) {
+    if (!gFixRotation) return p;
     CGSize s = UIScreen.mainScreen.bounds.size;
+    if (s.width >= s.height) return p;
     UIInterfaceOrientation o = gHUD.windowScene.interfaceOrientation;
     switch (o) {
         case UIInterfaceOrientationLandscapeLeft:  return CGPointMake(s.width - p.y, p.x);
@@ -194,8 +210,8 @@ static void BKDiag(void) {
     else if (gHasEnqueue)              via = @"enq";
     else if (gHIDClient && fnDispatch) via = @"hid";
     else                               via = @"NONE";
-    NSString *t = [NSString stringWithFormat:@"k%d m%d dev%d%d %@%@", gKeyCount, gMouseCount,
-                   kb ? 1 : 0, m ? 1 : 0, via, gHidSeen ? @" +hid" : @""];
+    NSString *t = [NSString stringWithFormat:@"k%d m%d dev%d%d cl%d %@%@", gKeyCount, gMouseCount,
+                   kb ? 1 : 0, m ? 1 : 0, gMonitorCount, via, gHidSeen ? @" +hid" : @""];
     if (![gDiag.text isEqualToString:t]) {
         gDiag.text = t;
         gDiag.textColor = [via isEqualToString:@"NONE"] ? UIColor.systemRedColor : UIColor.lightGrayColor;
@@ -204,7 +220,7 @@ static void BKDiag(void) {
 
 static void BKInjectNow(CGPoint p, BOOL down, uint32_t idx) {
     BKSetupInject();
-    CGPoint d = gFixRotation ? BKToDevice(p) : p;
+    CGPoint d = BKToDevice(p);
     IOHIDEventRef ev = IOHIDEventCreateDigitizerEvent(
         kCFAllocatorDefault, BKNow(),
         kIOHIDDigitizerTransducerTypeHand, 0, idx,
@@ -576,32 +592,39 @@ static void BKInstallHUD(void) {
     [gPanel addSubview:test];
 
     gAtivoBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gAtivoBtn.frame = CGRectMake(14, 90, 55, 26);
-    gAtivoBtn.titleLabel.font = [UIFont systemFontOfSize:10];
+    gAtivoBtn.frame = CGRectMake(14, 90, 44, 26);
+    gAtivoBtn.titleLabel.font = [UIFont systemFontOfSize:9];
     [gAtivoBtn setTitle:@"Ativo" forState:UIControlStateNormal];
     [gAtivoBtn addTarget:vc action:@selector(bkPower:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:gAtivoBtn];
 
     gMarcasBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gMarcasBtn.frame = CGRectMake(75, 90, 55, 26);
-    gMarcasBtn.titleLabel.font = [UIFont systemFontOfSize:10];
-    [gMarcasBtn setTitle:@"Marcas" forState:UIControlStateNormal];
+    gMarcasBtn.frame = CGRectMake(63, 90, 44, 26);
+    gMarcasBtn.titleLabel.font = [UIFont systemFontOfSize:9];
+    [gMarcasBtn setTitle:@"Marca" forState:UIControlStateNormal];
     [gMarcasBtn addTarget:vc action:@selector(bkMarks:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:gMarcasBtn];
 
     gSetaBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gSetaBtn.frame = CGRectMake(136, 90, 55, 26);
-    gSetaBtn.titleLabel.font = [UIFont systemFontOfSize:10];
+    gSetaBtn.frame = CGRectMake(112, 90, 44, 26);
+    gSetaBtn.titleLabel.font = [UIFont systemFontOfSize:9];
     [gSetaBtn setTitle:@"Seta" forState:UIControlStateNormal];
     [gSetaBtn addTarget:vc action:@selector(bkPtr:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:gSetaBtn];
 
     gRotBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gRotBtn.frame = CGRectMake(197, 90, 55, 26);
-    gRotBtn.titleLabel.font = [UIFont systemFontOfSize:10];
+    gRotBtn.frame = CGRectMake(161, 90, 44, 26);
+    gRotBtn.titleLabel.font = [UIFont systemFontOfSize:9];
     [gRotBtn setTitle:@"Girar" forState:UIControlStateNormal];
     [gRotBtn addTarget:vc action:@selector(bkRot:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:gRotBtn];
+
+    gSumirBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    gSumirBtn.frame = CGRectMake(210, 90, 44, 26);
+    gSumirBtn.titleLabel.font = [UIFont systemFontOfSize:9];
+    [gSumirBtn setTitle:@"Sumir" forState:UIControlStateNormal];
+    [gSumirBtn addTarget:vc action:@selector(bkSumir:) forControlEvents:UIControlEventTouchUpInside];
+    [gPanel addSubview:gSumirBtn];
 
     gDiag = [[UILabel alloc] initWithFrame:CGRectMake(14, gPanel.bounds.size.height - 20, 244, 14)];
     gDiag.font = [UIFont monospacedDigitSystemFontOfSize:9 weight:UIFontWeightRegular];
@@ -670,6 +693,14 @@ static void BKInstallHUD(void) {
 
 - (void)pressesCancelled:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
     [self pressesEnded:presses withEvent:event];
+}
+
+- (void)bkSumir:(UIButton *)b {
+    gHUD.hidden = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        gHUD.hidden = NO;
+        BKRefresh();
+    });
 }
 
 - (void)bkTap:(UITapGestureRecognizer *)g {
@@ -896,6 +927,12 @@ static void BKTick(void) {
     });
 }
 
+static void BKCurrent(void) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        BKTick();
+    });
+}
+
 #pragma mark - Ciclo de vida
 
 __attribute__((constructor))
@@ -918,10 +955,16 @@ static void BKInit(void) {
         BKReleaseAll();
     }];
     [nc addObserverForName:GCKeyboardDidConnectNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
-        BKTick();
+        BKCurrent();
     }];
     [nc addObserverForName:GCMouseDidConnectNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
-        BKTick();
+        BKCurrent();
+    }];
+    [nc addObserverForName:@"GCKeyboardDidBecomeCurrentNotification" object:nil queue:nil usingBlock:^(NSNotification *n) {
+        BKCurrent();
+    }];
+    [nc addObserverForName:@"GCMouseDidBecomeCurrentNotification" object:nil queue:nil usingBlock:^(NSNotification *n) {
+        BKCurrent();
     }];
     [nc addObserverForName:UISceneDidActivateNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
         dispatch_async(dispatch_get_main_queue(), ^{ BKInstallHUD(); });

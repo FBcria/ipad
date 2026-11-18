@@ -17,11 +17,18 @@
 #define BK_D_Y        0xB0002
 #define BK_D_MASK     0xB0004
 #define BK_D_TYPE     0xB0005
+#define BK_D_EVMASK   0xB0008
+#define BK_D_RANGE    0xB0009
+#define BK_D_TOUCH    0xB000A
 #define BK_D_DISPLAY  0xB0019
 #define BK_T_X        0x40001
 #define BK_T_Y        0x40002
 #define BK_T_DIGITIZER 11
 #define BK_T_TRANSLATION 4
+
+#define BK_M_POS  0x04
+#define BK_M_RT   0x03
+#define BK_SENDER 0xDEFACEDBEEFFECE5ULL
 
 #define BK_LEFT   (-1)
 #define BK_RIGHT  (-2)
@@ -75,6 +82,7 @@ static void (*fnDispatch)(void *, IOHIDEventRef) = NULL;
 static uint64_t (*fnGetSender)(IOHIDEventRef) = NULL;
 static void (*fnSetSender)(IOHIDEventRef, uint64_t) = NULL;
 static void (*fnSetMatching)(void *, CFDictionaryRef) = NULL;
+static void (*fnSetQueue)(void *, dispatch_queue_t) = NULL;
 static uint64_t gSenderID = 0;
 static id gMonitorBlock = nil;
 static void *gMonitor[3] = {NULL, NULL, NULL};
@@ -112,6 +120,7 @@ static void BKSetupInject(void) {
         fnGetSender = (uint64_t (*)(IOHIDEventRef))dlsym(RTLD_DEFAULT, "IOHIDEventGetSenderID");
         fnSetSender = (void (*)(IOHIDEventRef, uint64_t))dlsym(RTLD_DEFAULT, "IOHIDEventSetSenderID");
         fnSetMatching = (void (*)(void *, CFDictionaryRef))dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientSetMatching");
+        fnSetQueue = (void (*)(void *, dispatch_queue_t))dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientSetDispatchQueue");
 
         if (fnDispatch) {
             if (createT) gHIDClient = ((void *(*)(CFAllocatorRef, int, void *))createT)(kCFAllocatorDefault, 1, NULL);
@@ -127,7 +136,7 @@ static void BKStartMonitor(void) {
     void *sched = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientScheduleWithRunLoop");
     void *createT = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreateWithType");
     void *create = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreate");
-    if (!reg || !sched) return;
+    if (!reg) return;
 
     void (^blk)(void *, void *, void *, IOHIDEventRef) = ^(void *t, void *r, void *s, IOHIDEventRef e) {
         if (!e) return;
@@ -187,22 +196,28 @@ static void BKStartMonitor(void) {
             fnSetMatching(cl, (__bridge CFDictionaryRef)m);
         }
         ((void (*)(void *, void *, void *, void *))reg)(cl, (__bridge void *)gMonitorBlock, NULL, NULL);
-        ((void (*)(void *, CFRunLoopRef, CFStringRef))sched)(cl, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+        if (i == 0 && fnSetQueue) fnSetQueue(cl, dispatch_get_main_queue());
+        else if (sched) ((void (*)(void *, CFRunLoopRef, CFStringRef))sched)(cl, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
         gMonitor[gMonitorCount++] = cl;
     }
 }
 
+// retorna coordenada normalizada (0..1) no quadro retrato do aparelho
 static CGPoint BKToDevice(CGPoint p) {
-    if (!gFixRotation) return p;
     CGSize s = UIScreen.mainScreen.bounds.size;
-    if (s.width >= s.height) return p;
-    UIInterfaceOrientation o = gHUD.windowScene.interfaceOrientation;
-    switch (o) {
-        case UIInterfaceOrientationLandscapeLeft:  return CGPointMake(s.width - p.y, p.x);
-        case UIInterfaceOrientationLandscapeRight: return CGPointMake(p.y, s.height - p.x);
-        case UIInterfaceOrientationPortraitUpsideDown: return CGPointMake(s.width - p.x, s.height - p.y);
-        default: return p;
+    CGFloat Wp = MIN(s.width, s.height), Hp = MAX(s.width, s.height);
+    CGPoint q = p;
+
+    if (gFixRotation) {
+        UIInterfaceOrientation o = gHUD.windowScene.interfaceOrientation;
+        switch (o) {
+            case UIInterfaceOrientationLandscapeLeft:  q = CGPointMake(Wp - p.y, p.x); break;
+            case UIInterfaceOrientationLandscapeRight: q = CGPointMake(p.y, Hp - p.x); break;
+            case UIInterfaceOrientationPortraitUpsideDown: q = CGPointMake(Wp - p.x, Hp - p.y); break;
+            default: break;
+        }
     }
+    return CGPointMake(q.x / Wp, q.y / Hp);
 }
 
 static void BKDiag(void) {
@@ -226,25 +241,38 @@ static void BKInjectNow(CGPoint p, BOOL down, uint32_t idx) {
     gPassPoint = p;
     gPassUntil = CFAbsoluteTimeGetCurrent() + 0.12;
 
-    CGPoint d = BKToDevice(p);
-    IOHIDEventRef ev = IOHIDEventCreateDigitizerEvent(
-        kCFAllocatorDefault, BKNow(),
-        kIOHIDDigitizerTransducerTypeHand, 0, idx,
-        down ? kIOHIDDigitizerEventTouch : 0, down,
-        d.x, d.y, 0, 0, 0, 1, down, 0);
-    if (!ev) return;
-    IOHIDEventSetIntegerValue(ev, BK_D_DISPLAY, 1);
+    CGPoint n = BKToDevice(p);
+    AbsoluteTime ts = BKNow();
 
-    if (gSenderID && fnSetSender && gHIDClient && fnDispatch) {
-        fnSetSender(ev, gSenderID);
-        fnDispatch(gHIDClient, ev);
+    IOHIDEventRef hand = IOHIDEventCreateDigitizerEvent(
+        kCFAllocatorDefault, ts,
+        kIOHIDDigitizerTransducerTypeHand, 0, 1,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    if (!hand) return;
+
+    IOHIDEventRef finger = IOHIDEventCreateDigitizerFingerEventWithQuality(
+        kCFAllocatorDefault, ts,
+        idx, idx + 2, down ? BK_M_RT : BK_M_POS,
+        n.x, n.y, 0, 0, 0, 0, 0, 0, 0, 0,
+        down, down, 0);
+    if (finger) {
+        IOHIDEventAppendEvent(hand, finger);
+        CFRelease(finger);
+    }
+
+    IOHIDEventSetIntegerValue(hand, BK_D_EVMASK, down ? BK_M_RT : BK_M_POS);
+    IOHIDEventSetIntegerValue(hand, BK_D_RANGE, down);
+    IOHIDEventSetIntegerValue(hand, BK_D_TOUCH, down);
+    IOHIDEventSetIntegerValue(hand, BK_D_DISPLAY, 1);
+    if (fnSetSender) fnSetSender(hand, gSenderID ? gSenderID : BK_SENDER);
+
+    if (gHIDClient && fnDispatch) {
+        fnDispatch(gHIDClient, hand);
     } else if (gHasEnqueue) {
         ((void (*)(id, SEL, IOHIDEventRef))objc_msgSend)(
-            UIApplication.sharedApplication, sel_registerName("_enqueueHIDEvent:"), ev);
-    } else if (gHIDClient && fnDispatch) {
-        fnDispatch(gHIDClient, ev);
+            UIApplication.sharedApplication, sel_registerName("_enqueueHIDEvent:"), hand);
     }
-    CFRelease(ev);
+    CFRelease(hand);
     BKDiag();
 }
 

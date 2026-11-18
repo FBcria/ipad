@@ -11,8 +11,12 @@
 #import <mach/mach_time.h>
 #import <dlfcn.h>
 #import <unistd.h>
+#import <string.h>
 
-#define BK_FIELD_DISPLAY (kIOHIDEventFieldDigitizer | 0x0019)
+// kIOHIDEventFieldBase(kIOHIDEventTypeDigitizer) | IsDisplayIntegrated
+#define BK_FIELD_DISPLAY 0xB0019
+#define BK_TYPE_DIGITIZER 11
+
 #define BK_LEFT   (-1)
 #define BK_RIGHT  (-2)
 #define BK_MIDDLE (-3)
@@ -52,12 +56,20 @@ static uint32_t gDragFinger = 9;
 static BOOL gHasEnqueue = NO;
 static void *gHIDClient = NULL;
 static void (*fnDispatch)(void *, IOHIDEventRef) = NULL;
+static uint64_t (*fnGetSender)(IOHIDEventRef) = NULL;
 static void (*fnSetSender)(IOHIDEventRef, uint64_t) = NULL;
 static uint64_t gSenderID = 0;
 static id gMonitorBlock = nil;
 static void *gMonitor = NULL;
 
 #pragma mark - Injecao
+
+static AbsoluteTime BKNow(void) {
+    uint64_t t = mach_absolute_time();
+    AbsoluteTime a = {0, 0};
+    memcpy(&a, &t, sizeof(a));
+    return a;
+}
 
 static void BKStartMonitor(void);
 
@@ -66,6 +78,7 @@ static void BKSetupInject(void) {
     dispatch_once(&o, ^{
         void *c = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreate");
         fnDispatch = (void (*)(void *, IOHIDEventRef))dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientDispatchEvent");
+        fnGetSender = (uint64_t (*)(IOHIDEventRef))dlsym(RTLD_DEFAULT, "IOHIDEventGetSenderID");
         fnSetSender = (void (*)(IOHIDEventRef, uint64_t))dlsym(RTLD_DEFAULT, "IOHIDEventSetSenderID");
         if (c && fnDispatch) gHIDClient = ((void *(*)(CFAllocatorRef))c)(kCFAllocatorDefault);
         gHasEnqueue = [UIApplication.sharedApplication respondsToSelector:sel_registerName("_enqueueHIDEvent:")];
@@ -77,7 +90,7 @@ static void BKStartMonitor(void) {
     void *reg = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientRegisterEventBlock");
     void *sched = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientScheduleWithRunLoop");
     void *createT = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreateWithType");
-    if (!reg || !sched) return;
+    if (!reg || !sched || !fnGetSender) return;
 
     if (createT) gMonitor = ((void *(*)(CFAllocatorRef, int, void *))createT)(kCFAllocatorDefault, 2, NULL);
     if (!gMonitor) {
@@ -89,8 +102,8 @@ static void BKStartMonitor(void) {
 
     void (^blk)(void *, void *, void *, IOHIDEventRef) = ^(void *t, void *r, void *s, IOHIDEventRef e) {
         if (!e) return;
-        if (IOHIDEventGetType(e) != kIOHIDEventTypeDigitizer) return;
-        uint64_t sid = IOHIDEventGetSenderID(e);
+        if (IOHIDEventGetType(e) != BK_TYPE_DIGITIZER) return;
+        uint64_t sid = fnGetSender(e);
         if (sid) gSenderID = sid;
     };
     gMonitorBlock = [blk copy];
@@ -125,7 +138,7 @@ static void BKInjectNow(CGPoint p, BOOL down, uint32_t idx) {
     BKSetupInject();
     CGPoint d = gFixRotation ? BKToDevice(p) : p;
     IOHIDEventRef ev = IOHIDEventCreateDigitizerEvent(
-        kCFAllocatorDefault, mach_absolute_time(),
+        kCFAllocatorDefault, BKNow(),
         kIOHIDDigitizerTransducerTypeHand, 0, idx,
         down ? kIOHIDDigitizerEventTouch : 0, down,
         d.x, d.y, 0, 0, 0, 1, down, 0);

@@ -103,7 +103,6 @@ static int gBtnMask = 0;
 static BOOL gHidSeen = NO;
 static BOOL gTouchOK = NO;
 static BOOL gTouchBroken = NO;
-static int gUICap = -1;
 
 static int gKeyCount = 0;
 static int gMouseCount = 0;
@@ -276,25 +275,26 @@ static void BKHIDInject(CGPoint p, BOOL down, uint32_t idx) {
 
 #pragma mark - Injecao por UITouch
 
-// confere se todos os seletores privados existem nesta versao
-static BOOL BKUICapable(void) {
-    if (gTouchBroken) return NO;
-    if (gUICap >= 0) return gUICap == 1;
-
-    BOOL ok = YES;
+static int BKCapMask(void) {
+    int m = 0;
     Class evC = UIEvent.class, tC = UITouch.class;
-    ok &= [UIApplication.sharedApplication respondsToSelector:@selector(_touchesEvent)];
-    ok &= [evC instancesRespondToSelector:@selector(_clearTouches)];
-    ok &= [evC instancesRespondToSelector:@selector(_addTouch:forDelayedDelivery:)];
-    ok &= [evC instancesRespondToSelector:@selector(_setHIDEvent:)];
-    ok &= [tC instancesRespondToSelector:@selector(setWindow:)];
-    ok &= [tC instancesRespondToSelector:@selector(_setLocationInWindow:resetPrevious:)];
-    ok &= [tC instancesRespondToSelector:@selector(setView:)];
-    ok &= [tC instancesRespondToSelector:@selector(setPhase:)];
-    ok &= [tC instancesRespondToSelector:@selector(_setHidEvent:)];
+    if ([UIApplication.sharedApplication respondsToSelector:@selector(_touchesEvent)]) m |= 1;
+    if ([evC instancesRespondToSelector:@selector(_clearTouches)]) m |= 2;
+    if ([evC instancesRespondToSelector:@selector(_addTouch:forDelayedDelivery:)]) m |= 4;
+    if ([evC instancesRespondToSelector:@selector(_setHIDEvent:)]) m |= 8;
+    if ([tC instancesRespondToSelector:@selector(setWindow:)]) m |= 16;
+    if ([tC instancesRespondToSelector:@selector(_setLocationInWindow:resetPrevious:)]) m |= 32;
+    if ([tC instancesRespondToSelector:@selector(setView:)]) m |= 64;
+    if ([tC instancesRespondToSelector:@selector(setPhase:)]) m |= 128;
+    if ([tC instancesRespondToSelector:@selector(_setHidEvent:)]) m |= 256;
+    return m;
+}
 
-    gUICap = ok ? 1 : 0;
-    return ok;
+static NSString *BKCapString(void) {
+    int m = BKCapMask();
+    NSMutableString *s = [NSMutableString stringWithCapacity:9];
+    for (int i = 8; i >= 0; i--) [s appendString:(((m >> i) & 1) ? @"1" : @"0")];
+    return s;
 }
 
 static UIWindow *BKGameWindow(void) {
@@ -310,10 +310,6 @@ static void BKSetPhase(UITouch *t, UITouchPhase p) {
     if ([t respondsToSelector:@selector(setTimestamp:)])
         ((void (*)(id, SEL, NSTimeInterval))objc_msgSend)(t, @selector(setTimestamp:), NSProcessInfo.processInfo.systemUptime);
     ((void (*)(id, SEL, NSInteger))objc_msgSend)(t, @selector(setPhase:), (NSInteger)p);
-}
-
-static void BKSetPos(UITouch *t, CGPoint p, BOOL reset) {
-    ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(t, @selector(_setLocationInWindow:resetPrevious:), p, reset);
 }
 
 static IOHIDEventRef BKTouchHID(UITouch *t) {
@@ -343,30 +339,43 @@ static IOHIDEventRef BKTouchHID(UITouch *t) {
 
 static BOOL BKSend(UITouch *t) {
     UIApplication *app = UIApplication.sharedApplication;
+    if (![app respondsToSelector:@selector(_touchesEvent)]) return NO;
+
     UIEvent *ev = ((UIEvent *(*)(id, SEL))objc_msgSend)(app, @selector(_touchesEvent));
     if (!ev || ![ev isKindOfClass:UIEvent.class]) return NO;
 
-    ((void (*)(id, SEL))objc_msgSend)(ev, @selector(_clearTouches));
+    if ([ev respondsToSelector:@selector(_clearTouches)])
+        ((void (*)(id, SEL))objc_msgSend)(ev, @selector(_clearTouches));
 
     IOHIDEventRef hid = BKTouchHID(t);
     if (hid) {
-        ((void (*)(id, SEL, IOHIDEventRef))objc_msgSend)(ev, @selector(_setHIDEvent:), hid);
+        if ([ev respondsToSelector:@selector(_setHIDEvent:)])
+            ((void (*)(id, SEL, IOHIDEventRef))objc_msgSend)(ev, @selector(_setHIDEvent:), hid);
         CFRelease(hid);
     }
-    ((void (*)(id, SEL, id, BOOL))objc_msgSend)(ev, @selector(_addTouch:forDelayedDelivery:), t, NO);
+    if ([ev respondsToSelector:@selector(_addTouch:forDelayedDelivery:)])
+        ((void (*)(id, SEL, id, BOOL))objc_msgSend)(ev, @selector(_addTouch:forDelayedDelivery:), t, NO);
+
     [app sendEvent:ev];
     return YES;
 }
 
 static UITouch *BKTouchCreate(CGPoint p, UIWindow *gw, uint32_t idx) {
+    Class tC = UITouch.class;
+    if (![tC instancesRespondToSelector:@selector(setWindow:)] ||
+        ![tC instancesRespondToSelector:@selector(_setLocationInWindow:resetPrevious:)] ||
+        ![tC instancesRespondToSelector:@selector(setPhase:)] ||
+        ![tC instancesRespondToSelector:@selector(_setHidEvent:)]) return nil;
+
     UITouch *t = [UITouch new];
     if (!t) return nil;
 
     ((void (*)(id, SEL, id))objc_msgSend)(t, @selector(setWindow:), gw);
-    BKSetPos(t, p, YES);
+    ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(t, @selector(_setLocationInWindow:resetPrevious:), p, YES);
 
     UIView *hv = [gw hitTest:p withEvent:nil];
-    ((void (*)(id, SEL, id))objc_msgSend)(t, @selector(setView:), hv);
+    if ([t respondsToSelector:@selector(setView:)])
+        ((void (*)(id, SEL, id))objc_msgSend)(t, @selector(setView:), hv);
 
     if ([t respondsToSelector:@selector(_setPathIndex:)])
         ((void (*)(id, SEL, uint32_t))objc_msgSend)(t, @selector(_setPathIndex:), idx);
@@ -400,7 +409,7 @@ static BOOL BKInjectUI(CGPoint p, BOOL down, uint32_t idx) {
 
     if (down) {
         if (t) {
-            BKSetPos(t, p, NO);
+            ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(t, @selector(_setLocationInWindow:resetPrevious:), p, NO);
             BKSetPhase(t, UITouchPhaseMoved);
             if (!BKSend(t)) return NO;
             BKSetPhase(t, UITouchPhaseStationary);
@@ -415,7 +424,7 @@ static BOOL BKInjectUI(CGPoint p, BOOL down, uint32_t idx) {
     }
 
     if (!t) return YES;
-    BKSetPos(t, p, NO);
+    ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(t, @selector(_setLocationInWindow:resetPrevious:), p, NO);
     BKSetPhase(t, UITouchPhaseEnded);
     BKSend(t);
     [gTouches removeObjectForKey:k];
@@ -423,15 +432,15 @@ static BOOL BKInjectUI(CGPoint p, BOOL down, uint32_t idx) {
 }
 
 static void BKInjectNow(CGPoint p, BOOL down, uint32_t idx) {
-    if (BKUICapable()) {
+    if (!gTouchBroken) {
         BOOL ok = NO;
         @try {
             ok = BKInjectUI(p, down, idx);
         } @catch (NSException *e) {
             ok = NO;
+            gTouchBroken = YES;
         }
         if (ok) { gTouchOK = YES; BKDiag(); return; }
-        gTouchBroken = YES;
     }
     BKHIDInject(p, down, idx);
     BKDiag();
@@ -446,8 +455,8 @@ static void BKDiag(void) {
     GCKeyboard *kb = GCKeyboard.coalescedKeyboard;
     GCMouse *m = GCMouse.current;
     NSString *via = gTouchBroken ? @"hid!" : (gTouchOK ? @"ui" : (gHIDClient && fnDispatch ? @"hid" : @"NONE"));
-    NSString *t = [NSString stringWithFormat:@"k%d m%d dev%d%d cl%d %@%@", gKeyCount, gMouseCount,
-                   kb ? 1 : 0, m ? 1 : 0, gMonitorCount, via, gHidSeen ? @" +hid" : @""];
+    NSString *t = [NSString stringWithFormat:@"k%d m%d dev%d%d cl%d %@ p%@%@", gKeyCount, gMouseCount,
+                   kb ? 1 : 0, m ? 1 : 0, gMonitorCount, via, BKCapString(), gHidSeen ? @" +hid" : @""];
     if (![gDiag.text isEqualToString:t]) {
         gDiag.text = t;
         gDiag.textColor = [via isEqualToString:@"NONE"] ? UIColor.systemRedColor : UIColor.lightGrayColor;
@@ -619,7 +628,7 @@ static void BKRefresh(void) {
     [gRows removeAllObjects];
 
     if (gBinds.count == 0) {
-        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(2, 4, 232, 44)];
+        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(2, 4, 264, 44)];
         l.text = @"Nenhum bind.\nToque em + Bind e pressione uma tecla.";
         l.numberOfLines = 0;
         l.font = [UIFont systemFontOfSize:11];
@@ -631,18 +640,18 @@ static void BKRefresh(void) {
     CGFloat y = 0;
     for (NSUInteger i = 0; i < gBinds.count; i++) {
         NSMutableDictionary *b = gBinds[i];
-        UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, y, 236, 30)];
+        UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, y, 264, 30)];
         row.backgroundColor = [UIColor colorWithWhite:1 alpha:0.07];
         row.layer.cornerRadius = 6;
 
-        UILabel *n = [[UILabel alloc] initWithFrame:CGRectMake(8, 5, 62, 20)];
+        UILabel *n = [[UILabel alloc] initWithFrame:CGRectMake(8, 5, 70, 20)];
         n.text = BKName([b[@"k"] intValue]);
         n.font = [UIFont boldSystemFontOfSize:12];
         n.textColor = UIColor.whiteColor;
         [row addSubview:n];
 
         UIButton *pos = [UIButton buttonWithType:UIButtonTypeSystem];
-        pos.frame = CGRectMake(70, 5, 92, 20);
+        pos.frame = CGRectMake(78, 5, 100, 20);
         pos.titleLabel.font = [UIFont monospacedDigitSystemFontOfSize:10 weight:UIFontWeightRegular];
         [pos setTitle:[NSString stringWithFormat:@"%.0f, %.0f", [b[@"x"] doubleValue], [b[@"y"] doubleValue]]
              forState:UIControlStateNormal];
@@ -651,7 +660,7 @@ static void BKRefresh(void) {
         [row addSubview:pos];
 
         UIButton *del = [UIButton buttonWithType:UIButtonTypeSystem];
-        del.frame = CGRectMake(198, 2, 30, 26);
+        del.frame = CGRectMake(226, 2, 30, 26);
         [del setTitle:@"x" forState:UIControlStateNormal];
         del.tag = i;
         [del addTarget:gHUD.rootViewController action:@selector(bkDelete:) forControlEvents:UIControlEventTouchUpInside];
@@ -662,13 +671,14 @@ static void BKRefresh(void) {
         y += 36;
     }
 
-    gScroll.contentSize = CGSizeMake(244, y);
+    gScroll.contentSize = CGSizeMake(272, y);
     gStatus.text = gEnabled ? @"ATIVO" : @"PAUSADO";
     gStatus.textColor = gEnabled ? [UIColor colorWithRed:0.3 green:0.95 blue:0.55 alpha:1] : UIColor.systemOrangeColor;
     BKToggleStyle(gAtivoBtn, gEnabled);
     BKToggleStyle(gMarcasBtn, gShowMarks);
     BKToggleStyle(gSetaBtn, gShowPtr);
     BKToggleStyle(gRotBtn, gFixRotation);
+    BKToggleStyle(gSumirBtn, NO);
     BKMarkers();
     BKPtrSync();
     BKDiag();
@@ -755,7 +765,7 @@ static void BKInstallHUD(void) {
     [gBall addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:vc action:@selector(bkToggle:)]];
     [gBall addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:vc action:@selector(bkDrag:)]];
 
-    gPanel = [[UIView alloc] initWithFrame:CGRectMake(12, 64, 272, s.height - 76)];
+    gPanel = [[UIView alloc] initWithFrame:CGRectMake(12, 64, 300, s.height - 76)];
     gPanel.backgroundColor = [UIColor colorWithWhite:0.05 alpha:0.92];
     gPanel.layer.cornerRadius = 12;
     gPanel.layer.borderWidth = 1;
@@ -769,7 +779,7 @@ static void BKInstallHUD(void) {
     [gPanel addSubview:title];
 
     UIButton *x = [UIButton buttonWithType:UIButtonTypeSystem];
-    x.frame = CGRectMake(238, 6, 28, 26);
+    x.frame = CGRectMake(266, 6, 28, 26);
     [x setTitle:@"x" forState:UIControlStateNormal];
     [x addTarget:vc action:@selector(bkToggle:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:x];
@@ -779,66 +789,66 @@ static void BKInstallHUD(void) {
     [gPanel addSubview:gStatus];
 
     UIButton *add = [UIButton buttonWithType:UIButtonTypeSystem];
-    add.frame = CGRectMake(14, 54, 96, 30);
+    add.frame = CGRectMake(14, 54, 100, 30);
     [add setTitle:@"+ Bind" forState:UIControlStateNormal];
     [add addTarget:vc action:@selector(bkAdd:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:add];
 
     UIButton *sens = [UIButton buttonWithType:UIButtonTypeSystem];
-    sens.frame = CGRectMake(114, 54, 80, 30);
+    sens.frame = CGRectMake(118, 54, 84, 30);
     [sens setTitle:[NSString stringWithFormat:@"Sens %.1f", gSens] forState:UIControlStateNormal];
     sens.titleLabel.font = [UIFont systemFontOfSize:11];
     [sens addTarget:vc action:@selector(bkSens:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:sens];
 
     UIButton *test = [UIButton buttonWithType:UIButtonTypeSystem];
-    test.frame = CGRectMake(198, 54, 60, 30);
+    test.frame = CGRectMake(206, 54, 80, 30);
     [test setTitle:@"Testar" forState:UIControlStateNormal];
     test.titleLabel.font = [UIFont systemFontOfSize:11];
     [test addTarget:vc action:@selector(bkTest:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:test];
 
     gAtivoBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gAtivoBtn.frame = CGRectMake(14, 90, 44, 26);
+    gAtivoBtn.frame = CGRectMake(14, 90, 50, 26);
     gAtivoBtn.titleLabel.font = [UIFont systemFontOfSize:9];
     [gAtivoBtn setTitle:@"Ativo" forState:UIControlStateNormal];
     [gAtivoBtn addTarget:vc action:@selector(bkPower:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:gAtivoBtn];
 
     gMarcasBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gMarcasBtn.frame = CGRectMake(63, 90, 44, 26);
+    gMarcasBtn.frame = CGRectMake(69, 90, 50, 26);
     gMarcasBtn.titleLabel.font = [UIFont systemFontOfSize:9];
     [gMarcasBtn setTitle:@"Marca" forState:UIControlStateNormal];
     [gMarcasBtn addTarget:vc action:@selector(bkMarks:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:gMarcasBtn];
 
     gSetaBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gSetaBtn.frame = CGRectMake(112, 90, 44, 26);
+    gSetaBtn.frame = CGRectMake(124, 90, 50, 26);
     gSetaBtn.titleLabel.font = [UIFont systemFontOfSize:9];
     [gSetaBtn setTitle:@"Seta" forState:UIControlStateNormal];
     [gSetaBtn addTarget:vc action:@selector(bkPtr:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:gSetaBtn];
 
     gRotBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gRotBtn.frame = CGRectMake(161, 90, 44, 26);
+    gRotBtn.frame = CGRectMake(179, 90, 50, 26);
     gRotBtn.titleLabel.font = [UIFont systemFontOfSize:9];
     [gRotBtn setTitle:@"Girar" forState:UIControlStateNormal];
     [gRotBtn addTarget:vc action:@selector(bkRot:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:gRotBtn];
 
     gSumirBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gSumirBtn.frame = CGRectMake(210, 90, 44, 26);
+    gSumirBtn.frame = CGRectMake(234, 90, 52, 26);
     gSumirBtn.titleLabel.font = [UIFont systemFontOfSize:9];
     [gSumirBtn setTitle:@"Sumir" forState:UIControlStateNormal];
     [gSumirBtn addTarget:vc action:@selector(bkSumir:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:gSumirBtn];
 
-    gDiag = [[UILabel alloc] initWithFrame:CGRectMake(14, gPanel.bounds.size.height - 20, 244, 14)];
+    gDiag = [[UILabel alloc] initWithFrame:CGRectMake(14, gPanel.bounds.size.height - 20, 272, 14)];
     gDiag.font = [UIFont monospacedDigitSystemFontOfSize:9 weight:UIFontWeightRegular];
     gDiag.textColor = UIColor.lightGrayColor;
     [gPanel addSubview:gDiag];
 
-    gScroll = [[UIScrollView alloc] initWithFrame:CGRectMake(14, 124, 244, gPanel.bounds.size.height - 148)];
+    gScroll = [[UIScrollView alloc] initWithFrame:CGRectMake(14, 124, 272, gPanel.bounds.size.height - 148)];
     gScroll.alwaysBounceVertical = YES;
     [gPanel addSubview:gScroll];
 

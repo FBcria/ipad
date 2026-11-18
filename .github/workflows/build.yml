@@ -28,15 +28,36 @@ jobs:
       - name: Preparar dylib
         run: |
           set -e
-          TOOL="$THEOS/toolchain/linux/iphone/bin"
           DYLIB=$(find BallKey/.theos -name 'NativeInput.dylib' | head -n 1)
           [ -n "$DYLIB" ] || { echo "::error::dylib nao gerada"; find BallKey/.theos -type f | head -n 60; exit 1; }
           cp "$DYLIB" ./libNativeInput.dylib
-          "$TOOL/llvm-strip" -x ./libNativeInput.dylib || true
-          "$TOOL/ldid" -S ./libNativeInput.dylib
-          "$TOOL/llvm-objdump" -p ./libNativeInput.dylib | grep -E 'LC_ID_DYLIB|name @rpath'
-          "$TOOL/llvm-objdump" -p ./libNativeInput.dylib | grep -E 'cmd LC_LOAD_DYLIB' -A2
+
+          LDID=$(command -v ldid 2>/dev/null || true)
+          if [ -z "$LDID" ]; then
+            LDID=$(find "$THEOS" -type f -name ldid 2>/dev/null | head -n 1)
+          fi
+          if [ -n "$LDID" ]; then
+            "$LDID" -S ./libNativeInput.dylib && echo "assinado com $LDID"
+          else
+            echo "aviso: ldid nao encontrado, seguindo sem assinatura"
+          fi
+
+          STRIP=$(command -v llvm-strip 2>/dev/null || true)
+          if [ -z "$STRIP" ]; then
+            STRIP=$(find "$THEOS" -type f -name 'llvm-strip' 2>/dev/null | head -n 1)
+          fi
+          if [ -n "$STRIP" ]; then
+            "$STRIP" -x ./libNativeInput.dylib && echo "stripped com $STRIP"
+          else
+            echo "aviso: sem strip (o link ja usa -Wl,-x)"
+          fi
+
+          echo "--- tipo ---"
           file ./libNativeInput.dylib
+          echo "--- instal name / dependencias ---"
+          grep -a -o -E '@rpath/[A-Za-z0-9._-]+' ./libNativeInput.dylib | sort -u
+          grep -a -o -E '/usr/lib/[A-Za-z0-9._-]+' ./libNativeInput.dylib | sort -u
+          grep -a -o -E '/System/Library/Frameworks/[A-Za-z0-9._-]+' ./libNativeInput.dylib | sort -u
 
       - name: Publicar
         run: |

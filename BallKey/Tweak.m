@@ -32,6 +32,7 @@ static UIView *gPointer;
 static UIView *gBanner;
 static UILabel *gHint;
 static UILabel *gStatus;
+static UILabel *gDiag;
 static UIStackView *gStack;
 static NSMutableArray<UIView *> *gMarks;
 static UIButton *gAtivoBtn, *gMarcasBtn, *gRotBtn;
@@ -43,7 +44,7 @@ static BOOL gFixRotation = YES;
 static CGFloat gSens = 1.6;
 static CGPoint gPtr;
 
-static NSInteger gStep = 0;                 // 0 parado, 1 esperando tecla, 2 esperando toque
+static NSInteger gStep = 0;
 static NSMutableDictionary *gPending = nil;
 static BOOL gLeftHeld = NO;
 static uint32_t gDragFinger = 9;
@@ -51,17 +52,50 @@ static uint32_t gDragFinger = 9;
 static BOOL gHasEnqueue = NO;
 static void *gHIDClient = NULL;
 static void (*fnDispatch)(void *, IOHIDEventRef) = NULL;
+static void (*fnSetSender)(IOHIDEventRef, uint64_t) = NULL;
+static uint64_t gSenderID = 0;
+static id gMonitorBlock = nil;
+static void *gMonitor = NULL;
 
 #pragma mark - Injecao
+
+static void BKStartMonitor(void);
 
 static void BKSetupInject(void) {
     static dispatch_once_t o;
     dispatch_once(&o, ^{
-        gHasEnqueue = [UIApplication.sharedApplication respondsToSelector:sel_registerName("_enqueueHIDEvent:")];
         void *c = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreate");
         fnDispatch = (void (*)(void *, IOHIDEventRef))dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientDispatchEvent");
+        fnSetSender = (void (*)(IOHIDEventRef, uint64_t))dlsym(RTLD_DEFAULT, "IOHIDEventSetSenderID");
         if (c && fnDispatch) gHIDClient = ((void *(*)(CFAllocatorRef))c)(kCFAllocatorDefault);
+        gHasEnqueue = [UIApplication.sharedApplication respondsToSelector:sel_registerName("_enqueueHIDEvent:")];
+        BKStartMonitor();
     });
+}
+
+static void BKStartMonitor(void) {
+    void *reg = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientRegisterEventBlock");
+    void *sched = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientScheduleWithRunLoop");
+    void *createT = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreateWithType");
+    if (!reg || !sched) return;
+
+    if (createT) gMonitor = ((void *(*)(CFAllocatorRef, int, void *))createT)(kCFAllocatorDefault, 2, NULL);
+    if (!gMonitor) {
+        void *c = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreate");
+        if (!c) return;
+        gMonitor = ((void *(*)(CFAllocatorRef))c)(kCFAllocatorDefault);
+    }
+    if (!gMonitor) return;
+
+    void (^blk)(void *, void *, void *, IOHIDEventRef) = ^(void *t, void *r, void *s, IOHIDEventRef e) {
+        if (!e) return;
+        if (IOHIDEventGetType(e) != kIOHIDEventTypeDigitizer) return;
+        uint64_t sid = IOHIDEventGetSenderID(e);
+        if (sid) gSenderID = sid;
+    };
+    gMonitorBlock = [blk copy];
+    ((void (*)(void *, void *, void *, void *))reg)(gMonitor, (__bridge void *)gMonitorBlock, NULL, NULL);
+    ((void (*)(void *, CFRunLoopRef, CFStringRef))sched)(gMonitor, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
 }
 
 static CGPoint BKToDevice(CGPoint p) {
@@ -75,6 +109,18 @@ static CGPoint BKToDevice(CGPoint p) {
     }
 }
 
+static void BKDiag(void) {
+    NSString *t;
+    if (gSenderID && fnSetSender)      t = @"via: hid+sender";
+    else if (gHasEnqueue)              t = @"via: enqueue";
+    else if (gHIDClient && fnDispatch) t = @"via: hid";
+    else                               t = @"via: NENHUM";
+    if (![gDiag.text isEqualToString:t]) {
+        gDiag.text = t;
+        gDiag.textColor = [t isEqualToString:@"via: NENHUM"] ? UIColor.systemRedColor : UIColor.lightGrayColor;
+    }
+}
+
 static void BKInjectNow(CGPoint p, BOOL down, uint32_t idx) {
     BKSetupInject();
     CGPoint d = gFixRotation ? BKToDevice(p) : p;
@@ -85,13 +131,18 @@ static void BKInjectNow(CGPoint p, BOOL down, uint32_t idx) {
         d.x, d.y, 0, 0, 0, 1, down, 0);
     if (!ev) return;
     IOHIDEventSetIntegerValue(ev, BK_FIELD_DISPLAY, 1);
-    if (gHIDClient && fnDispatch) {
+
+    if (gSenderID && fnSetSender && gHIDClient && fnDispatch) {
+        fnSetSender(ev, gSenderID);
         fnDispatch(gHIDClient, ev);
     } else if (gHasEnqueue) {
         ((void (*)(id, SEL, IOHIDEventRef))objc_msgSend)(
             UIApplication.sharedApplication, sel_registerName("_enqueueHIDEvent:"), ev);
+    } else if (gHIDClient && fnDispatch) {
+        fnDispatch(gHIDClient, ev);
     }
     CFRelease(ev);
+    BKDiag();
 }
 
 static void BKInject(CGPoint p, BOOL down, uint32_t idx) {
@@ -296,6 +347,7 @@ static void BKRefresh(void) {
     [gMarcasBtn setTitle:(gShowMarks ? @"Marcas: ON" : @"Marcas: OFF") forState:UIControlStateNormal];
     [gRotBtn setTitle:(gFixRotation ? @"Girar: ON" : @"Girar: OFF") forState:UIControlStateNormal];
     BKMarkers();
+    BKDiag();
 }
 
 static void BKSetStep(NSInteger s, NSString *msg) {
@@ -381,8 +433,7 @@ static void BKInstallHUD(void) {
     bl.userInteractionEnabled = NO;
     [gBall addSubview:bl];
     [gBall addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:vc action:@selector(bkToggle:)]];
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:vc action:@selector(bkDrag:)];
-    [gBall addGestureRecognizer:pan];
+    [gBall addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:vc action:@selector(bkDrag:)]];
 
     gPanel = [[UIView alloc] initWithFrame:CGRectMake(12, 64, 272, s.height - 76)];
     gPanel.backgroundColor = [UIColor colorWithWhite:0.05 alpha:0.92];
@@ -445,7 +496,12 @@ static void BKInstallHUD(void) {
     [gRotBtn addTarget:vc action:@selector(bkRot:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:gRotBtn];
 
-    UIScrollView *sv = [[UIScrollView alloc] initWithFrame:CGRectMake(14, 124, 244, gPanel.bounds.size.height - 136)];
+    gDiag = [[UILabel alloc] initWithFrame:CGRectMake(14, gPanel.bounds.size.height - 20, 244, 14)];
+    gDiag.font = [UIFont monospacedDigitSystemFontOfSize:9 weight:UIFontWeightRegular];
+    gDiag.textColor = UIColor.lightGrayColor;
+    [gPanel addSubview:gDiag];
+
+    UIScrollView *sv = [[UIScrollView alloc] initWithFrame:CGRectMake(14, 124, 244, gPanel.bounds.size.height - 148)];
     sv.alwaysBounceVertical = YES;
     [gPanel addSubview:sv];
 
@@ -574,15 +630,14 @@ static void BKKey(int c, BOOL down) {
         return;
     }
     if (!gEnabled) return;
-    if (BKIndexOf(c) < 0) return;
-    down ? BKDown(c, CGPointMake([gBinds[BKIndexOf(c)][@"x"] doubleValue],
-                                 [gBinds[BKIndexOf(c)][@"y"] doubleValue]))
-         : BKUp(c);
+    NSInteger i = BKIndexOf(c);
+    if (i < 0) return;
+    if (down) BKDown(c, CGPointMake([gBinds[i][@"x"] doubleValue], [gBinds[i][@"y"] doubleValue]));
+    else BKUp(c);
 }
 
 static void BKMouseButton(int c, BOOL down) {
-    if (gStep == 1) { if (down) BKKey(c, down); return; }
-    if (gStep == 2) { if (down) BKKey(c, down); return; }
+    if (gStep == 1 || gStep == 2) { if (down) BKKey(c, down); return; }
     if (!gEnabled) return;
 
     if (c == BK_LEFT) {
@@ -616,7 +671,6 @@ static void BKMouseMove(float dx, float dy) {
 
 static id gGameKey = nil;
 static id gGameMove = nil;
-static id gGameBtn = nil;
 
 static void BKInstallKeyboard(GCKeyboard *kb) {
     if (!kb) return;
@@ -637,7 +691,6 @@ static void BKInstallMouse(GCMouse *m) {
         BKMouseMove(dx, dy);
     };
     in.leftButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) {
-        if (gGameBtn) ((void (^)(GCControllerButtonInput *, float, BOOL))gGameBtn)(b, v, p);
         BKMouseButton(BK_LEFT, p);
     };
     in.rightButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) {
@@ -656,7 +709,6 @@ static void BKInstallInput(void) {
 }
 
 static void BKReapplyInput(void) {
-    if (!gEnabled && !gHUD) return;
     dispatch_async(dispatch_get_main_queue(), ^{
         GCKeyboard *kb = GCKeyboard.coalescedKeyboard;
         if (kb && kb.keyboardInput.keyChangedHandler == nil) BKInstallKeyboard(kb);
@@ -694,7 +746,6 @@ static void BKInit(void) {
         dispatch_async(dispatch_get_main_queue(), ^{ BKInstallHUD(); });
     }];
 
-    // rede de seguranca: cobre launch lento, scene tardia e handler roubado pelo jogo
     __block int tries = 0;
     NSTimer *t = [NSTimer timerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *tm) {
         tries++;

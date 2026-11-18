@@ -105,6 +105,7 @@ static BOOL gTouchOK = NO;
 static int gKeyCount = 0;
 static int gMouseCount = 0;
 
+static uint64_t gSenderID = 0;
 static void *gHIDClient = NULL;
 static void (*fnDispatch)(void *, IOHIDEventRef) = NULL;
 static void (*fnSetSender)(IOHIDEventRef, uint64_t) = NULL;
@@ -172,7 +173,7 @@ static void BKStartMonitor(void) {
             int dt = (int)IOHIDEventGetIntegerValue(e, BK_D_TYPE);
             if (dt == 3) {
                 uint64_t sid = fnGetSender ? fnGetSender(e) : 0;
-                if (sid) gSenderDummy();
+                if (sid) gSenderID = sid;
                 return;
             }
             if (dt < 4) return;
@@ -264,7 +265,7 @@ static void BKHIDInject(CGPoint p, BOOL down, uint32_t idx) {
     IOHIDEventSetIntegerValue(hand, BK_D_RANGE, down);
     IOHIDEventSetIntegerValue(hand, BK_D_TOUCH, down);
     IOHIDEventSetIntegerValue(hand, BK_D_DISPLAY, 1);
-    if (fnSetSender) fnSetSender(hand, BK_SENDER);
+    if (fnSetSender) fnSetSender(hand, gSenderID ? gSenderID : BK_SENDER);
 
     if (gHIDClient && fnDispatch) fnDispatch(gHIDClient, hand);
     CFRelease(hand);
@@ -1059,11 +1060,9 @@ static void BKInstallMouse(GCMouse *m) {
     if (orig_setMouseMoved) orig_setMouseMoved(in, @selector(setMouseMovedHandler:), in.mouseMovedHandler);
     else in.mouseMovedHandler = BKMouseBlock();
 
-    // iOS 26: variante V2, se existir
     SEL v2 = sel_registerName("setMouseMovedHandlerV2:");
-    if ([in respondsToSelector:v2]) {
+    if ([in respondsToSelector:v2])
         ((void (*)(id, SEL, id))objc_msgSend)(in, v2, BKMouseBlock());
-    }
 
     in.leftButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) {
         BKMouseButton(BK_LEFT, p);

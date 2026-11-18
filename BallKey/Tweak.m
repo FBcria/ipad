@@ -656,7 +656,7 @@ static void BKInstallHUD(void) {
 @implementation BKWindow
 - (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e {
     UIView *v = [super hitTest:p withEvent:e];
-    if (v && v != self) return v;
+    if (v && v != self && v != gRootView) return v;
     if (gStep == 2) return gRootView;
     return nil;
 }

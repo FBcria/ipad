@@ -1,7 +1,6 @@
 //
 //  NativeInput — teclado e mouse -> toque nativo
-//  Injecao por UITouch + sendEvent (funciona em app assinado, sem entitlement)
-//  HID direto mantido como reserva (TrollStore/jailbreak).
+//  Injecao por UITouch + sendEvent (app assinado), HID como reserva.
 //
 
 #import <UIKit/UIKit.h>
@@ -60,6 +59,8 @@
 - (void)_setIsFirstTouchForView:(BOOL)b;
 - (void)_setLocationInWindow:(CGPoint)p resetPrevious:(BOOL)r;
 - (void)_setHidEvent:(IOHIDEventRef)e;
+- (void)_setPathIndex:(uint32_t)i;
+- (void)_setPathIdentity:(uint32_t)i;
 @end
 
 @interface UIScene (BKPriv)
@@ -101,6 +102,8 @@ static uint32_t gDragFinger = 9;
 static int gBtnMask = 0;
 static BOOL gHidSeen = NO;
 static BOOL gTouchOK = NO;
+static BOOL gTouchBroken = NO;
+static int gUICap = -1;
 
 static int gKeyCount = 0;
 static int gMouseCount = 0;
@@ -273,6 +276,27 @@ static void BKHIDInject(CGPoint p, BOOL down, uint32_t idx) {
 
 #pragma mark - Injecao por UITouch
 
+// confere se todos os seletores privados existem nesta versao
+static BOOL BKUICapable(void) {
+    if (gTouchBroken) return NO;
+    if (gUICap >= 0) return gUICap == 1;
+
+    BOOL ok = YES;
+    Class evC = UIEvent.class, tC = UITouch.class;
+    ok &= [UIApplication.sharedApplication respondsToSelector:@selector(_touchesEvent)];
+    ok &= [evC instancesRespondToSelector:@selector(_clearTouches)];
+    ok &= [evC instancesRespondToSelector:@selector(_addTouch:forDelayedDelivery:)];
+    ok &= [evC instancesRespondToSelector:@selector(_setHIDEvent:)];
+    ok &= [tC instancesRespondToSelector:@selector(setWindow:)];
+    ok &= [tC instancesRespondToSelector:@selector(_setLocationInWindow:resetPrevious:)];
+    ok &= [tC instancesRespondToSelector:@selector(setView:)];
+    ok &= [tC instancesRespondToSelector:@selector(setPhase:)];
+    ok &= [tC instancesRespondToSelector:@selector(_setHidEvent:)];
+
+    gUICap = ok ? 1 : 0;
+    return ok;
+}
+
 static UIWindow *BKGameWindow(void) {
     UIWindow *best = nil;
     for (UIWindow *w in UIApplication.sharedApplication.windows) {
@@ -280,6 +304,16 @@ static UIWindow *BKGameWindow(void) {
         if (!best || w.windowLevel < best.windowLevel) best = w;
     }
     return best;
+}
+
+static void BKSetPhase(UITouch *t, UITouchPhase p) {
+    if ([t respondsToSelector:@selector(setTimestamp:)])
+        ((void (*)(id, SEL, NSTimeInterval))objc_msgSend)(t, @selector(setTimestamp:), NSProcessInfo.processInfo.systemUptime);
+    ((void (*)(id, SEL, NSInteger))objc_msgSend)(t, @selector(setPhase:), (NSInteger)p);
+}
+
+static void BKSetPos(UITouch *t, CGPoint p, BOOL reset) {
+    ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(t, @selector(_setLocationInWindow:resetPrevious:), p, reset);
 }
 
 static IOHIDEventRef BKTouchHID(UITouch *t) {
@@ -307,10 +341,11 @@ static IOHIDEventRef BKTouchHID(UITouch *t) {
     return hand;
 }
 
-static void BKSend(UITouch *t) {
+static BOOL BKSend(UITouch *t) {
     UIApplication *app = UIApplication.sharedApplication;
     UIEvent *ev = ((UIEvent *(*)(id, SEL))objc_msgSend)(app, @selector(_touchesEvent));
-    if (!ev) return;
+    if (!ev || ![ev isKindOfClass:UIEvent.class]) return NO;
+
     ((void (*)(id, SEL))objc_msgSend)(ev, @selector(_clearTouches));
 
     IOHIDEventRef hid = BKTouchHID(t);
@@ -320,23 +355,30 @@ static void BKSend(UITouch *t) {
     }
     ((void (*)(id, SEL, id, BOOL))objc_msgSend)(ev, @selector(_addTouch:forDelayedDelivery:), t, NO);
     [app sendEvent:ev];
-    gTouchOK = YES;
+    return YES;
 }
 
-static UITouch *BKTouchCreate(CGPoint p, UIWindow *gw) {
+static UITouch *BKTouchCreate(CGPoint p, UIWindow *gw, uint32_t idx) {
     UITouch *t = [UITouch new];
+    if (!t) return nil;
+
     ((void (*)(id, SEL, id))objc_msgSend)(t, @selector(setWindow:), gw);
-    ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(t, @selector(_setLocationInWindow:resetPrevious:), p, YES);
+    BKSetPos(t, p, YES);
 
     UIView *hv = [gw hitTest:p withEvent:nil];
     ((void (*)(id, SEL, id))objc_msgSend)(t, @selector(setView:), hv);
-    ((void (*)(id, SEL, NSInteger))objc_msgSend)(t, @selector(setPhase:), (NSInteger)UITouchPhaseBegan);
 
+    if ([t respondsToSelector:@selector(_setPathIndex:)])
+        ((void (*)(id, SEL, uint32_t))objc_msgSend)(t, @selector(_setPathIndex:), idx);
+    if ([t respondsToSelector:@selector(_setPathIdentity:)])
+        ((void (*)(id, SEL, uint32_t))objc_msgSend)(t, @selector(_setPathIdentity:), idx + 2);
     if ([t respondsToSelector:@selector(_setIsFirstTouchForView:)]) {
-        ((void (*)(id, SEL, BOOL))objc_msgSend)(t, @selector(setIsTap:), YES);
+        if ([t respondsToSelector:@selector(setIsTap:)])
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(t, @selector(setIsTap:), YES);
         ((void (*)(id, SEL, BOOL))objc_msgSend)(t, @selector(_setIsFirstTouchForView:), YES);
     }
-    ((void (*)(id, SEL, NSTimeInterval))objc_msgSend)(t, @selector(setTimestamp:), NSProcessInfo.processInfo.systemUptime);
+    BKSetPhase(t, UITouchPhaseBegan);
+
     if ([t respondsToSelector:@selector(setGestureView:)])
         ((void (*)(id, SEL, id))objc_msgSend)(t, @selector(setGestureView:), hv);
 
@@ -348,9 +390,9 @@ static UITouch *BKTouchCreate(CGPoint p, UIWindow *gw) {
     return t;
 }
 
-static void BKInjectNow(CGPoint p, BOOL down, uint32_t idx) {
+static BOOL BKInjectUI(CGPoint p, BOOL down, uint32_t idx) {
     UIWindow *gw = BKGameWindow();
-    if (!gw) { BKHIDInject(p, down, idx); return; }
+    if (!gw) return NO;
     if (!gTouches) gTouches = [NSMutableDictionary dictionary];
 
     NSNumber *k = @(idx);
@@ -358,26 +400,41 @@ static void BKInjectNow(CGPoint p, BOOL down, uint32_t idx) {
 
     if (down) {
         if (t) {
-            ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(t, @selector(_setLocationInWindow:resetPrevious:), p, NO);
-            ((void (*)(id, SEL, NSInteger))objc_msgSend)(t, @selector(setPhase:), (NSInteger)UITouchPhaseMoved);
-            ((void (*)(id, SEL, NSTimeInterval))objc_msgSend)(t, @selector(setTimestamp:), NSProcessInfo.processInfo.systemUptime);
-            BKSend(t);
-            ((void (*)(id, SEL, NSInteger))objc_msgSend)(t, @selector(setPhase:), (NSInteger)UITouchPhaseStationary);
-            return;
+            BKSetPos(t, p, NO);
+            BKSetPhase(t, UITouchPhaseMoved);
+            if (!BKSend(t)) return NO;
+            BKSetPhase(t, UITouchPhaseStationary);
+            return YES;
         }
-        t = BKTouchCreate(p, gw);
-        if (!t) { BKHIDInject(p, down, idx); return; }
+        t = BKTouchCreate(p, gw, idx);
+        if (!t) return NO;
         gTouches[k] = t;
-        BKSend(t);
-        ((void (*)(id, SEL, NSInteger))objc_msgSend)(t, @selector(setPhase:), (NSInteger)UITouchPhaseStationary);
-    } else {
-        if (!t) return;
-        ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(t, @selector(_setLocationInWindow:resetPrevious:), p, NO);
-        ((void (*)(id, SEL, NSInteger))objc_msgSend)(t, @selector(setPhase:), (NSInteger)UITouchPhaseEnded);
-        ((void (*)(id, SEL, NSTimeInterval))objc_msgSend)(t, @selector(setTimestamp:), NSProcessInfo.processInfo.systemUptime);
-        BKSend(t);
-        [gTouches removeObjectForKey:k];
+        if (!BKSend(t)) { [gTouches removeObjectForKey:k]; return NO; }
+        BKSetPhase(t, UITouchPhaseStationary);
+        return YES;
     }
+
+    if (!t) return YES;
+    BKSetPos(t, p, NO);
+    BKSetPhase(t, UITouchPhaseEnded);
+    BKSend(t);
+    [gTouches removeObjectForKey:k];
+    return YES;
+}
+
+static void BKInjectNow(CGPoint p, BOOL down, uint32_t idx) {
+    if (BKUICapable()) {
+        BOOL ok = NO;
+        @try {
+            ok = BKInjectUI(p, down, idx);
+        } @catch (NSException *e) {
+            ok = NO;
+        }
+        if (ok) { gTouchOK = YES; BKDiag(); return; }
+        gTouchBroken = YES;
+    }
+    BKHIDInject(p, down, idx);
+    BKDiag();
 }
 
 static void BKInject(CGPoint p, BOOL down, uint32_t idx) {
@@ -388,7 +445,7 @@ static void BKInject(CGPoint p, BOOL down, uint32_t idx) {
 static void BKDiag(void) {
     GCKeyboard *kb = GCKeyboard.coalescedKeyboard;
     GCMouse *m = GCMouse.current;
-    NSString *via = gTouchOK ? @"ui" : (gHIDClient && fnDispatch ? @"hid" : @"NONE");
+    NSString *via = gTouchBroken ? @"hid!" : (gTouchOK ? @"ui" : (gHIDClient && fnDispatch ? @"hid" : @"NONE"));
     NSString *t = [NSString stringWithFormat:@"k%d m%d dev%d%d cl%d %@%@", gKeyCount, gMouseCount,
                    kb ? 1 : 0, m ? 1 : 0, gMonitorCount, via, gHidSeen ? @" +hid" : @""];
     if (![gDiag.text isEqualToString:t]) {

@@ -1,8 +1,8 @@
-Package: com.wjf.ballkey
-Name: BallKey
-Version: 2.4.1
+Package: com.wjf.nativeinput
+Name: NativeInput
+Version: 3.0.0
 Architecture: iphoneos-arm
-Description: Mapeador de teclado e mouse para Free Fire
+Description: Mapeador de teclado e mouse para Free Fire (sem Substrate)
 Maintainer: wjf
 Author: wjf
 Section: Tweaks

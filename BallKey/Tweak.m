@@ -69,6 +69,15 @@ static void *gMonitor = NULL;
 static void (*orig_setKeyChanged)(id, SEL, id) = NULL;
 static void (*orig_setMouseMoved)(id, SEL, id) = NULL;
 
+#pragma mark - Prototipos
+
+static void BKKey(int c, BOOL down);
+static void BKMouseButton(int c, BOOL down);
+static void BKMouseMove(float dx, float dy);
+static void BKPtrSync(void);
+static void BKDiag(void);
+static void BKRefresh(void);
+
 #pragma mark - Injecao
 
 static AbsoluteTime BKNow(void) {
@@ -290,8 +299,6 @@ static NSString *BKName(int c) {
 }
 
 #pragma mark - UI
-
-static void BKRefresh(void);
 
 static void BKPtrSync(void) {
     if (!gPointer) return;

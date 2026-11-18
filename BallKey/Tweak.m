@@ -13,9 +13,16 @@
 #import <unistd.h>
 #import <string.h>
 
-// kIOHIDEventFieldBase(kIOHIDEventTypeDigitizer) | IsDisplayIntegrated
-#define BK_FIELD_DISPLAY 0xB0019
-#define BK_TYPE_DIGITIZER 11
+// kIOHIDEventFieldBase(kIOHIDEventTypeDigitizer) | campo
+#define BK_D_X        0xB0001
+#define BK_D_Y        0xB0002
+#define BK_D_MASK     0xB0004
+#define BK_D_TYPE     0xB0005
+#define BK_D_DISPLAY  0xB0019
+#define BK_T_X        0x40001
+#define BK_T_Y        0x40002
+#define BK_T_DIGITIZER 11
+#define BK_T_TRANSLATION 4
 
 #define BK_LEFT   (-1)
 #define BK_RIGHT  (-2)
@@ -53,6 +60,7 @@ static NSInteger gStep = 0;
 static NSMutableDictionary *gPending = nil;
 static BOOL gLeftHeld = NO;
 static uint32_t gDragFinger = 9;
+static int gBtnMask = 0;
 
 static int gKeyCount = 0;
 static int gMouseCount = 0;
@@ -106,7 +114,7 @@ static void BKStartMonitor(void) {
     void *reg = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientRegisterEventBlock");
     void *sched = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientScheduleWithRunLoop");
     void *createT = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreateWithType");
-    if (!reg || !sched || !fnGetSender) return;
+    if (!reg || !sched) return;
 
     if (createT) gMonitor = ((void *(*)(CFAllocatorRef, int, void *))createT)(kCFAllocatorDefault, 2, NULL);
     if (!gMonitor) {
@@ -118,9 +126,46 @@ static void BKStartMonitor(void) {
 
     void (^blk)(void *, void *, void *, IOHIDEventRef) = ^(void *t, void *r, void *s, IOHIDEventRef e) {
         if (!e) return;
-        if (IOHIDEventGetType(e) != BK_TYPE_DIGITIZER) return;
-        uint64_t sid = fnGetSender(e);
-        if (sid) gSenderID = sid;
+        int type = (int)IOHIDEventGetType(e);
+
+        if (type == BK_T_DIGITIZER) {
+            int dt = (int)IOHIDEventGetIntegerValue(e, BK_D_TYPE);
+
+            if (dt == 3) {
+                uint64_t sid = fnGetSender ? fnGetSender(e) : 0;
+                if (sid) gSenderID = sid;
+                return;
+            }
+            if (dt < 4) return;
+            if (GCMouse.current) return;
+
+            double dx = IOHIDEventGetFloatValue(e, BK_D_X);
+            double dy = IOHIDEventGetFloatValue(e, BK_D_Y);
+            if (dx != 0 || dy != 0) {
+                gMouseCount++;
+                BKMouseMove((float)dx, (float)dy);
+            }
+
+            int mask = (int)IOHIDEventGetIntegerValue(e, BK_D_MASK);
+            if (mask != gBtnMask) {
+                BOOL l = (mask & 1) != 0, rt = (mask & 2) != 0, md = (mask & 4) != 0;
+                if (l  != ((gBtnMask & 1) != 0)) BKMouseButton(BK_LEFT, l);
+                if (rt != ((gBtnMask & 2) != 0)) BKMouseButton(BK_RIGHT, rt);
+                if (md != ((gBtnMask & 4) != 0)) BKMouseButton(BK_MIDDLE, md);
+                gBtnMask = mask;
+            }
+            return;
+        }
+
+        if (type == BK_T_TRANSLATION) {
+            if (GCMouse.current) return;
+            double dx = IOHIDEventGetFloatValue(e, BK_T_X);
+            double dy = IOHIDEventGetFloatValue(e, BK_T_Y);
+            if (dx != 0 || dy != 0) {
+                gMouseCount++;
+                BKMouseMove((float)dx, (float)dy);
+            }
+        }
     };
     gMonitorBlock = [blk copy];
     ((void (*)(void *, void *, void *, void *))reg)(gMonitor, (__bridge void *)gMonitorBlock, NULL, NULL);
@@ -162,7 +207,7 @@ static void BKInjectNow(CGPoint p, BOOL down, uint32_t idx) {
         down ? kIOHIDDigitizerEventTouch : 0, down,
         d.x, d.y, 0, 0, 0, 1, down, 0);
     if (!ev) return;
-    IOHIDEventSetIntegerValue(ev, BK_FIELD_DISPLAY, 1);
+    IOHIDEventSetIntegerValue(ev, BK_D_DISPLAY, 1);
 
     if (gSenderID && fnSetSender && gHIDClient && fnDispatch) {
         fnSetSender(ev, gSenderID);
@@ -217,6 +262,7 @@ static void BKReleaseAll(void) {
     }
     [gHeld removeAllObjects];
     if (gLeftHeld) { BKInject(gPtr, NO, gDragFinger); gLeftHeld = NO; }
+    gBtnMask = 0;
 }
 
 #pragma mark - Config
@@ -590,6 +636,10 @@ static void BKInstallHUD(void) {
 
 @implementation BKRoot
 
+- (void)loadView {
+    self.view = [[BKRootView alloc] initWithFrame:UIScreen.mainScreen.bounds];
+}
+
 - (BOOL)canBecomeFirstResponder { return YES; }
 
 - (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
@@ -731,14 +781,6 @@ static void BKMouseButton(int c, BOOL down) {
         if (BKIndexOf(BK_LEFT) >= 0) { down ? BKDown(BK_LEFT, gPtr) : BKUp(BK_LEFT); return; }
         if (down) { gLeftHeld = YES; BKInject(gPtr, YES, gDragFinger); }
         else if (gLeftHeld) { BKInject(gPtr, NO, gDragFinger); gLeftHeld = NO; }
-        return;
-    }
-    if (c == BK_RIGHT && BKIndexOf(BK_RIGHT) < 0) {
-        if (down) dispatch_async(dispatch_get_main_queue(), ^{
-            gPanelOpen = !gPanelOpen;
-            gPanel.hidden = !gPanelOpen;
-            BKSave();
-        });
         return;
     }
     if (BKIndexOf(c) >= 0) { down ? BKDown(c, gPtr) : BKUp(c); }

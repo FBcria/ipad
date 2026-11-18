@@ -63,6 +63,9 @@ static uint32_t gDragFinger = 9;
 static int gBtnMask = 0;
 static BOOL gHidSeen = NO;
 
+static CFAbsoluteTime gPassUntil = 0;
+static CGPoint gPassPoint = {0, 0};
+
 static int gKeyCount = 0;
 static int gMouseCount = 0;
 
@@ -220,6 +223,9 @@ static void BKDiag(void) {
 
 static void BKInjectNow(CGPoint p, BOOL down, uint32_t idx) {
     BKSetupInject();
+    gPassPoint = p;
+    gPassUntil = CFAbsoluteTimeGetCurrent() + 0.12;
+
     CGPoint d = BKToDevice(p);
     IOHIDEventRef ev = IOHIDEventCreateDigitizerEvent(
         kCFAllocatorDefault, BKNow(),
@@ -648,6 +654,7 @@ static void BKInstallHUD(void) {
     gPanel.hidden = !gPanelOpen;
     [w makeKeyAndVisible];
     [vc becomeFirstResponder];
+    [vc setNeedsUpdateOfPrefersPointerLocked];
     BKRefresh();
 }
 
@@ -655,10 +662,17 @@ static void BKInstallHUD(void) {
 
 @implementation BKWindow
 - (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e {
-    UIView *v = [super hitTest:p withEvent:e];
-    if (v && v != self && v != gRootView) return v;
     if (gStep == 2) return gRootView;
-    return nil;
+
+    UIView *v = [super hitTest:p withEvent:e];
+    if (!v || v == self || v == gRootView) {
+        if (CFAbsoluteTimeGetCurrent() < gPassUntil &&
+            !CGRectContainsPoint(gPanel.frame, gPassPoint) && !gPanel.hidden) {
+            return nil;
+        }
+        return nil;
+    }
+    return v;
 }
 @end
 
@@ -672,6 +686,8 @@ static void BKInstallHUD(void) {
 }
 
 - (BOOL)canBecomeFirstResponder { return YES; }
+
+- (BOOL)prefersPointerLocked { return YES; }
 
 - (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
     for (UIPress *p in presses) {
@@ -923,6 +939,7 @@ static void BKTick(void) {
         if (kb) BKInstallKeyboard(kb);
         GCMouse *m = GCMouse.current;
         if (m) BKInstallMouse(m);
+        if (gHUD.rootViewController) [gHUD.rootViewController setNeedsUpdateOfPrefersPointerLocked];
         BKDiag();
     });
 }

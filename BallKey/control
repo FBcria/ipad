@@ -1,9 +1,9 @@
 Package: com.fbcria.mobileinput
 Name: MobileInput
 Version: 1.0
-Architecture: iphoneos-arm64
+Architecture: iphoneos-arm
 Description: Teclado e mouse como toque no Free Fire
 Maintainer: FBcria
 Author: FBcria
 Section: Tweaks
-Depends: firmware (>= 14.0), ellekit | mobilesubstrate
+Depends: mobilesubstrate

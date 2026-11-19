@@ -29,12 +29,39 @@ static int gK = 0, gM = 0, gTaps = 0;
 static NSMutableDictionary *gBinds;
 static uint32_t gFinger = 9;
 
+#pragma mark - Prototipos
+
+static void Send(CGPoint p, UITouchPhase ph);
+static void Fire(NSString *k, BOOL down);
+static void Diag(void);
+static void Status(NSString *s);
+static void Redraw(void);
+static void KeyDown(int code);
+static void KeyUp(int code);
+static void BtnDown(int code);
+static void BtnUp(int code);
+static void Move(float dx, float dy);
+static void Build(void);
+
 @interface UIApplication (P)
 - (UIEvent *)_touchesEvent;
 @end
 @interface UIEvent (P)
 - (void)_addTouch:(UITouch *)t forDelayedDelivery:(BOOL)d;
 - (void)_clearTouches;
+@end
+
+@interface Win : UIWindow @end
+@interface Root : UIView @end
+@interface Ctl : UIViewController @end
+@interface Ctl (Acoes)
+- (void)toggle;
+- (void)onOff:(UIButton *)b;
+- (void)marks:(UIButton *)b;
+- (void)ptr:(UIButton *)b;
+- (void)bind;
+- (void)test;
+- (void)sens:(UISlider *)s;
 @end
 
 #pragma mark - Toque
@@ -127,7 +154,8 @@ static void Move(float dx, float dy) {
 static void Status(NSString *s) { gStatus.text = s ?: @""; }
 
 static void Diag(void) {
-    gDiag.text = [NSString stringWithFormat:@"k%d m%d tap%d d%d %@", gK, gM, gTaps, (int)gBinds.count, gTouchBad ? @"BAD" : @"ok"];
+    gDiag.text = [NSString stringWithFormat:@"k%d m%d tap%d d%lu %@", gK, gM, gTaps,
+                  (unsigned long)gBinds.count, gTouchBad ? @"BAD" : @"ok"];
 }
 
 static void Redraw(void) {
@@ -137,7 +165,8 @@ static void Redraw(void) {
     for (NSString *k in gBinds) {
         NSValue *v = gBinds[k];
         UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 34, 22)];
-        l.text = [k hasPrefix:@"k"] ? [k substringFromIndex:1] : ([k isEqualToString:@"m-1"] ? @"L" : @"R");
+        l.text = [k hasPrefix:@"k"] ? [k substringFromIndex:1]
+                                   : ([k isEqualToString:@"m-1"] ? @"L" : @"R");
         l.font = [UIFont boldSystemFontOfSize:11];
         l.textColor = UIColor.whiteColor;
         l.textAlignment = NSTextAlignmentCenter;
@@ -162,11 +191,7 @@ static UIButton *Btn(NSString *t, CGRect f) {
     return b;
 }
 
-#pragma mark - Janela
-
-@interface Win : UIWindow @end
-@interface Root : UIView @end
-@interface Ctl : UIViewController @end
+#pragma mark - Classes
 
 @implementation Win
 - (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e {
@@ -176,6 +201,7 @@ static UIButton *Btn(NSString *t, CGRect f) {
     return v;
 }
 @end
+
 @implementation Root @end
 
 @implementation Ctl
@@ -190,6 +216,18 @@ static UIButton *Btn(NSString *t, CGRect f) {
 }
 @end
 
+@implementation Ctl (Acoes)
+- (void)toggle { gOpen = NO; gSelf.hidden = YES; }
+- (void)onOff:(UIButton *)b { gOn = !gOn; [b setTitle:gOn ? @"Ativo" : @"Parado" forState:UIControlStateNormal]; }
+- (void)marks:(UIButton *)b { gMarksOn = !gMarksOn; Redraw(); }
+- (void)ptr:(UIButton *)b { gPtrOn = !gPtrOn; gPtr.hidden = !gPtrOn; }
+- (void)bind { gBinding = YES; Status(@"Pressione tecla ou botao (Esc cancela)"); }
+- (void)test { Send(gP, UITouchPhaseBegan); Send(gP, UITouchPhaseEnded); Diag(); }
+- (void)sens:(UISlider *)s { gSens = s.value; }
+@end
+
+#pragma mark - Janela
+
 static UIWindowScene *Scene(void) {
     for (UIScene *s in UIApplication.sharedApplication.connectedScenes)
         if ([s isKindOfClass:UIWindowScene.class]) return (UIWindowScene *)s;
@@ -201,11 +239,12 @@ static void FindGame(void) {
         if (w != gSelf && w.isKeyWindow) { gWin = w; break; }
 }
 
-#pragma mark - Montagem
-
 static void Build(void) {
     UIWindowScene *sc = Scene();
-    if (!sc) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3e8), dispatch_get_main_queue(), ^{ Build(); }); return; }
+    if (!sc) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)3e8), dispatch_get_main_queue(), ^{ Build(); });
+        return;
+    }
 
     gWin = nil;
     FindGame();
@@ -231,8 +270,8 @@ static void Build(void) {
     gP = gPtr.center;
     [gRoot addSubview:gPtr];
 
-    CGFloat w = 250, y = 70;
-    gPanel = [[UIView alloc] initWithFrame:CGRectMake(12, y, w, 210)];
+    CGFloat w = 250;
+    gPanel = [[UIView alloc] initWithFrame:CGRectMake(12, 70, w, 210)];
     gPanel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.72];
     gPanel.layer.cornerRadius = 14;
     [gRoot addSubview:gPanel];
@@ -287,21 +326,11 @@ static void Build(void) {
     Diag();
     Status(@"Pronto");
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5e8), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)5e8), dispatch_get_main_queue(), ^{
         if (!gWin) FindGame();
         if (!gWin) Status(@"Janela do jogo nao encontrada");
     });
 }
-
-@implementation Ctl (Acoes)
-- (void)toggle { gOpen = NO; gSelf.hidden = YES; }
-- (void)onOff:(UIButton *)b { gOn = !gOn; [b setTitle:gOn ? @"Ativo" : @"Parado" forState:UIControlStateNormal]; }
-- (void)marks:(UIButton *)b { gMarksOn = !gMarksOn; Redraw(); }
-- (void)ptr:(UIButton *)b { gPtrOn = !gPtrOn; gPtr.hidden = !gPtrOn; }
-- (void)bind { gBinding = YES; Status(@"Pressione tecla ou botao (Esc cancela)"); }
-- (void)test { Send(gP, UITouchPhaseBegan); Send(gP, UITouchPhaseEnded); Diag(); }
-- (void)sens:(UISlider *)s { gSens = s.value; }
-@end
 
 #pragma mark - GameController
 
@@ -312,22 +341,20 @@ static void (*oPress)(id, SEL, id);
 static void nKey(id s, SEL c, id h) {
     if (oKey) oKey(s, c, h);
     if (!h) return;
-    __weak id wk = s;
-    [s setKeyChangedHandler:^(GCKeyboardInput *k, GCKeyCode code, BOOL down) {
-        (void)wk;
+    [(GCKeyboardInput *)s setKeyChangedHandler:^(GCKeyboardInput *k, GCKeyCode code, BOOL down) {
         if (down) KeyDown((int)code); else KeyUp((int)code);
     }];
 }
 
 static void nMove(id s, SEL c, id h) {
     if (oMove) oMove(s, c, h);
-    [s setMouseMovedHandler:^(GCMouseInput *m, float dx, float dy) { Move(dx, dy); }];
+    [(GCMouseInput *)s setMouseMovedHandler:^(GCMouseInput *m, float dx, float dy) { Move(dx, dy); }];
 }
 
 static void nPress(id s, SEL c, id h) {
     if (oPress) oPress(s, c, h);
-    [s setPressedChangedHandler:^(GCMouseInput *m, GCMouseInputButton b, BOOL down) {
-        int code = b == GCMouseInputButtonLeft ? LEFT : (b == GCMouseInputButtonRight ? RIGHT : -(int)b - 3);
+    [(GCMouseInput *)s setPressedChangedHandler:^(GCMouseInput *m, GCMouseInputButton b, BOOL down) {
+        int code = (b == GCMouseInputButtonLeft) ? LEFT : ((b == GCMouseInputButtonRight) ? RIGHT : (-(int)b - 3));
         if (down) BtnDown(code); else BtnUp(code);
     }];
 }

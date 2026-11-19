@@ -1,5 +1,5 @@
 //
-//  NativeInput — teclado e mouse -> toque nativo
+//  MobileInput — teclado e mouse -> toque nativo
 //  Injecao por UITouch + sendEvent na janela do jogo.
 //
 
@@ -38,19 +38,19 @@
 
 #pragma mark - Privados
 
-@interface UIApplication (BKPriv)
+@interface UIApplication (Priv)
 - (UIEvent *)_touchesEvent;
 - (void)_setPointerLocked:(BOOL)locked;
 @end
 
-@interface UIEvent (BKPriv)
+@interface UIEvent (Priv)
 - (void)_clearTouches;
 - (void)_addTouch:(UITouch *)t forDelayedDelivery:(BOOL)delayed;
 - (void)_setHIDEvent:(IOHIDEventRef)event;
 - (void)_setTimestamp:(NSTimeInterval)t;
 @end
 
-@interface UITouch (BKPriv)
+@interface UITouch (Priv)
 - (void)setWindow:(UIWindow *)w;
 - (void)setView:(UIView *)v;
 - (void)setPhase:(UITouchPhase)p;
@@ -64,7 +64,7 @@
 - (void)_setPathIdentity:(uint32_t)i;
 @end
 
-@interface UIScene (BKPriv)
+@interface UIScene (Priv)
 - (void)_setPointerLocked:(BOOL)locked;
 @end
 
@@ -86,12 +86,13 @@ static UILabel *gHint;
 static UILabel *gStatus;
 static UILabel *gDiag;
 static NSMutableArray<UIView *> *gMarks;
-static UIButton *gAtivoBtn, *gMarcasBtn, *gSetaBtn, *gRotBtn, *gSumirBtn;
+static UIButton *gAtivoBtn, *gMarcasBtn, *gSetaBtn, *gLockBtn, *gRotBtn, *gSumirBtn;
 
 static BOOL gEnabled = YES;
 static BOOL gPanelOpen = YES;
 static BOOL gShowMarks = NO;
 static BOOL gShowPtr = YES;
+static BOOL gLock = YES;
 static BOOL gFixRotation = YES;
 static CGFloat gSens = 1.6;
 static CGPoint gPtr;
@@ -542,6 +543,7 @@ static void BKSave(void) {
                          @"on": @(gEnabled),
                          @"marks": @(gShowMarks),
                          @"ptr": @(gShowPtr),
+                         @"lock": @(gLock),
                          @"rot": @(gFixRotation),
                          @"panel": @(gPanelOpen) };
     [r writeToFile:BKConfigPath() atomically:YES];
@@ -560,6 +562,7 @@ static void BKLoad(void) {
     if (r[@"on"])    gEnabled = [r[@"on"] boolValue];
     if (r[@"marks"]) gShowMarks = [r[@"marks"] boolValue];
     if (r[@"ptr"])   gShowPtr = [r[@"ptr"] boolValue];
+    if (r[@"lock"])  gLock = [r[@"lock"] boolValue];
     if (r[@"rot"])   gFixRotation = [r[@"rot"] boolValue];
     if (r[@"panel"]) gPanelOpen = [r[@"panel"] boolValue];
 }
@@ -693,6 +696,7 @@ static void BKRefresh(void) {
     BKToggleStyle(gAtivoBtn, gEnabled);
     BKToggleStyle(gMarcasBtn, gShowMarks);
     BKToggleStyle(gSetaBtn, gShowPtr);
+    BKToggleStyle(gLockBtn, gLock);
     BKToggleStyle(gRotBtn, gFixRotation);
     BKToggleStyle(gSumirBtn, NO);
     BKMarkers();
@@ -706,13 +710,13 @@ static void BKSetStep(NSInteger s, NSString *msg) {
     gHint.text = msg ?: @"";
 }
 
-@interface BKWindow : UIWindow
+@interface InputWindow : UIWindow
 @end
 
-@interface BKRootView : UIView
+@interface InputRootView : UIView
 @end
 
-@interface BKRoot : UIViewController
+@interface InputRootController : UIViewController
 @end
 
 #pragma mark - Instalacao
@@ -733,12 +737,12 @@ static void BKInstallHUD(void) {
     UIWindowScene *sc = BKScene();
     if (!sc) return;
 
-    BKWindow *w = [[BKWindow alloc] initWithWindowScene:sc];
+    InputWindow *w = [[InputWindow alloc] initWithWindowScene:sc];
     w.frame = sc.coordinateSpace.bounds;
     w.windowLevel = UIWindowLevelAlert - 1;
     w.backgroundColor = UIColor.clearColor;
 
-    BKRoot *vc = [BKRoot new];
+    InputRootController *vc = [InputRootController new];
     w.rootViewController = vc;
     gHUD = w;
     gRootView = vc.view;
@@ -825,36 +829,43 @@ static void BKInstallHUD(void) {
     [gPanel addSubview:test];
 
     gAtivoBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gAtivoBtn.frame = CGRectMake(14, 90, 50, 26);
-    gAtivoBtn.titleLabel.font = [UIFont systemFontOfSize:9];
+    gAtivoBtn.frame = CGRectMake(14, 90, 42, 26);
+    gAtivoBtn.titleLabel.font = [UIFont systemFontOfSize:8];
     [gAtivoBtn setTitle:@"Ativo" forState:UIControlStateNormal];
     [gAtivoBtn addTarget:vc action:@selector(bkPower:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:gAtivoBtn];
 
     gMarcasBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gMarcasBtn.frame = CGRectMake(69, 90, 50, 26);
-    gMarcasBtn.titleLabel.font = [UIFont systemFontOfSize:9];
+    gMarcasBtn.frame = CGRectMake(60, 90, 42, 26);
+    gMarcasBtn.titleLabel.font = [UIFont systemFontOfSize:8];
     [gMarcasBtn setTitle:@"Marca" forState:UIControlStateNormal];
     [gMarcasBtn addTarget:vc action:@selector(bkMarks:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:gMarcasBtn];
 
     gSetaBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gSetaBtn.frame = CGRectMake(124, 90, 50, 26);
-    gSetaBtn.titleLabel.font = [UIFont systemFontOfSize:9];
+    gSetaBtn.frame = CGRectMake(106, 90, 42, 26);
+    gSetaBtn.titleLabel.font = [UIFont systemFontOfSize:8];
     [gSetaBtn setTitle:@"Seta" forState:UIControlStateNormal];
     [gSetaBtn addTarget:vc action:@selector(bkPtr:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:gSetaBtn];
 
+    gLockBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    gLockBtn.frame = CGRectMake(152, 90, 42, 26);
+    gLockBtn.titleLabel.font = [UIFont systemFontOfSize:8];
+    [gLockBtn setTitle:@"Lock" forState:UIControlStateNormal];
+    [gLockBtn addTarget:vc action:@selector(bkLock:) forControlEvents:UIControlEventTouchUpInside];
+    [gPanel addSubview:gLockBtn];
+
     gRotBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gRotBtn.frame = CGRectMake(179, 90, 50, 26);
-    gRotBtn.titleLabel.font = [UIFont systemFontOfSize:9];
+    gRotBtn.frame = CGRectMake(198, 90, 42, 26);
+    gRotBtn.titleLabel.font = [UIFont systemFontOfSize:8];
     [gRotBtn setTitle:@"Girar" forState:UIControlStateNormal];
     [gRotBtn addTarget:vc action:@selector(bkRot:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:gRotBtn];
 
     gSumirBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gSumirBtn.frame = CGRectMake(234, 90, 52, 26);
-    gSumirBtn.titleLabel.font = [UIFont systemFontOfSize:9];
+    gSumirBtn.frame = CGRectMake(244, 90, 42, 26);
+    gSumirBtn.titleLabel.font = [UIFont systemFontOfSize:8];
     [gSumirBtn setTitle:@"Sumir" forState:UIControlStateNormal];
     [gSumirBtn addTarget:vc action:@selector(bkSumir:) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:gSumirBtn];
@@ -887,7 +898,7 @@ static void BKInstallHUD(void) {
 
 #pragma mark - Janela e root
 
-@implementation BKWindow
+@implementation InputWindow
 - (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e {
     if (gStep == 2) return gRootView;
     UIView *v = [super hitTest:p withEvent:e];
@@ -896,18 +907,18 @@ static void BKInstallHUD(void) {
 }
 @end
 
-@implementation BKRootView
+@implementation InputRootView
 @end
 
-@implementation BKRoot
+@implementation InputRootController
 
 - (void)loadView {
-    self.view = [[BKRootView alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    self.view = [[InputRootView alloc] initWithFrame:UIScreen.mainScreen.bounds];
 }
 
 - (BOOL)canBecomeFirstResponder { return YES; }
 
-- (BOOL)prefersPointerLocked { return YES; }
+- (BOOL)prefersPointerLocked { return gLock; }
 
 - (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
     for (UIPress *p in presses) {
@@ -937,6 +948,13 @@ static void BKInstallHUD(void) {
         gHUD.hidden = NO;
         BKRefresh();
     });
+}
+
+- (void)bkLock:(UIButton *)b {
+    gLock = !gLock;
+    BKSave();
+    [self setNeedsUpdateOfPrefersPointerLocked];
+    BKRefresh();
 }
 
 - (void)bkTap:(UITapGestureRecognizer *)g {
@@ -1171,10 +1189,8 @@ static void BKTick(void) {
                 [vc setNeedsUpdateOfPrefersPointerLocked];
 
             UIScene *sc = gHUD.windowScene;
-            if ([sc respondsToSelector:@selector(_setPointerLocked:)])
+            if (gLock && [sc respondsToSelector:@selector(_setPointerLocked:)])
                 ((void (*)(id, SEL, BOOL))objc_msgSend)(sc, @selector(_setPointerLocked:), YES);
-            if ([UIApplication.sharedApplication respondsToSelector:@selector(_setPointerLocked:)])
-                ((void (*)(id, SEL, BOOL))objc_msgSend)(UIApplication.sharedApplication, @selector(_setPointerLocked:), YES);
         }
         BKDiag();
     });

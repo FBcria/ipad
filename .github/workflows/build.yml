@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  dylib:
+  deb:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -17,57 +17,34 @@ jobs:
         with:
           theos-sdks: 'https://github.com/theos/sdks'
 
-      - name: Compilar
+      - name: Compilar e empacotar
         run: |
           set -e
           cd BallKey
           make clean
-          make FINALPACKAGE=1
-          find .theos -name '*.dylib' -exec ls -lh {} \;
+          make package FINALPACKAGE=1
 
-      - name: Preparar dylib
+      - name: Conferir deb
         run: |
           set -e
-          DYLIB=$(find BallKey/.theos -name 'NativeInput.dylib' | head -n 1)
-          [ -n "$DYLIB" ] || { echo "::error::dylib nao gerada"; find BallKey/.theos -type f | head -n 60; exit 1; }
-          cp "$DYLIB" ./libNativeInput.dylib
-
-          LDID=$(command -v ldid 2>/dev/null || true)
-          if [ -z "$LDID" ]; then
-            LDID=$(find "$THEOS" -type f -name ldid 2>/dev/null | head -n 1)
-          fi
-          if [ -n "$LDID" ]; then
-            "$LDID" -S ./libNativeInput.dylib && echo "assinado com $LDID"
-          else
-            echo "aviso: ldid nao encontrado, seguindo sem assinatura"
-          fi
-
-          STRIP=$(command -v llvm-strip 2>/dev/null || true)
-          if [ -z "$STRIP" ]; then
-            STRIP=$(find "$THEOS" -type f -name 'llvm-strip' 2>/dev/null | head -n 1)
-          fi
-          if [ -n "$STRIP" ]; then
-            "$STRIP" -x ./libNativeInput.dylib && echo "stripped com $STRIP"
-          else
-            echo "aviso: sem strip (o link ja usa -Wl,-x)"
-          fi
-
-          echo "--- tipo ---"
-          file ./libNativeInput.dylib
-          echo "--- instal name / dependencias ---"
-          grep -a -o -E '@rpath/[A-Za-z0-9._-]+' ./libNativeInput.dylib | sort -u
-          grep -a -o -E '/usr/lib/[A-Za-z0-9._-]+' ./libNativeInput.dylib | sort -u
-          grep -a -o -E '/System/Library/Frameworks/[A-Za-z0-9._-]+' ./libNativeInput.dylib | sort -u
+          DEB=$(ls BallKey/packages/*.deb 2>/dev/null | head -n 1)
+          [ -n "$DEB" ] || { echo "::error::deb nao gerado"; find BallKey -type f | head -n 80; exit 1; }
+          ls -lh "$DEB"
+          echo "--- conteudo ---"
+          dpkg-deb -c "$DEB"
+          echo "--- controle ---"
+          dpkg-deb -I "$DEB"
 
       - name: Publicar
         run: |
           set -e
-          gh release delete dylib --yes --cleanup-tag || true
-          gh release create dylib ./libNativeInput.dylib -t "build $(date -u +%FT%TZ)" -n "libNativeInput.dylib"
+          DEB=$(ls BallKey/packages/*.deb | head -n 1)
+          gh release delete deb --yes --cleanup-tag || true
+          gh release create deb "$DEB" -t "build $(date -u +%FT%TZ)" -n "MobileInput deb"
         env:
           GH_TOKEN: ${{ github.token }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: libNativeInput
-          path: libNativeInput.dylib
+          name: MobileInput-deb
+          path: BallKey/packages/*.deb

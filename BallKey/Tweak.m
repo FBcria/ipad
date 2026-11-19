@@ -1,6 +1,6 @@
 //
 //  NativeInput — teclado e mouse -> toque nativo
-//  Injecao por UITouch + sendEvent (app assinado), HID como reserva.
+//  Injecao por UITouch + sendEvent na janela do jogo.
 //
 
 #import <UIKit/UIKit.h>
@@ -47,6 +47,7 @@
 - (void)_clearTouches;
 - (void)_addTouch:(UITouch *)t forDelayedDelivery:(BOOL)delayed;
 - (void)_setHIDEvent:(IOHIDEventRef)event;
+- (void)_setTimestamp:(NSTimeInterval)t;
 @end
 
 @interface UITouch (BKPriv)
@@ -275,13 +276,22 @@ static void BKHIDInject(CGPoint p, BOOL down, uint32_t idx) {
 
 #pragma mark - Injecao por UITouch
 
+static UIEvent *BKNewEvent(void) {
+    UIApplication *app = UIApplication.sharedApplication;
+    if (![app respondsToSelector:@selector(_touchesEvent)]) return nil;
+    UIEvent *ev = ((UIEvent *(*)(id, SEL))objc_msgSend)(app, @selector(_touchesEvent));
+    if (!ev || ![ev isKindOfClass:UIEvent.class]) return nil;
+    return ev;
+}
+
 static int BKCapMask(void) {
     int m = 0;
-    Class evC = UIEvent.class, tC = UITouch.class;
-    if ([UIApplication.sharedApplication respondsToSelector:@selector(_touchesEvent)]) m |= 1;
-    if ([evC instancesRespondToSelector:@selector(_clearTouches)]) m |= 2;
-    if ([evC instancesRespondToSelector:@selector(_addTouch:forDelayedDelivery:)]) m |= 4;
-    if ([evC instancesRespondToSelector:@selector(_setHIDEvent:)]) m |= 8;
+    UIEvent *ev = BKNewEvent();
+    Class tC = UITouch.class;
+    if (ev) m |= 1;
+    if (ev && [ev respondsToSelector:@selector(_clearTouches)]) m |= 2;
+    if (ev && [ev respondsToSelector:@selector(_addTouch:forDelayedDelivery:)]) m |= 4;
+    if (ev && [ev respondsToSelector:@selector(_setHIDEvent:)]) m |= 8;
     if ([tC instancesRespondToSelector:@selector(setWindow:)]) m |= 16;
     if ([tC instancesRespondToSelector:@selector(_setLocationInWindow:resetPrevious:)]) m |= 32;
     if ([tC instancesRespondToSelector:@selector(setView:)]) m |= 64;
@@ -309,7 +319,8 @@ static UIWindow *BKGameWindow(void) {
 static void BKSetPhase(UITouch *t, UITouchPhase p) {
     if ([t respondsToSelector:@selector(setTimestamp:)])
         ((void (*)(id, SEL, NSTimeInterval))objc_msgSend)(t, @selector(setTimestamp:), NSProcessInfo.processInfo.systemUptime);
-    ((void (*)(id, SEL, NSInteger))objc_msgSend)(t, @selector(setPhase:), (NSInteger)p);
+    if ([t respondsToSelector:@selector(setPhase:)])
+        ((void (*)(id, SEL, NSInteger))objc_msgSend)(t, @selector(setPhase:), (NSInteger)p);
 }
 
 static IOHIDEventRef BKTouchHID(UITouch *t) {
@@ -337,12 +348,9 @@ static IOHIDEventRef BKTouchHID(UITouch *t) {
     return hand;
 }
 
-static BOOL BKSend(UITouch *t) {
-    UIApplication *app = UIApplication.sharedApplication;
-    if (![app respondsToSelector:@selector(_touchesEvent)]) return NO;
-
-    UIEvent *ev = ((UIEvent *(*)(id, SEL))objc_msgSend)(app, @selector(_touchesEvent));
-    if (!ev || ![ev isKindOfClass:UIEvent.class]) return NO;
+static BOOL BKSend(UITouch *t, UIWindow *gw) {
+    UIEvent *ev = BKNewEvent();
+    if (!ev || !gw) return NO;
 
     if ([ev respondsToSelector:@selector(_clearTouches)])
         ((void (*)(id, SEL))objc_msgSend)(ev, @selector(_clearTouches));
@@ -353,29 +361,37 @@ static BOOL BKSend(UITouch *t) {
             ((void (*)(id, SEL, IOHIDEventRef))objc_msgSend)(ev, @selector(_setHIDEvent:), hid);
         CFRelease(hid);
     }
-    if ([ev respondsToSelector:@selector(_addTouch:forDelayedDelivery:)])
-        ((void (*)(id, SEL, id, BOOL))objc_msgSend)(ev, @selector(_addTouch:forDelayedDelivery:), t, NO);
+    if ([ev respondsToSelector:@selector(_setTimestamp:)])
+        ((void (*)(id, SEL, NSTimeInterval))objc_msgSend)(ev, @selector(_setTimestamp:), NSProcessInfo.processInfo.systemUptime);
 
-    [app sendEvent:ev];
+    BOOL added = NO;
+    if ([ev respondsToSelector:@selector(_addTouch:forDelayedDelivery:)]) {
+        ((void (*)(id, SEL, id, BOOL))objc_msgSend)(ev, @selector(_addTouch:forDelayedDelivery:), t, NO);
+        added = YES;
+    } else if ([ev respondsToSelector:@selector(_addTouch:)]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(ev, @selector(_addTouch:), t);
+        added = YES;
+    }
+    if (!added) return NO;
+
+    [gw sendEvent:ev];
     return YES;
 }
 
 static UITouch *BKTouchCreate(CGPoint p, UIWindow *gw, uint32_t idx) {
-    Class tC = UITouch.class;
-    if (![tC instancesRespondToSelector:@selector(setWindow:)] ||
-        ![tC instancesRespondToSelector:@selector(_setLocationInWindow:resetPrevious:)] ||
-        ![tC instancesRespondToSelector:@selector(setPhase:)] ||
-        ![tC instancesRespondToSelector:@selector(_setHidEvent:)]) return nil;
-
     UITouch *t = [UITouch new];
     if (!t) return nil;
 
-    ((void (*)(id, SEL, id))objc_msgSend)(t, @selector(setWindow:), gw);
-    ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(t, @selector(_setLocationInWindow:resetPrevious:), p, YES);
+    if ([t respondsToSelector:@selector(setWindow:)])
+        ((void (*)(id, SEL, id))objc_msgSend)(t, @selector(setWindow:), gw);
+    if ([t respondsToSelector:@selector(_setLocationInWindow:resetPrevious:)])
+        ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(t, @selector(_setLocationInWindow:resetPrevious:), p, YES);
 
     UIView *hv = [gw hitTest:p withEvent:nil];
     if ([t respondsToSelector:@selector(setView:)])
         ((void (*)(id, SEL, id))objc_msgSend)(t, @selector(setView:), hv);
+    if ([t respondsToSelector:@selector(setGestureView:)])
+        ((void (*)(id, SEL, id))objc_msgSend)(t, @selector(setGestureView:), hv);
 
     if ([t respondsToSelector:@selector(_setPathIndex:)])
         ((void (*)(id, SEL, uint32_t))objc_msgSend)(t, @selector(_setPathIndex:), idx);
@@ -388,12 +404,10 @@ static UITouch *BKTouchCreate(CGPoint p, UIWindow *gw, uint32_t idx) {
     }
     BKSetPhase(t, UITouchPhaseBegan);
 
-    if ([t respondsToSelector:@selector(setGestureView:)])
-        ((void (*)(id, SEL, id))objc_msgSend)(t, @selector(setGestureView:), hv);
-
     IOHIDEventRef hid = BKTouchHID(t);
     if (hid) {
-        ((void (*)(id, SEL, IOHIDEventRef))objc_msgSend)(t, @selector(_setHidEvent:), hid);
+        if ([t respondsToSelector:@selector(_setHidEvent:)])
+            ((void (*)(id, SEL, IOHIDEventRef))objc_msgSend)(t, @selector(_setHidEvent:), hid);
         CFRelease(hid);
     }
     return t;
@@ -409,24 +423,26 @@ static BOOL BKInjectUI(CGPoint p, BOOL down, uint32_t idx) {
 
     if (down) {
         if (t) {
-            ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(t, @selector(_setLocationInWindow:resetPrevious:), p, NO);
+            if ([t respondsToSelector:@selector(_setLocationInWindow:resetPrevious:)])
+                ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(t, @selector(_setLocationInWindow:resetPrevious:), p, NO);
             BKSetPhase(t, UITouchPhaseMoved);
-            if (!BKSend(t)) return NO;
+            if (!BKSend(t, gw)) return NO;
             BKSetPhase(t, UITouchPhaseStationary);
             return YES;
         }
         t = BKTouchCreate(p, gw, idx);
         if (!t) return NO;
         gTouches[k] = t;
-        if (!BKSend(t)) { [gTouches removeObjectForKey:k]; return NO; }
+        if (!BKSend(t, gw)) { [gTouches removeObjectForKey:k]; return NO; }
         BKSetPhase(t, UITouchPhaseStationary);
         return YES;
     }
 
     if (!t) return YES;
-    ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(t, @selector(_setLocationInWindow:resetPrevious:), p, NO);
+    if ([t respondsToSelector:@selector(_setLocationInWindow:resetPrevious:)])
+        ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(t, @selector(_setLocationInWindow:resetPrevious:), p, NO);
     BKSetPhase(t, UITouchPhaseEnded);
-    BKSend(t);
+    BKSend(t, gw);
     [gTouches removeObjectForKey:k];
     return YES;
 }

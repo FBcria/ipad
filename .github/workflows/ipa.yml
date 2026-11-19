@@ -33,6 +33,12 @@ jobs:
           [ -n "$DYLIB" ] || { echo "::error::dylib nao gerada"; find .theos -type f | head -n 60; exit 1; }
           cp "$DYLIB" ../libMobileInput.dylib
           ls -lh ../libMobileInput.dylib
+          echo "--- dependencias ---"
+          if grep -a -q "libsubstrate" ../libMobileInput.dylib; then
+            echo "::warning::dylib depende de libsubstrate"
+          else
+            echo "sem dependencias externas"
+          fi
 
       - name: Injetar e assinar
         run: |

@@ -166,7 +166,8 @@ static void Redraw(void) {
         NSValue *v = gBinds[k];
         UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 34, 22)];
         l.text = [k hasPrefix:@"k"] ? [k substringFromIndex:1]
-                                   : ([k isEqualToString:@"m-1"] ? @"L" : @"R");
+                                   : ([k isEqualToString:@"m-1"] ? @"L"
+                                   : ([k isEqualToString:@"m-2"] ? @"R" : @"M"));
         l.font = [UIFont boldSystemFontOfSize:11];
         l.textColor = UIColor.whiteColor;
         l.textAlignment = NSTextAlignmentCenter;
@@ -336,12 +337,27 @@ static void Build(void) {
 
 static void (*oKey)(id, SEL, id);
 static void (*oMove)(id, SEL, id);
-static void (*oPress)(id, SEL, id);
+
+static void BindBtn(GCControllerButtonInput *b, int code) {
+    if (!b) return;
+    b.pressedChangedHandler = ^(GCControllerButtonInput *btn, float value, BOOL pressed) {
+        if (pressed) BtnDown(code); else BtnUp(code);
+    };
+}
+
+static void BindMouse(GCMouseInput *m) {
+    if (!m) return;
+    BindBtn(m.leftButton, LEFT);
+    BindBtn(m.rightButton, RIGHT);
+    BindBtn(m.middleButton, -3);
+    NSArray<GCControllerButtonInput *> *aux = m.auxiliaryButtons;
+    for (NSUInteger i = 0; i < aux.count; i++) BindBtn(aux[i], -(int)i - 4);
+}
 
 static void nKey(id s, SEL c, id h) {
     if (oKey) oKey(s, c, h);
     if (!h) return;
-    [(GCKeyboardInput *)s setKeyChangedHandler:^(GCKeyboardInput *k, GCKeyCode code, BOOL down) {
+    [(GCKeyboardInput *)s setKeyChangedHandler:^(GCKeyboardInput *k, GCControllerButtonInput *key, GCKeyCode code, BOOL down) {
         if (down) KeyDown((int)code); else KeyUp((int)code);
     }];
 }
@@ -349,14 +365,7 @@ static void nKey(id s, SEL c, id h) {
 static void nMove(id s, SEL c, id h) {
     if (oMove) oMove(s, c, h);
     [(GCMouseInput *)s setMouseMovedHandler:^(GCMouseInput *m, float dx, float dy) { Move(dx, dy); }];
-}
-
-static void nPress(id s, SEL c, id h) {
-    if (oPress) oPress(s, c, h);
-    [(GCMouseInput *)s setPressedChangedHandler:^(GCMouseInput *m, GCMouseInputButton b, BOOL down) {
-        int code = (b == GCMouseInputButtonLeft) ? LEFT : ((b == GCMouseInputButtonRight) ? RIGHT : (-(int)b - 3));
-        if (down) BtnDown(code); else BtnUp(code);
-    }];
+    BindMouse((GCMouseInput *)s);
 }
 
 static void Hook(Class c, SEL s, void *f, void **orig) {
@@ -366,6 +375,12 @@ static void Hook(Class c, SEL s, void *f, void **orig) {
     method_setImplementation(m, (IMP)f);
 }
 
+static void WatchMouse(void) {
+    GCMouse *mo = GCMouse.current;
+    if (mo && mo.mouseInput) BindMouse(mo.mouseInput);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)1e9), dispatch_get_main_queue(), ^{ WatchMouse(); });
+}
+
 #pragma mark - Entrada
 
 __attribute__((constructor)) static void Start(void) {
@@ -373,8 +388,8 @@ __attribute__((constructor)) static void Start(void) {
         @try {
             Hook([GCKeyboardInput class], @selector(setKeyChangedHandler:), (void *)nKey, (void **)&oKey);
             Hook([GCMouseInput class], @selector(setMouseMovedHandler:), (void *)nMove, (void **)&oMove);
-            Hook([GCMouseInput class], @selector(setPressedChangedHandler:), (void *)nPress, (void **)&oPress);
         } @catch (NSException *e) {}
         Build();
+        WatchMouse();
     });
 }

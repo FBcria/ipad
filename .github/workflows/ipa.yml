@@ -1,0 +1,85 @@
+name: ipa
+on:
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Randomblock1/theos-action@v1
+        with:
+          theos-sdks: 'https://github.com/theos/sdks'
+
+      - name: Baixar IPA base
+        run: |
+          set -e
+          gh release download ipa --pattern '*.ipa' --dir .
+          ls -lh *.ipa
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Compilar dylib
+        run: |
+          set -e
+          cd BallKey
+          make clean
+          make FINALPACKAGE=1
+          DYLIB=$(find .theos -name 'MobileInput.dylib' | head -n 1)
+          [ -n "$DYLIB" ] || { echo "::error::dylib nao gerada"; find .theos -type f | head -n 60; exit 1; }
+          cp "$DYLIB" ../libMobileInput.dylib
+          ls -lh ../libMobileInput.dylib
+
+      - name: Injetar e assinar
+        run: |
+          set -e
+          IPA=$(ls *.ipa | head -n 1)
+          rm -rf work && mkdir work && cd work
+          unzip -q "../$IPA"
+          APP=$(ls -d Payload/*.app | head -n 1)
+          [ -n "$APP" ] || { echo "::error::Payload vazio (IPA criptografado?)"; exit 1; }
+          BIN=$(basename "$APP" .app)
+          [ -f "$APP/$BIN" ] || { echo "::error::executavel $BIN nao encontrado"; ls -la "$APP" | head -n 40; exit 1; }
+          mkdir -p "$APP/Frameworks"
+          cp ../libMobileInput.dylib "$APP/Frameworks/libMobileInput.dylib"
+          rm -rf "$APP/_CodeSignature" "$APP/embedded.mobileprovision"
+          python3 ../tools/inject.py "$APP/$BIN" "@executable_path/Frameworks/libMobileInput.dylib"
+          "$THEOS/bin/ldid" -e "$APP/$BIN" > orig.plist || true
+          python3 ../tools/ent.py orig.plist ../BallKey/ent.plist merged.plist
+          "$THEOS/bin/ldid" -S../BallKey/ent.plist "$APP/Frameworks/libMobileInput.dylib"
+          "$THEOS/bin/ldid" -Smerged.plist "$APP/$BIN"
+          echo "--- conferencia ---"
+          python3 - "$APP/$BIN" <<'PY'
+          import sys, struct
+          d = open(sys.argv[1], 'rb').read()
+          n = struct.unpack_from('<I', d, 16)[0]
+          off = 32
+          for _ in range(n):
+              cmd, csz = struct.unpack_from('<II', d, off)
+              if cmd == 0xC:
+                  print("LC_LOAD_DYLIB ok")
+                  break
+              off += csz
+          else:
+              sys.exit("LC_LOAD_DYLIB ausente")
+          PY
+          zip -qr ../FreeFire_patched.ipa Payload
+          cd ..
+          ls -lh FreeFire_patched.ipa
+
+      - name: Publicar IPA
+        run: |
+          set -e
+          gh release delete patched --yes --cleanup-tag || true
+          gh release create patched ./FreeFire_patched.ipa -t "patched $(date -u +%FT%TZ)" -n "FreeFire + MobileInput"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FreeFire_patched
+          path: FreeFire_patched.ipa

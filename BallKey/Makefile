@@ -1,5 +1,6 @@
-TARGET := iphone:clang:16.5:14.0
-ARCHS := arm64
+TARGET = iphone:clang:16.5:14.0
+ARCHS = arm64
+LDFLAGS += -Wl,-install_name,@executable_path/Frameworks/libMobileInput.dylib
 
 include $(THEOS)/makefiles/common.mk
 

@@ -1,1251 +1,353 @@
-//
-//  MobileInput — teclado e mouse -> toque nativo
-//  Injecao por UITouch + sendEvent na janela do jogo.
-//
-
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
-#import <IOKit/hid/IOHIDEvent.h>
 #import <objc/runtime.h>
-#import <objc/message.h>
-#import <mach/mach_time.h>
-#import <dlfcn.h>
-#import <unistd.h>
-#import <string.h>
+#import <dispatch/dispatch.h>
 
-#define BK_D_X        0xB0001
-#define BK_D_Y        0xB0002
-#define BK_D_MASK     0xB0004
-#define BK_D_TYPE     0xB0005
-#define BK_D_EVMASK   0xB0008
-#define BK_D_RANGE    0xB0009
-#define BK_D_TOUCH    0xB000A
-#define BK_D_DISPLAY  0xB0019
-#define BK_T_X        0x40001
-#define BK_T_Y        0x40002
-#define BK_T_DIGITIZER 11
-#define BK_T_TRANSLATION 4
+#define LEFT   (-1)
+#define RIGHT  (-2)
 
-#define BK_M_POS  0x04
-#define BK_M_RT   0x03
-#define BK_SENDER 0xDEFACEDBEEFFECE5ULL
-
-#define BK_LEFT   (-1)
-#define BK_RIGHT  (-2)
-#define BK_MIDDLE (-3)
-#define BK_FWD    (-4)
-#define BK_BACK   (-5)
-
-#pragma mark - Privados
-
-@interface UIApplication (Priv)
-- (UIEvent *)_touchesEvent;
-- (void)_setPointerLocked:(BOOL)locked;
-@end
-
-@interface UIEvent (Priv)
-- (void)_clearTouches;
-- (void)_addTouch:(UITouch *)t forDelayedDelivery:(BOOL)delayed;
-- (void)_setHIDEvent:(IOHIDEventRef)event;
-- (void)_setTimestamp:(NSTimeInterval)t;
-@end
-
-@interface UITouch (Priv)
-- (void)setWindow:(UIWindow *)w;
-- (void)setView:(UIView *)v;
-- (void)setPhase:(UITouchPhase)p;
-- (void)setTimestamp:(NSTimeInterval)t;
-- (void)setGestureView:(UIView *)v;
-- (void)setIsTap:(BOOL)b;
-- (void)_setIsFirstTouchForView:(BOOL)b;
-- (void)_setLocationInWindow:(CGPoint)p resetPrevious:(BOOL)r;
-- (void)_setHidEvent:(IOHIDEventRef)e;
-- (void)_setPathIndex:(uint32_t)i;
-- (void)_setPathIdentity:(uint32_t)i;
-@end
-
-@interface UIScene (Priv)
-- (void)_setPointerLocked:(BOOL)locked;
-@end
-
-#pragma mark - Estado
-
-static NSMutableArray<NSMutableDictionary *> *gBinds;
-static NSMutableDictionary<NSNumber *, NSNumber *> *gHeld;
-static NSMutableDictionary<NSNumber *, UITouch *> *gTouches;
-
-static UIWindow *gHUD;
-static UIView *gRootView;
+static UIWindow *gWin;
+static UIWindow *gSelf;
+static UIView *gRoot;
+static UIViewController *gVC;
+static UIView *gPtr;
 static UIView *gPanel;
-static UIView *gBall;
-static UIView *gPointer;
-static UIView *gBanner;
-static UIScrollView *gScroll;
-static NSMutableArray<UIView *> *gRows;
-static UILabel *gHint;
 static UILabel *gStatus;
 static UILabel *gDiag;
-static NSMutableArray<UIView *> *gMarks;
-static UIButton *gAtivoBtn, *gMarcasBtn, *gSetaBtn, *gLockBtn, *gRotBtn, *gSumirBtn;
+static NSMutableArray *gMarks;
 
-static BOOL gEnabled = YES;
-static BOOL gPanelOpen = YES;
-static BOOL gShowMarks = NO;
-static BOOL gShowPtr = YES;
-static BOOL gLock = YES;
-static BOOL gFixRotation = YES;
+static BOOL gOn = YES;
+static BOOL gOpen = YES;
+static BOOL gMarksOn = NO;
+static BOOL gPtrOn = YES;
+static BOOL gBinding = NO;
+static BOOL gTouchBad = NO;
 static CGFloat gSens = 1.6;
-static CGPoint gPtr;
+static CGPoint gP;
+static int gK = 0, gM = 0, gTaps = 0;
 
-static NSInteger gStep = 0;
-static NSMutableDictionary *gPending = nil;
-static BOOL gLeftHeld = NO;
-static uint32_t gDragFinger = 9;
-static int gBtnMask = 0;
-static BOOL gHidSeen = NO;
-static BOOL gTouchOK = NO;
-static BOOL gTouchBroken = NO;
+static NSMutableDictionary *gBinds;
+static uint32_t gFinger = 9;
 
-static int gKeyCount = 0;
-static int gMouseCount = 0;
+@interface UIApplication (P)
+- (UIEvent *)_touchesEvent;
+@end
+@interface UIEvent (P)
+- (void)_addTouch:(UITouch *)t forDelayedDelivery:(BOOL)d;
+- (void)_clearTouches;
+@end
 
-static uint64_t gSenderID = 0;
-static void *gHIDClient = NULL;
-static void (*fnDispatch)(void *, IOHIDEventRef) = NULL;
-static void (*fnSetSender)(IOHIDEventRef, uint64_t) = NULL;
-static uint64_t (*fnGetSender)(IOHIDEventRef) = NULL;
-static void (*fnSetMatching)(void *, CFDictionaryRef) = NULL;
-static void (*fnSetQueue)(void *, dispatch_queue_t) = NULL;
-static void *gMonitor[3] = {NULL, NULL, NULL};
-static int gMonitorCount = 0;
-static id gMonitorBlock = nil;
+#pragma mark - Toque
 
-static void (*orig_setKeyChanged)(id, SEL, id) = NULL;
-static void (*orig_setMouseMoved)(id, SEL, id) = NULL;
-
-#pragma mark - Prototipos
-
-static void BKKey(int c, BOOL down);
-static void BKMouseButton(int c, BOOL down);
-static void BKMouseMove(float dx, float dy);
-static void BKPtrSync(void);
-static void BKDiag(void);
-static void BKRefresh(void);
-
-#pragma mark - HID (reserva)
-
-static AbsoluteTime BKNow(void) {
-    uint64_t t = mach_absolute_time();
-    AbsoluteTime a = {0, 0};
-    memcpy(&a, &t, sizeof(a));
-    return a;
-}
-
-static void BKStartMonitor(void);
-
-static void BKSetupInject(void) {
-    static dispatch_once_t o;
-    dispatch_once(&o, ^{
-        void *createT = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreateWithType");
-        void *create = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreate");
-        fnDispatch = (void (*)(void *, IOHIDEventRef))dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientDispatchEvent");
-        fnGetSender = (uint64_t (*)(IOHIDEventRef))dlsym(RTLD_DEFAULT, "IOHIDEventGetSenderID");
-        fnSetSender = (void (*)(IOHIDEventRef, uint64_t))dlsym(RTLD_DEFAULT, "IOHIDEventSetSenderID");
-        fnSetMatching = (void (*)(void *, CFDictionaryRef))dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientSetMatching");
-        fnSetQueue = (void (*)(void *, dispatch_queue_t))dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientSetDispatchQueue");
-
-        if (fnDispatch) {
-            if (createT) gHIDClient = ((void *(*)(CFAllocatorRef, int, void *))createT)(kCFAllocatorDefault, 1, NULL);
-            if (!gHIDClient && create) gHIDClient = ((void *(*)(CFAllocatorRef))create)(kCFAllocatorDefault);
-        }
-        BKStartMonitor();
-    });
-}
-
-static void BKStartMonitor(void) {
-    void *reg = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientRegisterEventBlock");
-    void *sched = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientScheduleWithRunLoop");
-    void *createT = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreateWithType");
-    void *create = dlsym(RTLD_DEFAULT, "IOHIDEventSystemClientCreate");
-    if (!reg) return;
-
-    void (^blk)(void *, void *, void *, IOHIDEventRef) = ^(void *t, void *r, void *s, IOHIDEventRef e) {
-        if (!e) return;
-        int type = (int)IOHIDEventGetType(e);
-
-        if (type == BK_T_DIGITIZER) {
-            int dt = (int)IOHIDEventGetIntegerValue(e, BK_D_TYPE);
-            if (dt == 3) {
-                uint64_t sid = fnGetSender ? fnGetSender(e) : 0;
-                if (sid) gSenderID = sid;
-                return;
-            }
-            if (dt < 4) return;
-
-            double dx = IOHIDEventGetFloatValue(e, BK_D_X);
-            double dy = IOHIDEventGetFloatValue(e, BK_D_Y);
-            if (dx != 0 || dy != 0) {
-                gHidSeen = YES;
-                gMouseCount++;
-                BKMouseMove((float)dx, (float)dy);
-            }
-            int mask = (int)IOHIDEventGetIntegerValue(e, BK_D_MASK);
-            if (mask != gBtnMask) {
-                gHidSeen = YES;
-                BOOL l = (mask & 1) != 0, rt = (mask & 2) != 0, md = (mask & 4) != 0;
-                if (l  != ((gBtnMask & 1) != 0)) BKMouseButton(BK_LEFT, l);
-                if (rt != ((gBtnMask & 2) != 0)) BKMouseButton(BK_RIGHT, rt);
-                if (md != ((gBtnMask & 4) != 0)) BKMouseButton(BK_MIDDLE, md);
-                gBtnMask = mask;
-            }
-            return;
-        }
-
-        if (type == BK_T_TRANSLATION) {
-            double dx = IOHIDEventGetFloatValue(e, BK_T_X);
-            double dy = IOHIDEventGetFloatValue(e, BK_T_Y);
-            if (dx != 0 || dy != 0) {
-                gHidSeen = YES;
-                gMouseCount++;
-                BKMouseMove((float)dx, (float)dy);
-            }
-        }
-    };
-    gMonitorBlock = [blk copy];
-
-    int types[3] = {2, 1, 0};
-    for (int i = 0; i < 3; i++) {
-        void *cl = NULL;
-        if (createT) cl = ((void *(*)(CFAllocatorRef, int, void *))createT)(kCFAllocatorDefault, types[i], NULL);
-        else if (i == 0 && create) cl = ((void *(*)(CFAllocatorRef))create)(kCFAllocatorDefault);
-        if (!cl) continue;
-
-        if (fnSetMatching) {
-            NSDictionary *m = @{ @"PrimaryUsagePage": @(0x0D), @"PrimaryUsage": @(0x04) };
-            fnSetMatching(cl, (__bridge CFDictionaryRef)m);
-        }
-        ((void (*)(void *, void *, void *, void *))reg)(cl, (__bridge void *)gMonitorBlock, NULL, NULL);
-        if (i == 0 && fnSetQueue) fnSetQueue(cl, dispatch_get_main_queue());
-        else if (sched) ((void (*)(void *, CFRunLoopRef, CFStringRef))sched)(cl, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-        gMonitor[gMonitorCount++] = cl;
-    }
-}
-
-static CGPoint BKToDevice(CGPoint p) {
-    CGSize s = UIScreen.mainScreen.bounds.size;
-    CGFloat Wp = MIN(s.width, s.height), Hp = MAX(s.width, s.height);
-    CGPoint q = p;
-    if (gFixRotation) {
-        UIInterfaceOrientation o = gHUD.windowScene.interfaceOrientation;
-        switch (o) {
-            case UIInterfaceOrientationLandscapeLeft:  q = CGPointMake(Wp - p.y, p.x); break;
-            case UIInterfaceOrientationLandscapeRight: q = CGPointMake(p.y, Hp - p.x); break;
-            case UIInterfaceOrientationPortraitUpsideDown: q = CGPointMake(Wp - p.x, Hp - p.y); break;
-            default: break;
-        }
-    }
-    return CGPointMake(q.x / Wp, q.y / Hp);
-}
-
-static void BKHIDInject(CGPoint p, BOOL down, uint32_t idx) {
-    BKSetupInject();
-    CGPoint n = BKToDevice(p);
-    AbsoluteTime ts = BKNow();
-
-    IOHIDEventRef hand = IOHIDEventCreateDigitizerEvent(
-        kCFAllocatorDefault, ts, kIOHIDDigitizerTransducerTypeHand, 0, 1,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    if (!hand) return;
-
-    IOHIDEventRef finger = IOHIDEventCreateDigitizerFingerEventWithQuality(
-        kCFAllocatorDefault, ts, idx, idx + 2, down ? BK_M_RT : BK_M_POS,
-        n.x, n.y, 0, 0, 0, 0, 0, 0, 0, 0, down, down, 0);
-    if (finger) {
-        IOHIDEventAppendEvent(hand, finger);
-        CFRelease(finger);
-    }
-
-    IOHIDEventSetIntegerValue(hand, BK_D_EVMASK, down ? BK_M_RT : BK_M_POS);
-    IOHIDEventSetIntegerValue(hand, BK_D_RANGE, down);
-    IOHIDEventSetIntegerValue(hand, BK_D_TOUCH, down);
-    IOHIDEventSetIntegerValue(hand, BK_D_DISPLAY, 1);
-    if (fnSetSender) fnSetSender(hand, gSenderID ? gSenderID : BK_SENDER);
-
-    if (gHIDClient && fnDispatch) fnDispatch(gHIDClient, hand);
-    CFRelease(hand);
-}
-
-#pragma mark - Injecao por UITouch
-
-static UIEvent *BKNewEvent(void) {
-    UIApplication *app = UIApplication.sharedApplication;
-    if (![app respondsToSelector:@selector(_touchesEvent)]) return nil;
-    UIEvent *ev = ((UIEvent *(*)(id, SEL))objc_msgSend)(app, @selector(_touchesEvent));
-    if (!ev || ![ev isKindOfClass:UIEvent.class]) return nil;
-    return ev;
-}
-
-static int BKCapMask(void) {
-    int m = 0;
-    UIEvent *ev = BKNewEvent();
-    Class tC = UITouch.class;
-    if (ev) m |= 1;
-    if (ev && [ev respondsToSelector:@selector(_clearTouches)]) m |= 2;
-    if (ev && [ev respondsToSelector:@selector(_addTouch:forDelayedDelivery:)]) m |= 4;
-    if (ev && [ev respondsToSelector:@selector(_setHIDEvent:)]) m |= 8;
-    if ([tC instancesRespondToSelector:@selector(setWindow:)]) m |= 16;
-    if ([tC instancesRespondToSelector:@selector(_setLocationInWindow:resetPrevious:)]) m |= 32;
-    if ([tC instancesRespondToSelector:@selector(setView:)]) m |= 64;
-    if ([tC instancesRespondToSelector:@selector(setPhase:)]) m |= 128;
-    if ([tC instancesRespondToSelector:@selector(_setHidEvent:)]) m |= 256;
-    return m;
-}
-
-static NSString *BKCapString(void) {
-    int m = BKCapMask();
-    NSMutableString *s = [NSMutableString stringWithCapacity:9];
-    for (int i = 8; i >= 0; i--) [s appendString:(((m >> i) & 1) ? @"1" : @"0")];
-    return s;
-}
-
-static UIWindow *BKGameWindow(void) {
-    UIWindow *best = nil;
-    for (UIWindow *w in UIApplication.sharedApplication.windows) {
-        if (w == gHUD || w.hidden) continue;
-        if (!best || w.windowLevel < best.windowLevel) best = w;
-    }
-    return best;
-}
-
-static void BKSetPhase(UITouch *t, UITouchPhase p) {
-    if ([t respondsToSelector:@selector(setTimestamp:)])
-        ((void (*)(id, SEL, NSTimeInterval))objc_msgSend)(t, @selector(setTimestamp:), NSProcessInfo.processInfo.systemUptime);
-    if ([t respondsToSelector:@selector(setPhase:)])
-        ((void (*)(id, SEL, NSInteger))objc_msgSend)(t, @selector(setPhase:), (NSInteger)p);
-}
-
-static IOHIDEventRef BKTouchHID(UITouch *t) {
-    AbsoluteTime ts = BKNow();
-    IOHIDEventRef hand = IOHIDEventCreateDigitizerEvent(
-        kCFAllocatorDefault, ts, kIOHIDDigitizerTransducerTypeHand, 0, 0,
-        kIOHIDDigitizerEventTouch, 0, 0, 0, 0, 0, 0, 0, 1, 0);
-    if (!hand) return NULL;
-    IOHIDEventSetIntegerValue(hand, BK_D_DISPLAY, 1);
-
-    CGPoint loc = [t locationInView:t.window];
-    BOOL moved = (t.phase == UITouchPhaseMoved);
-    uint32_t mask = moved ? BK_M_POS : BK_M_RT;
-    BOOL touching = (t.phase != UITouchPhaseEnded);
-
-    IOHIDEventRef finger = IOHIDEventCreateDigitizerFingerEventWithQuality(
-        kCFAllocatorDefault, ts, 1, 2, mask,
-        loc.x, loc.y, 0, 0, 0, 5.0, 5.0, 1.0, 1.0, 1.0,
-        touching, touching, 0);
-    if (finger) {
-        IOHIDEventSetIntegerValue(finger, BK_D_DISPLAY, 1);
-        IOHIDEventAppendEvent(hand, finger);
-        CFRelease(finger);
-    }
-    return hand;
-}
-
-static BOOL BKSend(UITouch *t, UIWindow *gw) {
-    UIEvent *ev = BKNewEvent();
-    if (!ev || !gw) return NO;
-
-    if ([ev respondsToSelector:@selector(_clearTouches)])
-        ((void (*)(id, SEL))objc_msgSend)(ev, @selector(_clearTouches));
-
-    IOHIDEventRef hid = BKTouchHID(t);
-    if (hid) {
-        if ([ev respondsToSelector:@selector(_setHIDEvent:)])
-            ((void (*)(id, SEL, IOHIDEventRef))objc_msgSend)(ev, @selector(_setHIDEvent:), hid);
-        CFRelease(hid);
-    }
-    if ([ev respondsToSelector:@selector(_setTimestamp:)])
-        ((void (*)(id, SEL, NSTimeInterval))objc_msgSend)(ev, @selector(_setTimestamp:), NSProcessInfo.processInfo.systemUptime);
-
-    BOOL added = NO;
-    if ([ev respondsToSelector:@selector(_addTouch:forDelayedDelivery:)]) {
-        ((void (*)(id, SEL, id, BOOL))objc_msgSend)(ev, @selector(_addTouch:forDelayedDelivery:), t, NO);
-        added = YES;
-    } else if ([ev respondsToSelector:@selector(_addTouch:)]) {
-        ((void (*)(id, SEL, id))objc_msgSend)(ev, @selector(_addTouch:), t);
-        added = YES;
-    }
-    if (!added) return NO;
-
-    [gw sendEvent:ev];
-    return YES;
-}
-
-static UITouch *BKTouchCreate(CGPoint p, UIWindow *gw, uint32_t idx) {
-    UITouch *t = [UITouch new];
-    if (!t) return nil;
-
-    if ([t respondsToSelector:@selector(setWindow:)])
-        ((void (*)(id, SEL, id))objc_msgSend)(t, @selector(setWindow:), gw);
-    if ([t respondsToSelector:@selector(_setLocationInWindow:resetPrevious:)])
-        ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(t, @selector(_setLocationInWindow:resetPrevious:), p, YES);
-
-    UIView *hv = [gw hitTest:p withEvent:nil];
-    if ([t respondsToSelector:@selector(setView:)])
-        ((void (*)(id, SEL, id))objc_msgSend)(t, @selector(setView:), hv);
-    if ([t respondsToSelector:@selector(setGestureView:)])
-        ((void (*)(id, SEL, id))objc_msgSend)(t, @selector(setGestureView:), hv);
-
-    if ([t respondsToSelector:@selector(_setPathIndex:)])
-        ((void (*)(id, SEL, uint32_t))objc_msgSend)(t, @selector(_setPathIndex:), idx);
-    if ([t respondsToSelector:@selector(_setPathIdentity:)])
-        ((void (*)(id, SEL, uint32_t))objc_msgSend)(t, @selector(_setPathIdentity:), idx + 2);
-    if ([t respondsToSelector:@selector(_setIsFirstTouchForView:)]) {
-        if ([t respondsToSelector:@selector(setIsTap:)])
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(t, @selector(setIsTap:), YES);
-        ((void (*)(id, SEL, BOOL))objc_msgSend)(t, @selector(_setIsFirstTouchForView:), YES);
-    }
-    BKSetPhase(t, UITouchPhaseBegan);
-
-    IOHIDEventRef hid = BKTouchHID(t);
-    if (hid) {
-        if ([t respondsToSelector:@selector(_setHidEvent:)])
-            ((void (*)(id, SEL, IOHIDEventRef))objc_msgSend)(t, @selector(_setHidEvent:), hid);
-        CFRelease(hid);
-    }
-    return t;
-}
-
-static BOOL BKInjectUI(CGPoint p, BOOL down, uint32_t idx) {
-    UIWindow *gw = BKGameWindow();
-    if (!gw) return NO;
-    if (!gTouches) gTouches = [NSMutableDictionary dictionary];
-
-    NSNumber *k = @(idx);
-    UITouch *t = gTouches[k];
-
-    if (down) {
-        if (t) {
-            if ([t respondsToSelector:@selector(_setLocationInWindow:resetPrevious:)])
-                ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(t, @selector(_setLocationInWindow:resetPrevious:), p, NO);
-            BKSetPhase(t, UITouchPhaseMoved);
-            if (!BKSend(t, gw)) return NO;
-            BKSetPhase(t, UITouchPhaseStationary);
-            return YES;
-        }
-        t = BKTouchCreate(p, gw, idx);
-        if (!t) return NO;
-        gTouches[k] = t;
-        if (!BKSend(t, gw)) { [gTouches removeObjectForKey:k]; return NO; }
-        BKSetPhase(t, UITouchPhaseStationary);
-        return YES;
-    }
-
-    if (!t) return YES;
-    if ([t respondsToSelector:@selector(_setLocationInWindow:resetPrevious:)])
-        ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(t, @selector(_setLocationInWindow:resetPrevious:), p, NO);
-    BKSetPhase(t, UITouchPhaseEnded);
-    BKSend(t, gw);
-    [gTouches removeObjectForKey:k];
-    return YES;
-}
-
-static void BKInjectNow(CGPoint p, BOOL down, uint32_t idx) {
-    if (!gTouchBroken) {
-        BOOL ok = NO;
-        @try {
-            ok = BKInjectUI(p, down, idx);
-        } @catch (NSException *e) {
-            ok = NO;
-            gTouchBroken = YES;
-        }
-        if (ok) { gTouchOK = YES; BKDiag(); return; }
-    }
-    BKHIDInject(p, down, idx);
-    BKDiag();
-}
-
-static void BKInject(CGPoint p, BOOL down, uint32_t idx) {
-    if (NSThread.isMainThread) BKInjectNow(p, down, idx);
-    else dispatch_async(dispatch_get_main_queue(), ^{ BKInjectNow(p, down, idx); });
-}
-
-static void BKDiag(void) {
-    GCKeyboard *kb = GCKeyboard.coalescedKeyboard;
-    GCMouse *m = GCMouse.current;
-    NSString *via = gTouchBroken ? @"hid!" : (gTouchOK ? @"ui" : (gHIDClient && fnDispatch ? @"hid" : @"NONE"));
-    NSString *t = [NSString stringWithFormat:@"k%d m%d dev%d%d cl%d %@ p%@%@", gKeyCount, gMouseCount,
-                   kb ? 1 : 0, m ? 1 : 0, gMonitorCount, via, BKCapString(), gHidSeen ? @" +hid" : @""];
-    if (![gDiag.text isEqualToString:t]) {
-        gDiag.text = t;
-        gDiag.textColor = [via isEqualToString:@"NONE"] ? UIColor.systemRedColor : UIColor.lightGrayColor;
+static void Send(CGPoint p, UITouchPhase ph) {
+    if (!gWin) return;
+    @try {
+        UIEvent *ev = [UIApplication.sharedApplication _touchesEvent];
+        if ([ev respondsToSelector:@selector(_clearTouches)]) [ev _clearTouches];
+        UITouch *t = [[UITouch alloc] init];
+        [t setValue:gWin forKey:@"window"];
+        [t setValue:@(ph) forKey:@"phase"];
+        [t setValue:@(ph == UITouchPhaseBegan ? 1 : 0) forKey:@"tapCount"];
+        [t setValue:[NSValue valueWithCGPoint:p] forKey:@"locationInWindow"];
+        [t setValue:@(gFinger) forKey:@"_pathIndex"];
+        [t setValue:@(YES) forKey:@"_isFirstTouchForView"];
+        [ev _addTouch:t forDelayedDelivery:NO];
+        [UIApplication.sharedApplication sendEvent:ev];
+        gTaps++;
+        gTouchBad = NO;
+    } @catch (NSException *e) {
+        gTouchBad = YES;
     }
 }
 
 #pragma mark - Binds
 
-static NSInteger BKIndexOf(int code) {
-    for (NSUInteger i = 0; i < gBinds.count; i++)
-        if ([gBinds[i][@"k"] intValue] == code) return (NSInteger)i;
-    return -1;
+static void Fire(NSString *k, BOOL down) {
+    NSValue *v = gBinds[k];
+    if (!v) return;
+    Send(v.CGPointValue, down ? UITouchPhaseBegan : UITouchPhaseEnded);
+    Diag();
 }
 
-static void BKDown(int code, CGPoint p) {
-    NSInteger i = BKIndexOf(code);
-    if (i < 0 || gHeld[@(i)]) return;
-    uint32_t f = (uint32_t)(i + 1);
-    gHeld[@(i)] = @(f);
-    BKInject(p, YES, f);
-}
-
-static void BKUp(int code) {
-    NSInteger i = BKIndexOf(code);
-    if (i < 0) return;
-    NSNumber *f = gHeld[@(i)];
-    if (!f) return;
-    NSDictionary *b = gBinds[i];
-    BKInject(CGPointMake([b[@"x"] doubleValue], [b[@"y"] doubleValue]), NO, f.unsignedIntValue);
-    [gHeld removeObjectForKey:@(i)];
-}
-
-static void BKReleaseAll(void) {
-    for (NSNumber *i in gHeld.allKeys) {
-        NSInteger n = i.integerValue;
-        if (n >= (NSInteger)gBinds.count) continue;
-        NSDictionary *b = gBinds[n];
-        BKInject(CGPointMake([b[@"x"] doubleValue], [b[@"y"] doubleValue]), NO, gHeld[i].unsignedIntValue);
+static void KeyDown(int code) {
+    gK++;
+    if (gBinding) {
+        gBinding = NO;
+        if (code == 41) { Status(@"Bind cancelado"); Diag(); return; }
+        gBinds[[NSString stringWithFormat:@"k%d", code]] = [NSValue valueWithCGPoint:gP];
+        Status([NSString stringWithFormat:@"Bind k%d", code]);
+        Redraw();
+        Diag();
+        return;
     }
-    [gHeld removeAllObjects];
-    if (gLeftHeld) { BKInject(gPtr, NO, gDragFinger); gLeftHeld = NO; }
-    gBtnMask = 0;
+    if (!gOn) return;
+    if (code == 41) { gOpen = !gOpen; gSelf.hidden = !gOpen; Redraw(); return; }
+    Fire([NSString stringWithFormat:@"k%d", code], YES);
+    Diag();
 }
 
-#pragma mark - Config
-
-static NSString *BKConfigPath(void) {
-    static NSString *p;
-    static dispatch_once_t o;
-    dispatch_once(&o, ^{
-        NSString *base;
-        if (access("/var/mobile/Documents", W_OK) == 0) {
-            base = @"/var/mobile/Documents";
-        } else {
-            NSArray *d = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
-            base = [d.firstObject stringByAppendingPathComponent:@"GameInput"];
-            [NSFileManager.defaultManager createDirectoryAtPath:base withIntermediateDirectories:YES attributes:nil error:nil];
-        }
-        p = [base stringByAppendingPathComponent:@"input.cfg"];
-    });
-    return p;
+static void KeyUp(int code) {
+    if (!gOn || gBinding) return;
+    Fire([NSString stringWithFormat:@"k%d", code], NO);
 }
 
-static void BKSave(void) {
-    NSDictionary *r = @{ @"binds": gBinds ?: @[],
-                         @"sens": @(gSens),
-                         @"on": @(gEnabled),
-                         @"marks": @(gShowMarks),
-                         @"ptr": @(gShowPtr),
-                         @"lock": @(gLock),
-                         @"rot": @(gFixRotation),
-                         @"panel": @(gPanelOpen) };
-    [r writeToFile:BKConfigPath() atomically:YES];
-}
-
-static void BKLoad(void) {
-    NSDictionary *r = [NSDictionary dictionaryWithContentsOfFile:BKConfigPath()];
-    gBinds = [NSMutableArray array];
-    if (![r isKindOfClass:NSDictionary.class]) return;
-    if ([r[@"binds"] isKindOfClass:NSArray.class]) {
-        for (id o in r[@"binds"])
-            if ([o isKindOfClass:NSDictionary.class])
-                [gBinds addObject:[o mutableCopy]];
+static void BtnDown(int code) {
+    gM++;
+    if (gBinding) {
+        gBinding = NO;
+        gBinds[[NSString stringWithFormat:@"m%d", code]] = [NSValue valueWithCGPoint:gP];
+        Status([NSString stringWithFormat:@"Bind m%d", code]);
+        Redraw();
+        Diag();
+        return;
     }
-    if (r[@"sens"])  gSens = [r[@"sens"] doubleValue];
-    if (r[@"on"])    gEnabled = [r[@"on"] boolValue];
-    if (r[@"marks"]) gShowMarks = [r[@"marks"] boolValue];
-    if (r[@"ptr"])   gShowPtr = [r[@"ptr"] boolValue];
-    if (r[@"lock"])  gLock = [r[@"lock"] boolValue];
-    if (r[@"rot"])   gFixRotation = [r[@"rot"] boolValue];
-    if (r[@"panel"]) gPanelOpen = [r[@"panel"] boolValue];
+    if (!gOn) return;
+    Fire([NSString stringWithFormat:@"m%d", code], YES);
 }
 
-#pragma mark - Nomes
-
-static NSString *BKName(int c) {
-    switch (c) {
-        case BK_LEFT: return @"Mouse1";
-        case BK_RIGHT: return @"Mouse2";
-        case BK_MIDDLE: return @"Mouse3";
-        case BK_FWD: return @"Mouse4";
-        case BK_BACK: return @"Mouse5";
-        default: break;
-    }
-    if (c >= 4 && c <= 29) return [NSString stringWithFormat:@"%c", 'A' + (c - 4)];
-    if (c >= 30 && c <= 38) return [NSString stringWithFormat:@"%d", c - 29];
-    switch (c) {
-        case 39: return @"0";
-        case 40: return @"Enter";
-        case 41: return @"Esc";
-        case 42: return @"Back";
-        case 43: return @"Tab";
-        case 44: return @"Espaco";
-        case 79: return @"Dir";
-        case 80: return @"Esq";
-        case 81: return @"Baixo";
-        case 82: return @"Cima";
-        case 225: return @"Shift";
-        case 224: return @"Ctrl";
-        case 226: return @"Alt";
-        case 227: return @"Cmd";
-        default: return [NSString stringWithFormat:@"#%d", c];
-    }
+static void BtnUp(int code) {
+    if (!gOn || gBinding) return;
+    Fire([NSString stringWithFormat:@"m%d", code], NO);
 }
 
-#pragma mark - UI
-
-static void BKPtrSync(void) {
-    if (!gPointer) return;
-    gPointer.hidden = !gShowPtr;
-    if (gShowPtr) gPointer.center = gPtr;
+static void Move(float dx, float dy) {
+    gM++;
+    if (!gPtrOn || !gWin) { Diag(); return; }
+    CGSize s = gWin.bounds.size;
+    gP.x += dx * gSens;
+    gP.y += dy * gSens;
+    gP.x = MAX(8, MIN(s.width - 8, gP.x));
+    gP.y = MAX(8, MIN(s.height - 8, gP.y));
+    gPtr.center = gP;
+    Diag();
 }
 
-static void BKMarkers(void) {
+#pragma mark - Painel
+
+static void Status(NSString *s) { gStatus.text = s ?: @""; }
+
+static void Diag(void) {
+    gDiag.text = [NSString stringWithFormat:@"k%d m%d tap%d d%d %@", gK, gM, gTaps, (int)gBinds.count, gTouchBad ? @"BAD" : @"ok"];
+}
+
+static void Redraw(void) {
     for (UIView *v in gMarks) [v removeFromSuperview];
     [gMarks removeAllObjects];
-    if (!gShowMarks) return;
-    for (NSDictionary *b in gBinds) {
-        CGFloat x = [b[@"x"] doubleValue], y = [b[@"y"] doubleValue];
-        if (x == 0 && y == 0) continue;
-        UIView *m = [[UIView alloc] initWithFrame:CGRectMake(x - 19, y - 19, 38, 38)];
-        m.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
-        m.layer.cornerRadius = 19;
-        m.layer.borderWidth = 1.5;
-        m.layer.borderColor = [UIColor colorWithRed:0.3 green:0.95 blue:0.6 alpha:0.9].CGColor;
-        m.userInteractionEnabled = NO;
-        UILabel *l = [[UILabel alloc] initWithFrame:m.bounds];
-        l.text = BKName([b[@"k"] intValue]);
-        l.font = [UIFont boldSystemFontOfSize:10];
+    if (!gMarksOn) return;
+    for (NSString *k in gBinds) {
+        NSValue *v = gBinds[k];
+        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 34, 22)];
+        l.text = [k hasPrefix:@"k"] ? [k substringFromIndex:1] : ([k isEqualToString:@"m-1"] ? @"L" : @"R");
+        l.font = [UIFont boldSystemFontOfSize:11];
         l.textColor = UIColor.whiteColor;
         l.textAlignment = NSTextAlignmentCenter;
-        [m addSubview:l];
-        [gRootView insertSubview:m belowSubview:gPanel];
-        [gMarks addObject:m];
+        l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
+        l.layer.cornerRadius = 6;
+        l.clipsToBounds = YES;
+        l.center = v.CGPointValue;
+        [gRoot addSubview:l];
+        [gMarks addObject:l];
     }
 }
 
-static void BKToggleStyle(UIButton *b, BOOL on) {
-    [b setTitleColor:(on ? [UIColor colorWithRed:0.3 green:0.95 blue:0.55 alpha:1] : UIColor.grayColor)
-            forState:UIControlStateNormal];
-    b.layer.borderWidth = 1;
-    b.layer.cornerRadius = 6;
-    b.layer.borderColor = (on ? [UIColor colorWithRed:0.3 green:0.95 blue:0.55 alpha:0.7].CGColor
-                              : [UIColor colorWithWhite:1 alpha:0.2].CGColor);
+static UIButton *Btn(NSString *t, CGRect f) {
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+    b.frame = f;
+    [b setTitle:t forState:UIControlStateNormal];
+    [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    b.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
+    b.titleLabel.font = [UIFont boldSystemFontOfSize:12];
+    b.layer.cornerRadius = 7;
+    b.clipsToBounds = YES;
+    return b;
 }
 
-static void BKRefresh(void) {
-    if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(), ^{ BKRefresh(); }); return; }
+#pragma mark - Janela
 
-    for (UIView *v in gRows) [v removeFromSuperview];
-    [gRows removeAllObjects];
+@interface Win : UIWindow @end
+@interface Root : UIView @end
+@interface Ctl : UIViewController @end
 
-    if (gBinds.count == 0) {
-        UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(2, 4, 264, 44)];
-        l.text = @"Nenhum bind.\nToque em + Bind e pressione uma tecla.";
-        l.numberOfLines = 0;
-        l.font = [UIFont systemFontOfSize:11];
-        l.textColor = UIColor.lightGrayColor;
-        [gScroll addSubview:l];
-        [gRows addObject:l];
-    }
-
-    CGFloat y = 0;
-    for (NSUInteger i = 0; i < gBinds.count; i++) {
-        NSMutableDictionary *b = gBinds[i];
-        UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, y, 264, 30)];
-        row.backgroundColor = [UIColor colorWithWhite:1 alpha:0.07];
-        row.layer.cornerRadius = 6;
-
-        UILabel *n = [[UILabel alloc] initWithFrame:CGRectMake(8, 5, 70, 20)];
-        n.text = BKName([b[@"k"] intValue]);
-        n.font = [UIFont boldSystemFontOfSize:12];
-        n.textColor = UIColor.whiteColor;
-        [row addSubview:n];
-
-        UIButton *pos = [UIButton buttonWithType:UIButtonTypeSystem];
-        pos.frame = CGRectMake(78, 5, 100, 20);
-        pos.titleLabel.font = [UIFont monospacedDigitSystemFontOfSize:10 weight:UIFontWeightRegular];
-        [pos setTitle:[NSString stringWithFormat:@"%.0f, %.0f", [b[@"x"] doubleValue], [b[@"y"] doubleValue]]
-             forState:UIControlStateNormal];
-        pos.tag = i;
-        [pos addTarget:gHUD.rootViewController action:@selector(bkMove:) forControlEvents:UIControlEventTouchUpInside];
-        [row addSubview:pos];
-
-        UIButton *del = [UIButton buttonWithType:UIButtonTypeSystem];
-        del.frame = CGRectMake(226, 2, 30, 26);
-        [del setTitle:@"x" forState:UIControlStateNormal];
-        del.tag = i;
-        [del addTarget:gHUD.rootViewController action:@selector(bkDelete:) forControlEvents:UIControlEventTouchUpInside];
-        [row addSubview:del];
-
-        [gScroll addSubview:row];
-        [gRows addObject:row];
-        y += 36;
-    }
-
-    gScroll.contentSize = CGSizeMake(272, y);
-    gStatus.text = gEnabled ? @"ATIVO" : @"PAUSADO";
-    gStatus.textColor = gEnabled ? [UIColor colorWithRed:0.3 green:0.95 blue:0.55 alpha:1] : UIColor.systemOrangeColor;
-    BKToggleStyle(gAtivoBtn, gEnabled);
-    BKToggleStyle(gMarcasBtn, gShowMarks);
-    BKToggleStyle(gSetaBtn, gShowPtr);
-    BKToggleStyle(gLockBtn, gLock);
-    BKToggleStyle(gRotBtn, gFixRotation);
-    BKToggleStyle(gSumirBtn, NO);
-    BKMarkers();
-    BKPtrSync();
-    BKDiag();
+@implementation Win
+- (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e {
+    UIView *v = [super hitTest:p withEvent:e];
+    if (!v || v == self || v == gRoot) return nil;
+    if (!gOpen) return nil;
+    return v;
 }
+@end
+@implementation Root @end
 
-static void BKSetStep(NSInteger s, NSString *msg) {
-    gStep = s;
-    gBanner.hidden = (s == 0);
-    gHint.text = msg ?: @"";
+@implementation Ctl
+- (void)loadView { self.view = [[Root alloc] initWithFrame:UIScreen.mainScreen.bounds]; }
+- (BOOL)canBecomeFirstResponder { return YES; }
+- (void)viewDidAppear:(BOOL)a { [super viewDidAppear:a]; [self becomeFirstResponder]; }
+- (void)pressesBegan:(NSSet<UIPress *> *)p withEvent:(UIPressesEvent *)e {
+    for (UIPress *x in p) KeyDown((int)x.key.keyCode);
 }
-
-@interface InputWindow : UIWindow
+- (void)pressesEnded:(NSSet<UIPress *> *)p withEvent:(UIPressesEvent *)e {
+    for (UIPress *x in p) KeyUp((int)x.key.keyCode);
+}
 @end
 
-@interface InputRootView : UIView
-@end
-
-@interface InputRootController : UIViewController
-@end
-
-#pragma mark - Instalacao
-
-static UIWindowScene *BKScene(void) {
-    for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
-        if ([s isKindOfClass:UIWindowScene.class] && s.activationState == UISceneActivationStateForegroundActive)
-            return (UIWindowScene *)s;
-    }
+static UIWindowScene *Scene(void) {
     for (UIScene *s in UIApplication.sharedApplication.connectedScenes)
         if ([s isKindOfClass:UIWindowScene.class]) return (UIWindowScene *)s;
     return nil;
 }
 
-static void BKInstallHUD(void) {
-    if (gHUD) { gHUD.hidden = NO; BKRefresh(); return; }
+static void FindGame(void) {
+    for (UIWindow *w in Scene().windows)
+        if (w != gSelf && w.isKeyWindow) { gWin = w; break; }
+}
 
-    UIWindowScene *sc = BKScene();
-    if (!sc) return;
+#pragma mark - Montagem
 
-    InputWindow *w = [[InputWindow alloc] initWithWindowScene:sc];
-    w.frame = sc.coordinateSpace.bounds;
-    w.windowLevel = UIWindowLevelAlert - 1;
-    w.backgroundColor = UIColor.clearColor;
+static void Build(void) {
+    UIWindowScene *sc = Scene();
+    if (!sc) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3e8), dispatch_get_main_queue(), ^{ Build(); }); return; }
 
-    InputRootController *vc = [InputRootController new];
-    w.rootViewController = vc;
-    gHUD = w;
-    gRootView = vc.view;
-    gRootView.backgroundColor = UIColor.clearColor;
+    gWin = nil;
+    FindGame();
+
+    gSelf = [[Win alloc] initWithWindowScene:sc];
+    gSelf.frame = UIScreen.mainScreen.bounds;
+    gSelf.windowLevel = 10000001;
+    gSelf.backgroundColor = UIColor.clearColor;
+    gVC = [Ctl new];
+    gSelf.rootViewController = gVC;
+    [gSelf makeKeyAndVisible];
+    gRoot = gVC.view;
 
     gMarks = [NSMutableArray array];
-    gRows = [NSMutableArray array];
+    gBinds = [NSMutableDictionary dictionary];
 
-    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:vc action:@selector(bkTap:)];
-    tap.cancelsTouchesInView = NO;
-    [gRootView addGestureRecognizer:tap];
+    gPtr = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 26, 26)];
+    gPtr.backgroundColor = [UIColor colorWithWhite:1 alpha:0.30];
+    gPtr.layer.cornerRadius = 13;
+    gPtr.layer.borderWidth = 1.5;
+    gPtr.layer.borderColor = UIColor.whiteColor.CGColor;
+    gPtr.center = CGPointMake(120, 220);
+    gP = gPtr.center;
+    [gRoot addSubview:gPtr];
 
-    CGSize s = w.bounds.size;
+    CGFloat w = 250, y = 70;
+    gPanel = [[UIView alloc] initWithFrame:CGRectMake(12, y, w, 210)];
+    gPanel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.72];
+    gPanel.layer.cornerRadius = 14;
+    [gRoot addSubview:gPanel];
 
-    gBanner = [[UIView alloc] initWithFrame:CGRectMake(s.width / 2 - 160, 8, 320, 30)];
-    gBanner.backgroundColor = [UIColor colorWithWhite:0 alpha:0.75];
-    gBanner.layer.cornerRadius = 8;
-    gBanner.userInteractionEnabled = NO;
-    gBanner.hidden = YES;
-    [gRootView addSubview:gBanner];
-    gHint = [[UILabel alloc] initWithFrame:gBanner.bounds];
-    gHint.font = [UIFont systemFontOfSize:11];
-    gHint.textColor = UIColor.whiteColor;
-    gHint.textAlignment = NSTextAlignmentCenter;
-    [gBanner addSubview:gHint];
+    UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, w - 46, 20)];
+    t.text = @"MobileInput";
+    t.textColor = UIColor.whiteColor;
+    t.font = [UIFont boldSystemFontOfSize:14];
+    [gPanel addSubview:t];
 
-    gBall = [[UIView alloc] initWithFrame:CGRectMake(12, 12, 44, 44)];
-    gBall.backgroundColor = [UIColor colorWithWhite:0 alpha:0.6];
-    gBall.layer.cornerRadius = 22;
-    gBall.layer.borderWidth = 1.5;
-    gBall.layer.borderColor = [UIColor colorWithRed:0.3 green:0.95 blue:0.6 alpha:0.9].CGColor;
-    [gRootView addSubview:gBall];
-    UILabel *bl = [[UILabel alloc] initWithFrame:gBall.bounds];
-    bl.text = @"KB";
-    bl.font = [UIFont boldSystemFontOfSize:13];
-    bl.textColor = UIColor.whiteColor;
-    bl.textAlignment = NSTextAlignmentCenter;
-    bl.userInteractionEnabled = NO;
-    [gBall addSubview:bl];
-    [gBall addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:vc action:@selector(bkToggle:)]];
-    [gBall addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:vc action:@selector(bkDrag:)]];
-
-    gPanel = [[UIView alloc] initWithFrame:CGRectMake(12, 64, 300, s.height - 76)];
-    gPanel.backgroundColor = [UIColor colorWithWhite:0.05 alpha:0.92];
-    gPanel.layer.cornerRadius = 12;
-    gPanel.layer.borderWidth = 1;
-    gPanel.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.15].CGColor;
-    [gRootView addSubview:gPanel];
-
-    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(14, 10, 120, 20)];
-    title.text = @"INPUT";
-    title.font = [UIFont boldSystemFontOfSize:15];
-    title.textColor = UIColor.whiteColor;
-    [gPanel addSubview:title];
-
-    UIButton *x = [UIButton buttonWithType:UIButtonTypeSystem];
-    x.frame = CGRectMake(266, 6, 28, 26);
-    [x setTitle:@"x" forState:UIControlStateNormal];
-    [x addTarget:vc action:@selector(bkToggle:) forControlEvents:UIControlEventTouchUpInside];
+    UIButton *x = Btn(@"x", CGRectMake(w - 34, 6, 26, 26));
+    [x addTarget:gVC action:@selector(toggle) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:x];
 
-    gStatus = [[UILabel alloc] initWithFrame:CGRectMake(14, 32, 120, 16)];
-    gStatus.font = [UIFont boldSystemFontOfSize:11];
+    UIButton *on = Btn(@"Ativo", CGRectMake(12, 34, 70, 30));
+    [on addTarget:gVC action:@selector(onOff:) forControlEvents:UIControlEventTouchUpInside];
+    [gPanel addSubview:on];
+
+    UIButton *mk = Btn(@"Marcas", CGRectMake(90, 34, 70, 30));
+    [mk addTarget:gVC action:@selector(marks:) forControlEvents:UIControlEventTouchUpInside];
+    [gPanel addSubview:mk];
+
+    UIButton *pt = Btn(@"Seta", CGRectMake(168, 34, 70, 30));
+    [pt addTarget:gVC action:@selector(ptr:) forControlEvents:UIControlEventTouchUpInside];
+    [gPanel addSubview:pt];
+
+    UIButton *nv = Btn(@"Novo bind", CGRectMake(12, 72, 110, 30));
+    [nv addTarget:gVC action:@selector(bind) forControlEvents:UIControlEventTouchUpInside];
+    [gPanel addSubview:nv];
+
+    UIButton *ts = Btn(@"Testar", CGRectMake(130, 72, 108, 30));
+    [ts addTarget:gVC action:@selector(test) forControlEvents:UIControlEventTouchUpInside];
+    [gPanel addSubview:ts];
+
+    UISlider *sl = [[UISlider alloc] initWithFrame:CGRectMake(12, 108, w - 24, 30)];
+    sl.minimumValue = 0.4; sl.maximumValue = 4.0; sl.value = gSens;
+    [sl addTarget:gVC action:@selector(sens:) forControlEvents:UIControlEventValueChanged];
+    [gPanel addSubview:sl];
+
+    gStatus = [[UILabel alloc] initWithFrame:CGRectMake(12, 140, w - 24, 18)];
+    gStatus.textColor = UIColor.systemYellowColor;
+    gStatus.font = [UIFont systemFontOfSize:11];
+    gStatus.text = @"Aguardando...";
     [gPanel addSubview:gStatus];
 
-    UIButton *add = [UIButton buttonWithType:UIButtonTypeSystem];
-    add.frame = CGRectMake(14, 54, 100, 30);
-    [add setTitle:@"+ Bind" forState:UIControlStateNormal];
-    [add addTarget:vc action:@selector(bkAdd:) forControlEvents:UIControlEventTouchUpInside];
-    [gPanel addSubview:add];
-
-    UIButton *sens = [UIButton buttonWithType:UIButtonTypeSystem];
-    sens.frame = CGRectMake(118, 54, 84, 30);
-    [sens setTitle:[NSString stringWithFormat:@"Sens %.1f", gSens] forState:UIControlStateNormal];
-    sens.titleLabel.font = [UIFont systemFontOfSize:11];
-    [sens addTarget:vc action:@selector(bkSens:) forControlEvents:UIControlEventTouchUpInside];
-    [gPanel addSubview:sens];
-
-    UIButton *test = [UIButton buttonWithType:UIButtonTypeSystem];
-    test.frame = CGRectMake(206, 54, 80, 30);
-    [test setTitle:@"Testar" forState:UIControlStateNormal];
-    test.titleLabel.font = [UIFont systemFontOfSize:11];
-    [test addTarget:vc action:@selector(bkTest:) forControlEvents:UIControlEventTouchUpInside];
-    [gPanel addSubview:test];
-
-    gAtivoBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gAtivoBtn.frame = CGRectMake(14, 90, 42, 26);
-    gAtivoBtn.titleLabel.font = [UIFont systemFontOfSize:8];
-    [gAtivoBtn setTitle:@"Ativo" forState:UIControlStateNormal];
-    [gAtivoBtn addTarget:vc action:@selector(bkPower:) forControlEvents:UIControlEventTouchUpInside];
-    [gPanel addSubview:gAtivoBtn];
-
-    gMarcasBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gMarcasBtn.frame = CGRectMake(60, 90, 42, 26);
-    gMarcasBtn.titleLabel.font = [UIFont systemFontOfSize:8];
-    [gMarcasBtn setTitle:@"Marca" forState:UIControlStateNormal];
-    [gMarcasBtn addTarget:vc action:@selector(bkMarks:) forControlEvents:UIControlEventTouchUpInside];
-    [gPanel addSubview:gMarcasBtn];
-
-    gSetaBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gSetaBtn.frame = CGRectMake(106, 90, 42, 26);
-    gSetaBtn.titleLabel.font = [UIFont systemFontOfSize:8];
-    [gSetaBtn setTitle:@"Seta" forState:UIControlStateNormal];
-    [gSetaBtn addTarget:vc action:@selector(bkPtr:) forControlEvents:UIControlEventTouchUpInside];
-    [gPanel addSubview:gSetaBtn];
-
-    gLockBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gLockBtn.frame = CGRectMake(152, 90, 42, 26);
-    gLockBtn.titleLabel.font = [UIFont systemFontOfSize:8];
-    [gLockBtn setTitle:@"Lock" forState:UIControlStateNormal];
-    [gLockBtn addTarget:vc action:@selector(bkLock:) forControlEvents:UIControlEventTouchUpInside];
-    [gPanel addSubview:gLockBtn];
-
-    gRotBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gRotBtn.frame = CGRectMake(198, 90, 42, 26);
-    gRotBtn.titleLabel.font = [UIFont systemFontOfSize:8];
-    [gRotBtn setTitle:@"Girar" forState:UIControlStateNormal];
-    [gRotBtn addTarget:vc action:@selector(bkRot:) forControlEvents:UIControlEventTouchUpInside];
-    [gPanel addSubview:gRotBtn];
-
-    gSumirBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    gSumirBtn.frame = CGRectMake(244, 90, 42, 26);
-    gSumirBtn.titleLabel.font = [UIFont systemFontOfSize:8];
-    [gSumirBtn setTitle:@"Sumir" forState:UIControlStateNormal];
-    [gSumirBtn addTarget:vc action:@selector(bkSumir:) forControlEvents:UIControlEventTouchUpInside];
-    [gPanel addSubview:gSumirBtn];
-
-    gDiag = [[UILabel alloc] initWithFrame:CGRectMake(14, gPanel.bounds.size.height - 20, 272, 14)];
-    gDiag.font = [UIFont monospacedDigitSystemFontOfSize:9 weight:UIFontWeightRegular];
+    gDiag = [[UILabel alloc] initWithFrame:CGRectMake(12, 160, w - 24, 18)];
     gDiag.textColor = UIColor.lightGrayColor;
+    gDiag.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
     [gPanel addSubview:gDiag];
 
-    gScroll = [[UIScrollView alloc] initWithFrame:CGRectMake(14, 124, 272, gPanel.bounds.size.height - 148)];
-    gScroll.alwaysBounceVertical = YES;
-    [gPanel addSubview:gScroll];
+    [gVC becomeFirstResponder];
+    Diag();
+    Status(@"Pronto");
 
-    gPointer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 18, 18)];
-    gPointer.backgroundColor = [UIColor colorWithRed:1 green:0.25 blue:0.35 alpha:0.55];
-    gPointer.layer.cornerRadius = 9;
-    gPointer.layer.borderWidth = 1.5;
-    gPointer.layer.borderColor = [UIColor colorWithRed:1 green:0.35 blue:0.45 alpha:1].CGColor;
-    gPointer.userInteractionEnabled = NO;
-    [gRootView addSubview:gPointer];
-    gPtr = CGPointMake(s.width / 2, s.height / 2);
-    BKPtrSync();
-
-    gPanel.hidden = !gPanelOpen;
-    [w makeKeyAndVisible];
-    [vc becomeFirstResponder];
-    [vc setNeedsUpdateOfPrefersPointerLocked];
-    BKRefresh();
-}
-
-#pragma mark - Janela e root
-
-@implementation InputWindow
-- (UIView *)hitTest:(CGPoint)p withEvent:(UIEvent *)e {
-    if (gStep == 2) return gRootView;
-    UIView *v = [super hitTest:p withEvent:e];
-    if (!v || v == self || v == gRootView) return nil;
-    return v;
-}
-@end
-
-@implementation InputRootView
-@end
-
-@implementation InputRootController
-
-- (void)loadView {
-    self.view = [[InputRootView alloc] initWithFrame:UIScreen.mainScreen.bounds];
-}
-
-- (BOOL)canBecomeFirstResponder { return YES; }
-
-- (BOOL)prefersPointerLocked { return gLock; }
-
-- (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
-    for (UIPress *p in presses) {
-        if (!p.key) continue;
-        gKeyCount++;
-        BKKey((int)p.key.keyCode, YES);
-    }
-    [super pressesBegan:presses withEvent:event];
-    BKDiag();
-}
-
-- (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
-    for (UIPress *p in presses) {
-        if (!p.key) continue;
-        BKKey((int)p.key.keyCode, NO);
-    }
-    [super pressesEnded:presses withEvent:event];
-}
-
-- (void)pressesCancelled:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
-    [self pressesEnded:presses withEvent:event];
-}
-
-- (void)bkSumir:(UIButton *)b {
-    gHUD.hidden = YES;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        gHUD.hidden = NO;
-        BKRefresh();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5e8), dispatch_get_main_queue(), ^{
+        if (!gWin) FindGame();
+        if (!gWin) Status(@"Janela do jogo nao encontrada");
     });
 }
 
-- (void)bkLock:(UIButton *)b {
-    gLock = !gLock;
-    BKSave();
-    [self setNeedsUpdateOfPrefersPointerLocked];
-    BKRefresh();
-}
-
-- (void)bkTap:(UITapGestureRecognizer *)g {
-    CGPoint p = [g locationInView:gRootView];
-    if (gStep != 2 || !gPending) return;
-    if (!gPanel.hidden && CGRectContainsPoint(gPanel.frame, p)) return;
-    gPending[@"x"] = @(p.x);
-    gPending[@"y"] = @(p.y);
-    gPending = nil;
-    BKSetStep(0, nil);
-    gPanel.hidden = !gPanelOpen;
-    BKSave();
-    BKRefresh();
-}
-
-- (void)bkAdd:(UIButton *)b {
-    if (gStep != 0) { BKSetStep(0, nil); return; }
-    BKSetStep(1, @"Pressione uma tecla ou botao do mouse (Esc cancela)");
-}
-
-- (void)bkMove:(UIButton *)b {
-    if (b.tag >= gBinds.count) return;
-    gPending = gBinds[b.tag];
-    gPanel.hidden = YES;
-    BKSetStep(2, @"Toque na tela para posicionar (Esc cancela)");
-}
-
-- (void)bkDelete:(UIButton *)b {
-    if (b.tag >= gBinds.count) return;
-    [gBinds removeObjectAtIndex:b.tag];
-    [gHeld removeAllObjects];
-    BKSave();
-    BKRefresh();
-}
-
-- (void)bkPower:(UIButton *)b {
-    gEnabled = !gEnabled;
-    if (!gEnabled) BKReleaseAll();
-    BKSave();
-    BKRefresh();
-}
-
-- (void)bkMarks:(UIButton *)b { gShowMarks = !gShowMarks; BKSave(); BKRefresh(); }
-- (void)bkPtr:(UIButton *)b { gShowPtr = !gShowPtr; BKSave(); BKRefresh(); }
-- (void)bkRot:(UIButton *)b { gFixRotation = !gFixRotation; BKSave(); BKRefresh(); }
-
-- (void)bkSens:(UIButton *)b {
-    gSens = gSens >= 4.0 ? 0.4 : gSens + 0.4;
-    [b setTitle:[NSString stringWithFormat:@"Sens %.1f", gSens] forState:UIControlStateNormal];
-    BKSave();
-}
-
-- (void)bkTest:(UIButton *)b {
-    gShowPtr = YES;
-    BKPtrSync();
-    BKInject(gPtr, YES, 8);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 90 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        BKInject(gPtr, NO, 8);
-    });
-}
-
-- (void)bkToggle:(id)sender {
-    gPanelOpen = !gPanelOpen;
-    gPanel.hidden = !gPanelOpen;
-    BKSave();
-}
-
-- (void)bkDrag:(UIPanGestureRecognizer *)g {
-    CGPoint p = [g locationInView:gRootView];
-    CGSize s = gRootView.bounds.size;
-    gBall.center = CGPointMake(MAX(22, MIN(s.width - 22, p.x)), MAX(22, MIN(s.height - 22, p.y)));
-}
-
+@implementation Ctl (Acoes)
+- (void)toggle { gOpen = NO; gSelf.hidden = YES; }
+- (void)onOff:(UIButton *)b { gOn = !gOn; [b setTitle:gOn ? @"Ativo" : @"Parado" forState:UIControlStateNormal]; }
+- (void)marks:(UIButton *)b { gMarksOn = !gMarksOn; Redraw(); }
+- (void)ptr:(UIButton *)b { gPtrOn = !gPtrOn; gPtr.hidden = !gPtrOn; }
+- (void)bind { gBinding = YES; Status(@"Pressione tecla ou botao (Esc cancela)"); }
+- (void)test { Send(gP, UITouchPhaseBegan); Send(gP, UITouchPhaseEnded); Diag(); }
+- (void)sens:(UISlider *)s { gSens = s.value; }
 @end
+
+#pragma mark - GameController
+
+static void (*oKey)(id, SEL, id);
+static void (*oMove)(id, SEL, id);
+static void (*oPress)(id, SEL, id);
+
+static void nKey(id s, SEL c, id h) {
+    if (oKey) oKey(s, c, h);
+    if (!h) return;
+    __weak id wk = s;
+    [s setKeyChangedHandler:^(GCKeyboardInput *k, GCKeyCode code, BOOL down) {
+        (void)wk;
+        if (down) KeyDown((int)code); else KeyUp((int)code);
+    }];
+}
+
+static void nMove(id s, SEL c, id h) {
+    if (oMove) oMove(s, c, h);
+    [s setMouseMovedHandler:^(GCMouseInput *m, float dx, float dy) { Move(dx, dy); }];
+}
+
+static void nPress(id s, SEL c, id h) {
+    if (oPress) oPress(s, c, h);
+    [s setPressedChangedHandler:^(GCMouseInput *m, GCMouseInputButton b, BOOL down) {
+        int code = b == GCMouseInputButtonLeft ? LEFT : (b == GCMouseInputButtonRight ? RIGHT : -(int)b - 3);
+        if (down) BtnDown(code); else BtnUp(code);
+    }];
+}
+
+static void Hook(Class c, SEL s, void *f, void **orig) {
+    Method m = class_getInstanceMethod(c, s);
+    if (!m) return;
+    *orig = (void *)method_getImplementation(m);
+    method_setImplementation(m, (IMP)f);
+}
 
 #pragma mark - Entrada
 
-static void BKKey(int c, BOOL down) {
-    if (gStep == 1) {
-        if (!down) return;
-        if (c == 41) { BKSetStep(0, nil); return; }
-        if (BKIndexOf(c) >= 0) { BKSetStep(1, @"Tecla ja usada, escolha outra"); return; }
-        NSMutableDictionary *nb = [@{ @"k": @(c), @"x": @(0), @"y": @(0) } mutableCopy];
-        [gBinds addObject:nb];
-        gPending = nb;
-        gPanel.hidden = YES;
-        BKSetStep(2, @"Toque na tela para posicionar (Esc cancela)");
-        BKSave();
-        BKRefresh();
-        return;
-    }
-    if (gStep == 2) {
-        if (down && c == 41) {
-            if (gPending && [gPending[@"x"] doubleValue] == 0 && [gPending[@"y"] doubleValue] == 0) {
-                [gBinds removeObject:gPending];
-            }
-            gPending = nil;
-            BKSetStep(0, nil);
-            gPanel.hidden = !gPanelOpen;
-            BKSave();
-            BKRefresh();
-        }
-        return;
-    }
-    if (!gEnabled) return;
-    NSInteger i = BKIndexOf(c);
-    if (i < 0) return;
-    if (down) BKDown(c, CGPointMake([gBinds[i][@"x"] doubleValue], [gBinds[i][@"y"] doubleValue]));
-    else BKUp(c);
-}
-
-static void BKMouseButton(int c, BOOL down) {
-    if (gStep == 1 || gStep == 2) { if (down) BKKey(c, down); return; }
-    if (!gEnabled) return;
-
-    if (c == BK_LEFT) {
-        if (BKIndexOf(BK_LEFT) >= 0) { down ? BKDown(BK_LEFT, gPtr) : BKUp(BK_LEFT); return; }
-        if (down) { gLeftHeld = YES; BKInject(gPtr, YES, gDragFinger); }
-        else if (gLeftHeld) { BKInject(gPtr, NO, gDragFinger); gLeftHeld = NO; }
-        return;
-    }
-    if (BKIndexOf(c) >= 0) { down ? BKDown(c, gPtr) : BKUp(c); }
-}
-
-static void BKMouseMove(float dx, float dy) {
-    if (!gEnabled) return;
-    CGSize s = gRootView.bounds.size;
-    gPtr.x = MAX(0, MIN(s.width,  gPtr.x + dx * gSens));
-    gPtr.y = MAX(0, MIN(s.height, gPtr.y + dy * gSens));
-    dispatch_async(dispatch_get_main_queue(), ^{ BKPtrSync(); });
-    if (gLeftHeld && BKIndexOf(BK_LEFT) < 0) BKInject(gPtr, YES, gDragFinger);
-}
-
-#pragma mark - Handlers
-
-static id gGameKey = nil;
-static id gGameMove = nil;
-
-static id BKKeyBlock(void) {
-    static id blk;
-    static dispatch_once_t o;
-    dispatch_once(&o, ^{
-        blk = [^void(GCKeyboardInput *k, GCControllerButtonInput *b, GCKeyCode code, BOOL pressed) {
-            if (gGameKey) ((void (^)(GCKeyboardInput *, GCControllerButtonInput *, GCKeyCode, BOOL))gGameKey)(k, b, code, pressed);
-            gKeyCount++;
-            BKKey((int)code, pressed);
-            BKDiag();
-        } copy];
-    });
-    return blk;
-}
-
-static id BKMouseBlock(void) {
-    static id blk;
-    static dispatch_once_t o;
-    dispatch_once(&o, ^{
-        blk = [^void(GCMouseInput *mi, float dx, float dy) {
-            if (gGameMove) ((void (^)(GCMouseInput *, float, float))gGameMove)(mi, dx, dy);
-            if (!gHidSeen) {
-                gMouseCount++;
-                BKMouseMove(dx, dy);
-            }
-        } copy];
-    });
-    return blk;
-}
-
-static void BKSetKeyChanged(id self, SEL _cmd, id handler) {
-    gGameKey = (handler == BKKeyBlock()) ? nil : [handler copy];
-    orig_setKeyChanged(self, _cmd, BKKeyBlock());
-}
-
-static void BKSetMouseMoved(id self, SEL _cmd, id handler) {
-    gGameMove = (handler == BKMouseBlock()) ? nil : [handler copy];
-    orig_setMouseMoved(self, _cmd, BKMouseBlock());
-}
-
-static void BKSwizzle(Class cls, SEL sel, IMP imp, void **orig) {
-    if (!cls) return;
-    Method m = class_getInstanceMethod(cls, sel);
-    if (!m) return;
-    *orig = method_getImplementation(m);
-    method_setImplementation(m, imp);
-}
-
-static void BKSetupSwizzle(void) {
-    BKSwizzle(objc_getClass("GCKeyboardInput"), @selector(setKeyChangedHandler:), (IMP)BKSetKeyChanged, (void **)&orig_setKeyChanged);
-    BKSwizzle(objc_getClass("GCMouseInput"), @selector(setMouseMovedHandler:), (IMP)BKSetMouseMoved, (void **)&orig_setMouseMoved);
-}
-
-static void BKInstallKeyboard(GCKeyboard *kb) {
-    if (!kb) return;
-    GCKeyboardInput *in = kb.keyboardInput;
-    if (!in) return;
-    if (orig_setKeyChanged) orig_setKeyChanged(in, @selector(setKeyChangedHandler:), in.keyChangedHandler);
-    else in.keyChangedHandler = BKKeyBlock();
-}
-
-static void BKInstallMouse(GCMouse *m) {
-    if (!m) return;
-    GCMouseInput *in = m.mouseInput;
-    if (!in) return;
-
-    if (orig_setMouseMoved) orig_setMouseMoved(in, @selector(setMouseMovedHandler:), in.mouseMovedHandler);
-    else in.mouseMovedHandler = BKMouseBlock();
-
-    SEL v2 = sel_registerName("setMouseMovedHandlerV2:");
-    if ([in respondsToSelector:v2])
-        ((void (*)(id, SEL, id))objc_msgSend)(in, v2, BKMouseBlock());
-
-    in.leftButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) {
-        BKMouseButton(BK_LEFT, p);
-    };
-    in.rightButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) {
-        BKMouseButton(BK_RIGHT, p);
-    };
-    if (in.middleButton) in.middleButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL p) {
-        BKMouseButton(BK_MIDDLE, p);
-    };
-}
-
-static void BKTick(void) {
+__attribute__((constructor)) static void Start(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        GCKeyboard *kb = GCKeyboard.coalescedKeyboard;
-        if (kb) BKInstallKeyboard(kb);
-        GCMouse *m = GCMouse.current;
-        if (m) BKInstallMouse(m);
-
-        if (gHUD) {
-            UIViewController *vc = gHUD.rootViewController;
-            if ([vc respondsToSelector:@selector(setNeedsUpdateOfPrefersPointerLocked)])
-                [vc setNeedsUpdateOfPrefersPointerLocked];
-
-            UIScene *sc = gHUD.windowScene;
-            if (gLock && [sc respondsToSelector:@selector(_setPointerLocked:)])
-                ((void (*)(id, SEL, BOOL))objc_msgSend)(sc, @selector(_setPointerLocked:), YES);
-        }
-        BKDiag();
+        @try {
+            Hook([GCKeyboardInput class], @selector(setKeyChangedHandler:), (void *)nKey, (void **)&oKey);
+            Hook([GCMouseInput class], @selector(setMouseMovedHandler:), (void *)nMove, (void **)&oMove);
+            Hook([GCMouseInput class], @selector(setPressedChangedHandler:), (void *)nPress, (void **)&oPress);
+        } @catch (NSException *e) {}
+        Build();
     });
-}
-
-static void BKCurrent(void) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        BKTick();
-    });
-}
-
-#pragma mark - Ciclo de vida
-
-__attribute__((constructor))
-static void BKInit(void) {
-    gHeld = [NSMutableDictionary dictionary];
-    gTouches = [NSMutableDictionary dictionary];
-    BKLoad();
-    BKSetupInject();
-    BKSetupSwizzle();
-
-    NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
-    [nc addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
-        BKTick();
-        dispatch_async(dispatch_get_main_queue(), ^{ BKInstallHUD(); });
-    }];
-    [nc addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
-        dispatch_async(dispatch_get_main_queue(), ^{ BKInstallHUD(); });
-        BKTick();
-    }];
-    [nc addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
-        BKReleaseAll();
-    }];
-    [nc addObserverForName:GCKeyboardDidConnectNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
-        BKCurrent();
-    }];
-    [nc addObserverForName:GCMouseDidConnectNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
-        BKCurrent();
-    }];
-    [nc addObserverForName:@"GCKeyboardDidBecomeCurrentNotification" object:nil queue:nil usingBlock:^(NSNotification *n) {
-        BKCurrent();
-    }];
-    [nc addObserverForName:@"GCMouseDidBecomeCurrentNotification" object:nil queue:nil usingBlock:^(NSNotification *n) {
-        BKCurrent();
-    }];
-    [nc addObserverForName:UISceneDidActivateNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
-        dispatch_async(dispatch_get_main_queue(), ^{ BKInstallHUD(); });
-    }];
-
-    __block int tries = 0;
-    NSTimer *t = [NSTimer timerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *tm) {
-        tries++;
-        dispatch_async(dispatch_get_main_queue(), ^{ BKInstallHUD(); });
-        BKTick();
-        if (tries > 300) [tm invalidate];
-    }];
-    [NSRunLoop.mainRunLoop addTimer:t forMode:NSRunLoopCommonModes];
 }

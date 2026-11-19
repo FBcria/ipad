@@ -1,9 +1,9 @@
-Package: com.wjf.nativeinput
-Name: NativeInput
-Version: 3.0.0
-Architecture: iphoneos-arm
-Description: Mapeador de teclado e mouse para Free Fire (sem Substrate)
-Maintainer: wjf
-Author: wjf
+Package: com.fbcria.mobileinput
+Name: MobileInput
+Version: 1.0
+Architecture: iphoneos-arm64
+Description: Teclado e mouse como toque no Free Fire
+Maintainer: FBcria
+Author: FBcria
 Section: Tweaks
-Depends: firmware (>= 13.0)
+Depends: mobilesubstrate

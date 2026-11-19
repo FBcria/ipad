@@ -35,8 +35,6 @@ static NSMutableDictionary *gBinds;
 static uint32_t gFinger = 9;
 static UITouch *gDrag;
 
-#pragma mark - Log
-
 static void Log(NSString *fmt, ...) {
     va_list a;
     va_start(a, fmt);
@@ -195,7 +193,6 @@ static void FpsStart(void) {
     gFps = YES;
     gPtr.hidden = YES;
     Status(@"FPS ON");
-    Log(@"fps on");
 }
 
 static void FpsStop(void) {
@@ -205,7 +202,6 @@ static void FpsStop(void) {
     gFps = NO;
     gPtr.hidden = !gPtrOn;
     Status(@"FPS OFF");
-    Log(@"fps off");
 }
 
 static void FpsMove(float dx, float dy) {
@@ -331,113 +327,106 @@ static void FindGame(void) {
 
 static void Build(void) {
     if (gBuilt) return;
-    UIWindowScene *sc = Scene();
-    if (!sc) {
-        gTries++;
-        if (gTries % 10 == 0) Log(@"sem scene, tentativa %d", gTries);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)3e8), dispatch_get_main_queue(), ^{ Build(); });
-        return;
+    @try {
+        UIWindowScene *sc = Scene();
+        if (!sc) {
+            gTries++;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)4e8), dispatch_get_main_queue(), ^{ Build(); });
+            return;
+        }
+        gBuilt = YES;
+        FindGame();
+
+        gSelf = [[Win alloc] initWithWindowScene:sc];
+        gSelf.frame = UIScreen.mainScreen.bounds;
+        gSelf.windowLevel = 10000001;
+        gSelf.backgroundColor = UIColor.clearColor;
+        gVC = [Ctl new];
+        gSelf.rootViewController = gVC;
+        gSelf.hidden = NO;
+        gRoot = gVC.view;
+        gRoot.frame = gSelf.bounds;
+
+        gMarks = [NSMutableArray array];
+        gBinds = [NSMutableDictionary dictionary];
+
+        gPtr = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 26, 26)];
+        gPtr.backgroundColor = [UIColor colorWithWhite:1 alpha:0.30];
+        gPtr.layer.cornerRadius = 13;
+        gPtr.layer.borderWidth = 1.5;
+        gPtr.layer.borderColor = UIColor.whiteColor.CGColor;
+        gPtr.center = CGPointMake(120, 220);
+        gP = gPtr.center;
+        [gRoot addSubview:gPtr];
+
+        CGFloat w = 250;
+        gPanel = [[UIView alloc] initWithFrame:CGRectMake(12, 70, w, 250)];
+        gPanel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.72];
+        gPanel.layer.cornerRadius = 14;
+        [gRoot addSubview:gPanel];
+
+        UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, w - 46, 20)];
+        t.text = @"MobileInput";
+        t.textColor = UIColor.whiteColor;
+        t.font = [UIFont boldSystemFontOfSize:14];
+        [gPanel addSubview:t];
+
+        UIButton *x = Btn(@"x", CGRectMake(w - 34, 6, 26, 26));
+        [x addTarget:gVC action:@selector(toggle) forControlEvents:UIControlEventTouchUpInside];
+        [gPanel addSubview:x];
+
+        UIButton *on = Btn(@"Ativo", CGRectMake(12, 34, 70, 30));
+        [on addTarget:gVC action:@selector(onOff:) forControlEvents:UIControlEventTouchUpInside];
+        [gPanel addSubview:on];
+
+        UIButton *mk = Btn(@"Marcas", CGRectMake(90, 34, 70, 30));
+        [mk addTarget:gVC action:@selector(marks:) forControlEvents:UIControlEventTouchUpInside];
+        [gPanel addSubview:mk];
+
+        UIButton *pt = Btn(@"Seta", CGRectMake(168, 34, 70, 30));
+        [pt addTarget:gVC action:@selector(ptr:) forControlEvents:UIControlEventTouchUpInside];
+        [gPanel addSubview:pt];
+
+        UIButton *nv = Btn(@"Novo bind", CGRectMake(12, 72, 110, 30));
+        [nv addTarget:gVC action:@selector(bind) forControlEvents:UIControlEventTouchUpInside];
+        [gPanel addSubview:nv];
+
+        UIButton *ts = Btn(@"Testar", CGRectMake(130, 72, 108, 30));
+        [ts addTarget:gVC action:@selector(test) forControlEvents:UIControlEventTouchUpInside];
+        [gPanel addSubview:ts];
+
+        UIButton *fp = Btn(@"FPS", CGRectMake(12, 110, 70, 30));
+        [fp addTarget:gVC action:@selector(fps) forControlEvents:UIControlEventTouchUpInside];
+        [gPanel addSubview:fp];
+
+        UIButton *fk = Btn(@"Tecla FPS", CGRectMake(90, 110, 148, 30));
+        [fk addTarget:gVC action:@selector(fpsKey) forControlEvents:UIControlEventTouchUpInside];
+        [gPanel addSubview:fk];
+
+        UISlider *sl = [[UISlider alloc] initWithFrame:CGRectMake(12, 146, w - 24, 30)];
+        sl.minimumValue = 0.4; sl.maximumValue = 4.0; sl.value = gSens;
+        [sl addTarget:gVC action:@selector(sens:) forControlEvents:UIControlEventValueChanged];
+        [gPanel addSubview:sl];
+
+        gStatus = [[UILabel alloc] initWithFrame:CGRectMake(12, 178, w - 24, 18)];
+        gStatus.textColor = UIColor.systemYellowColor;
+        gStatus.font = [UIFont systemFontOfSize:11];
+        gStatus.text = @"Aguardando...";
+        [gPanel addSubview:gStatus];
+
+        gDiag = [[UILabel alloc] initWithFrame:CGRectMake(12, 200, w - 24, 18)];
+        gDiag.textColor = UIColor.lightGrayColor;
+        gDiag.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
+        [gPanel addSubview:gDiag];
+
+        [gSelf makeKeyAndVisible];
+        [gVC becomeFirstResponder];
+        Diag();
+        Status(@"Pronto");
+        Log(@"painel montado");
+    } @catch (NSException *e) {
+        Log(@"build erro: %@", e.reason);
     }
-    Log(@"scene ok, tentativa %d", gTries);
-
-    gBuilt = YES;
-    gWin = nil;
-    FindGame();
-    Log(@"janela do jogo: %@", gWin ? @"sim" : @"nao");
-
-    gSelf = [[Win alloc] initWithWindowScene:sc];
-    gSelf.frame = UIScreen.mainScreen.bounds;
-    gSelf.windowLevel = 10000001;
-    gSelf.backgroundColor = UIColor.clearColor;
-    gSelf.hidden = NO;
-    gVC = [Ctl new];
-    gSelf.rootViewController = gVC;
-    [gSelf makeKeyAndVisible];
-    gRoot = gVC.view;
-    gRoot.frame = gSelf.bounds;
-    gRoot.backgroundColor = UIColor.clearColor;
-
-    gMarks = [NSMutableArray array];
-    gBinds = [NSMutableDictionary dictionary];
-
-    gPtr = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 26, 26)];
-    gPtr.backgroundColor = [UIColor colorWithWhite:1 alpha:0.30];
-    gPtr.layer.cornerRadius = 13;
-    gPtr.layer.borderWidth = 1.5;
-    gPtr.layer.borderColor = UIColor.whiteColor.CGColor;
-    gPtr.center = CGPointMake(120, 220);
-    gP = gPtr.center;
-    [gRoot addSubview:gPtr];
-
-    CGFloat w = 250;
-    gPanel = [[UIView alloc] initWithFrame:CGRectMake(12, 70, w, 250)];
-    gPanel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.72];
-    gPanel.layer.cornerRadius = 14;
-    [gRoot addSubview:gPanel];
-
-    UILabel *t = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, w - 46, 20)];
-    t.text = @"MobileInput";
-    t.textColor = UIColor.whiteColor;
-    t.font = [UIFont boldSystemFontOfSize:14];
-    [gPanel addSubview:t];
-
-    UIButton *x = Btn(@"x", CGRectMake(w - 34, 6, 26, 26));
-    [x addTarget:gVC action:@selector(toggle) forControlEvents:UIControlEventTouchUpInside];
-    [gPanel addSubview:x];
-
-    UIButton *on = Btn(@"Ativo", CGRectMake(12, 34, 70, 30));
-    [on addTarget:gVC action:@selector(onOff:) forControlEvents:UIControlEventTouchUpInside];
-    [gPanel addSubview:on];
-
-    UIButton *mk = Btn(@"Marcas", CGRectMake(90, 34, 70, 30));
-    [mk addTarget:gVC action:@selector(marks:) forControlEvents:UIControlEventTouchUpInside];
-    [gPanel addSubview:mk];
-
-    UIButton *pt = Btn(@"Seta", CGRectMake(168, 34, 70, 30));
-    [pt addTarget:gVC action:@selector(ptr:) forControlEvents:UIControlEventTouchUpInside];
-    [gPanel addSubview:pt];
-
-    UIButton *nv = Btn(@"Novo bind", CGRectMake(12, 72, 110, 30));
-    [nv addTarget:gVC action:@selector(bind) forControlEvents:UIControlEventTouchUpInside];
-    [gPanel addSubview:nv];
-
-    UIButton *ts = Btn(@"Testar", CGRectMake(130, 72, 108, 30));
-    [ts addTarget:gVC action:@selector(test) forControlEvents:UIControlEventTouchUpInside];
-    [gPanel addSubview:ts];
-
-    UIButton *fp = Btn(@"FPS", CGRectMake(12, 110, 70, 30));
-    [fp addTarget:gVC action:@selector(fps) forControlEvents:UIControlEventTouchUpInside];
-    [gPanel addSubview:fp];
-
-    UIButton *fk = Btn(@"Tecla FPS", CGRectMake(90, 110, 148, 30));
-    [fk addTarget:gVC action:@selector(fpsKey) forControlEvents:UIControlEventTouchUpInside];
-    [gPanel addSubview:fk];
-
-    UISlider *sl = [[UISlider alloc] initWithFrame:CGRectMake(12, 146, w - 24, 30)];
-    sl.minimumValue = 0.4; sl.maximumValue = 4.0; sl.value = gSens;
-    [sl addTarget:gVC action:@selector(sens:) forControlEvents:UIControlEventValueChanged];
-    [gPanel addSubview:sl];
-
-    gStatus = [[UILabel alloc] initWithFrame:CGRectMake(12, 178, w - 24, 18)];
-    gStatus.textColor = UIColor.systemYellowColor;
-    gStatus.font = [UIFont systemFontOfSize:11];
-    gStatus.text = @"Aguardando...";
-    [gPanel addSubview:gStatus];
-
-    gDiag = [[UILabel alloc] initWithFrame:CGRectMake(12, 200, w - 24, 18)];
-    gDiag.textColor = UIColor.lightGrayColor;
-    gDiag.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
-    [gPanel addSubview:gDiag];
-
-    [gVC becomeFirstResponder];
-    Diag();
-    Status(@"Pronto");
-    Log(@"painel montado");
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)5e8), dispatch_get_main_queue(), ^{
-        if (!gWin) { FindGame(); Log(@"busca tardia: %@", gWin ? @"ok" : @"falhou"); }
-        if (!gWin) Status(@"Janela do jogo nao encontrada");
-    });
 }
 
 #pragma mark - GameController
@@ -447,9 +436,11 @@ static void (*oMove)(id, SEL, id);
 
 static void BindBtn(GCControllerButtonInput *b, int code) {
     if (!b) return;
-    b.pressedChangedHandler = ^(GCControllerButtonInput *btn, float value, BOOL pressed) {
-        if (pressed) BtnDown(code); else BtnUp(code);
-    };
+    @try {
+        b.pressedChangedHandler = ^(GCControllerButtonInput *btn, float value, BOOL pressed) {
+            if (pressed) BtnDown(code); else BtnUp(code);
+        };
+    } @catch (NSException *e) {}
 }
 
 static void BindMouse(GCMouseInput *m) {
@@ -464,41 +455,50 @@ static void BindMouse(GCMouseInput *m) {
 static void nKey(id s, SEL c, id h) {
     if (oKey) oKey(s, c, h);
     if (!h) return;
-    [(GCKeyboardInput *)s setKeyChangedHandler:^(GCKeyboardInput *k, GCControllerButtonInput *key, GCKeyCode code, BOOL down) {
-        if (down) KeyDown((int)code); else KeyUp((int)code);
-    }];
+    @try {
+        [(GCKeyboardInput *)s setKeyChangedHandler:^(GCKeyboardInput *k, GCControllerButtonInput *key, GCKeyCode code, BOOL down) {
+            if (down) KeyDown((int)code); else KeyUp((int)code);
+        }];
+    } @catch (NSException *e) {}
 }
 
 static void nMove(id s, SEL c, id h) {
     if (oMove) oMove(s, c, h);
-    [(GCMouseInput *)s setMouseMovedHandler:^(GCMouseInput *m, float dx, float dy) { Move(dx, dy); }];
-    BindMouse((GCMouseInput *)s);
+    @try {
+        [(GCMouseInput *)s setMouseMovedHandler:^(GCMouseInput *m, float dx, float dy) { Move(dx, dy); }];
+        BindMouse((GCMouseInput *)s);
+    } @catch (NSException *e) {}
 }
 
 static void Hook(Class c, SEL s, void *f, void **orig) {
     Method m = class_getInstanceMethod(c, s);
-    if (!m) { Log(@"hook ausente: %@", NSStringFromSelector(s)); return; }
+    if (!m) { Log(@"hook ausente %@", NSStringFromSelector(s)); return; }
     *orig = (void *)method_getImplementation(m);
     method_setImplementation(m, (IMP)f);
 }
 
 static void WatchMouse(void) {
-    GCMouse *mo = GCMouse.current;
-    if (mo && mo.mouseInput) BindMouse(mo.mouseInput);
+    @try {
+        GCMouse *mo = GCMouse.current;
+        if (mo && mo.mouseInput) BindMouse(mo.mouseInput);
+    } @catch (NSException *e) {}
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)1e9), dispatch_get_main_queue(), ^{ WatchMouse(); });
 }
 
 #pragma mark - Entrada
 
+static void Late(void) {
+    @try {
+        Hook([GCKeyboardInput class], @selector(setKeyChangedHandler:), (void *)nKey, (void **)&oKey);
+        Hook([GCMouseInput class], @selector(setMouseMovedHandler:), (void *)nMove, (void **)&oMove);
+    } @catch (NSException *e) { Log(@"hook erro %@", e.reason); }
+    Build();
+    WatchMouse();
+}
+
 __attribute__((constructor)) static void Start(void) {
-    Log(@"tweak carregado");
-    dispatch_async(dispatch_get_main_queue(), ^{
-        @try {
-            Hook([GCKeyboardInput class], @selector(setKeyChangedHandler:), (void *)nKey, (void **)&oKey);
-            Hook([GCMouseInput class], @selector(setMouseMovedHandler:), (void *)nMove, (void **)&oMove);
-            Log(@"hooks ok");
-        } @catch (NSException *e) { Log(@"hook erro: %@", e.reason); }
-        Build();
-        WatchMouse();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)2e9), dispatch_get_main_queue(), ^{
+        Log(@"iniciando");
+        Late();
     });
 }

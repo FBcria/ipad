@@ -1,0 +1,1 @@
+{ Filter = { Bundles = ( "com.dts.freefireth", "com.dts.freefiremax" ); }; }

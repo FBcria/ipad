@@ -6,4 +6,4 @@ Description: Teclado e mouse como toque no Free Fire
 Maintainer: FBcria
 Author: FBcria
 Section: Tweaks
-Depends: mobilesubstrate
+Depends: firmware (>= 14.0), ellekit | mobilesubstrate

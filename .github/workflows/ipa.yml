@@ -43,6 +43,16 @@ jobs:
       - name: Injetar e assinar
         run: |
           set -e
+          LDID=$(command -v ldid 2>/dev/null || true)
+          if [ -z "$LDID" ]; then
+            LDID=$(find "$THEOS" -type f -name ldid 2>/dev/null | head -n 1)
+          fi
+          if [ -z "$LDID" ]; then
+            LDID=$(find /opt /usr/local /home/runner -maxdepth 6 -type f -name ldid 2>/dev/null | head -n 1)
+          fi
+          [ -n "$LDID" ] || { echo "::error::ldid nao encontrado"; exit 1; }
+          echo "ldid: $LDID"
+
           IPA=$(ls *.ipa | head -n 1)
           rm -rf work && mkdir work && cd work
           unzip -q "../$IPA"
@@ -50,14 +60,26 @@ jobs:
           [ -n "$APP" ] || { echo "::error::Payload vazio (IPA criptografado?)"; exit 1; }
           BIN=$(basename "$APP" .app)
           [ -f "$APP/$BIN" ] || { echo "::error::executavel $BIN nao encontrado"; ls -la "$APP" | head -n 40; exit 1; }
+
           mkdir -p "$APP/Frameworks"
           cp ../libMobileInput.dylib "$APP/Frameworks/libMobileInput.dylib"
           rm -rf "$APP/_CodeSignature" "$APP/embedded.mobileprovision"
           python3 ../tools/inject.py "$APP/$BIN" "@executable_path/Frameworks/libMobileInput.dylib"
-          "$THEOS/bin/ldid" -e "$APP/$BIN" > orig.plist || true
+
+          "$LDID" -e "$APP/$BIN" > orig.plist 2>/dev/null || true
           python3 ../tools/ent.py orig.plist ../BallKey/ent.plist merged.plist
-          "$THEOS/bin/ldid" -S../BallKey/ent.plist "$APP/Frameworks/libMobileInput.dylib"
-          "$THEOS/bin/ldid" -Smerged.plist "$APP/$BIN"
+          grep -q "hid.client.event-dispatch" merged.plist || { echo "::error::entitlements sem chave HID"; cat merged.plist; exit 1; }
+          if grep -q "get-task-allow" merged.plist; then
+            echo "::warning::get-task-allow presente"
+          else
+            echo "sem get-task-allow"
+          fi
+
+          "$LDID" -S../BallKey/ent.plist "$APP/Frameworks/libMobileInput.dylib"
+          "$LDID" -Smerged.plist "$APP/$BIN"
+          "$LDID" -e "$APP/$BIN" | grep -q "hid.client.event-dispatch" || { echo "::error::assinatura nao aplicou entitlements"; exit 1; }
+          echo "assinado"
+
           echo "--- conferencia ---"
           python3 - "$APP/$BIN" <<'PY'
           import sys, struct
@@ -73,6 +95,7 @@ jobs:
           else:
               sys.exit("LC_LOAD_DYLIB ausente")
           PY
+
           zip -qr ../FreeFire_patched.ipa Payload
           cd ..
           ls -lh FreeFire_patched.ipa

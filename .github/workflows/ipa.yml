@@ -27,18 +27,15 @@ jobs:
         run: |
           set -e
           cd BallKey
-          make clean
-          make FINALPACKAGE=1
+          rm -rf .theos
+          make -f Inject.mk clean || true
+          make -f Inject.mk
           DYLIB=$(find .theos -name 'MobileInput.dylib' | head -n 1)
           [ -n "$DYLIB" ] || { echo "::error::dylib nao gerada"; find .theos -type f | head -n 60; exit 1; }
           cp "$DYLIB" ../libMobileInput.dylib
           ls -lh ../libMobileInput.dylib
           echo "--- dependencias ---"
-          if grep -a -q "libsubstrate" ../libMobileInput.dylib; then
-            echo "::warning::dylib depende de libsubstrate"
-          else
-            echo "sem dependencias externas"
-          fi
+          python3 ../tools/deps.py ../libMobileInput.dylib
 
       - name: Injetar e assinar
         run: |
@@ -69,11 +66,7 @@ jobs:
           "$LDID" -e "$APP/$BIN" > orig.plist 2>/dev/null || true
           python3 ../tools/ent.py orig.plist ../BallKey/ent.plist merged.plist
           grep -q "hid.client.event-dispatch" merged.plist || { echo "::error::entitlements sem chave HID"; cat merged.plist; exit 1; }
-          if grep -q "get-task-allow" merged.plist; then
-            echo "::warning::get-task-allow presente"
-          else
-            echo "sem get-task-allow"
-          fi
+          grep -q "get-task-allow" merged.plist && echo "::warning::get-task-allow presente" || echo "sem get-task-allow"
 
           "$LDID" -S../BallKey/ent.plist "$APP/Frameworks/libMobileInput.dylib"
           "$LDID" -Smerged.plist "$APP/$BIN"

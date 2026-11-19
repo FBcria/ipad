@@ -21,17 +21,24 @@ static BOOL gOpen = YES;
 static BOOL gMarksOn = NO;
 static BOOL gPtrOn = YES;
 static BOOL gBinding = NO;
+static BOOL gWaitFps = NO;
+static BOOL gFps = NO;
 static BOOL gTouchBad = NO;
 static CGFloat gSens = 1.6;
 static CGPoint gP;
+static CGPoint gFpsPos;
 static int gK = 0, gM = 0, gTaps = 0;
+static int gFpsKey = 42;
 
 static NSMutableDictionary *gBinds;
 static uint32_t gFinger = 9;
+static UITouch *gDrag;
 
 #pragma mark - Prototipos
 
 static void Send(CGPoint p, UITouchPhase ph);
+static void Push(UITouch *t, CGPoint p, CGPoint prev, UITouchPhase ph);
+static UITouch *MakeTouch(CGPoint p, UITouchPhase ph);
 static void Fire(NSString *k, BOOL down);
 static void Diag(void);
 static void Status(NSString *s);
@@ -42,6 +49,9 @@ static void BtnDown(int code);
 static void BtnUp(int code);
 static void Move(float dx, float dy);
 static void Build(void);
+static void FpsStart(void);
+static void FpsStop(void);
+static void FpsMove(float dx, float dy);
 
 @interface UIApplication (P)
 - (UIEvent *)_touchesEvent;
@@ -62,22 +72,32 @@ static void Build(void);
 - (void)bind;
 - (void)test;
 - (void)sens:(UISlider *)s;
+- (void)fps;
+- (void)fpsKey;
 @end
 
 #pragma mark - Toque
 
-static void Send(CGPoint p, UITouchPhase ph) {
-    if (!gWin) return;
+static UITouch *MakeTouch(CGPoint p, UITouchPhase ph) {
+    UITouch *t = [[UITouch alloc] init];
+    [t setValue:gWin forKey:@"window"];
+    [t setValue:@(ph) forKey:@"phase"];
+    [t setValue:@(ph == UITouchPhaseBegan ? 1 : 0) forKey:@"tapCount"];
+    [t setValue:[NSValue valueWithCGPoint:p] forKey:@"locationInWindow"];
+    [t setValue:[NSValue valueWithCGPoint:p] forKey:@"_previousLocationInWindow"];
+    [t setValue:@(gFinger) forKey:@"_pathIndex"];
+    [t setValue:@(YES) forKey:@"_isFirstTouchForView"];
+    return t;
+}
+
+static void Push(UITouch *t, CGPoint p, CGPoint prev, UITouchPhase ph) {
+    if (!gWin || !t) return;
     @try {
+        [t setValue:@(ph) forKey:@"phase"];
+        [t setValue:[NSValue valueWithCGPoint:p] forKey:@"locationInWindow"];
+        [t setValue:[NSValue valueWithCGPoint:prev] forKey:@"_previousLocationInWindow"];
         UIEvent *ev = [UIApplication.sharedApplication _touchesEvent];
         if ([ev respondsToSelector:@selector(_clearTouches)]) [ev _clearTouches];
-        UITouch *t = [[UITouch alloc] init];
-        [t setValue:gWin forKey:@"window"];
-        [t setValue:@(ph) forKey:@"phase"];
-        [t setValue:@(ph == UITouchPhaseBegan ? 1 : 0) forKey:@"tapCount"];
-        [t setValue:[NSValue valueWithCGPoint:p] forKey:@"locationInWindow"];
-        [t setValue:@(gFinger) forKey:@"_pathIndex"];
-        [t setValue:@(YES) forKey:@"_isFirstTouchForView"];
         [ev _addTouch:t forDelayedDelivery:NO];
         [UIApplication.sharedApplication sendEvent:ev];
         gTaps++;
@@ -85,6 +105,10 @@ static void Send(CGPoint p, UITouchPhase ph) {
     } @catch (NSException *e) {
         gTouchBad = YES;
     }
+}
+
+static void Send(CGPoint p, UITouchPhase ph) {
+    Push(MakeTouch(p, ph), p, p, ph);
 }
 
 #pragma mark - Binds
@@ -98,6 +122,13 @@ static void Fire(NSString *k, BOOL down) {
 
 static void KeyDown(int code) {
     gK++;
+    if (gWaitFps) {
+        gWaitFps = NO;
+        gFpsKey = code;
+        Status([NSString stringWithFormat:@"Tecla FPS = %d", code]);
+        Diag();
+        return;
+    }
     if (gBinding) {
         gBinding = NO;
         if (code == 41) { Status(@"Bind cancelado"); Diag(); return; }
@@ -108,13 +139,15 @@ static void KeyDown(int code) {
         return;
     }
     if (!gOn) return;
+    if (code == gFpsKey) { gFps ? FpsStop() : FpsStart(); Diag(); return; }
     if (code == 41) { gOpen = !gOpen; gSelf.hidden = !gOpen; Redraw(); return; }
     Fire([NSString stringWithFormat:@"k%d", code], YES);
     Diag();
 }
 
 static void KeyUp(int code) {
-    if (!gOn || gBinding) return;
+    if (!gOn || gBinding || gWaitFps) return;
+    if (code == gFpsKey) return;
     Fire([NSString stringWithFormat:@"k%d", code], NO);
 }
 
@@ -133,18 +166,56 @@ static void BtnDown(int code) {
 }
 
 static void BtnUp(int code) {
-    if (!gOn || gBinding) return;
+    if (!gOn || gBinding || gWaitFps) return;
     Fire([NSString stringWithFormat:@"m%d", code], NO);
+}
+
+#pragma mark - FPS
+
+static void FpsStart(void) {
+    if (gFps || !gWin) return;
+    CGSize s = gWin.bounds.size;
+    gFpsPos = CGPointMake(s.width * 0.78, s.height * 0.5);
+    gDrag = MakeTouch(gFpsPos, UITouchPhaseBegan);
+    Push(gDrag, gFpsPos, gFpsPos, UITouchPhaseBegan);
+    gFps = YES;
+    gPtr.hidden = YES;
+    Status(@"FPS ON");
+}
+
+static void FpsStop(void) {
+    if (!gFps) return;
+    Push(gDrag, gFpsPos, gFpsPos, UITouchPhaseEnded);
+    gDrag = nil;
+    gFps = NO;
+    gPtr.hidden = !gPtrOn;
+    Status(@"FPS OFF");
+}
+
+static void FpsMove(float dx, float dy) {
+    if (!gWin) return;
+    CGSize s = gWin.bounds.size;
+    CGPoint old = gFpsPos;
+    gFpsPos.x = MAX(40, MIN(s.width - 40, gFpsPos.x + dx * gSens));
+    gFpsPos.y = MAX(40, MIN(s.height - 40, gFpsPos.y + dy * gSens));
+    if (gFpsPos.x == old.x && gFpsPos.y == old.y) {
+        Push(gDrag, gFpsPos, old, UITouchPhaseEnded);
+        gFpsPos = CGPointMake(s.width * 0.78, s.height * 0.5);
+        gDrag = MakeTouch(gFpsPos, UITouchPhaseBegan);
+        Push(gDrag, gFpsPos, gFpsPos, UITouchPhaseBegan);
+        return;
+    }
+    Push(gDrag, gFpsPos, old, UITouchPhaseMoved);
 }
 
 static void Move(float dx, float dy) {
     gM++;
-    if (!gPtrOn || !gWin) { Diag(); return; }
+    if (!gWin) { Diag(); return; }
+    if (gFps) { FpsMove(dx, dy); Diag(); return; }
+    if (!gPtrOn) { Diag(); return; }
     CGSize s = gWin.bounds.size;
-    gP.x += dx * gSens;
-    gP.y += dy * gSens;
-    gP.x = MAX(8, MIN(s.width - 8, gP.x));
-    gP.y = MAX(8, MIN(s.height - 8, gP.y));
+    gP.x = MAX(8, MIN(s.width - 8, gP.x + dx * gSens));
+    gP.y = MAX(8, MIN(s.height - 8, gP.y + dy * gSens));
     gPtr.center = gP;
     Diag();
 }
@@ -154,8 +225,8 @@ static void Move(float dx, float dy) {
 static void Status(NSString *s) { gStatus.text = s ?: @""; }
 
 static void Diag(void) {
-    gDiag.text = [NSString stringWithFormat:@"k%d m%d tap%d d%lu %@", gK, gM, gTaps,
-                  (unsigned long)gBinds.count, gTouchBad ? @"BAD" : @"ok"];
+    gDiag.text = [NSString stringWithFormat:@"k%d m%d tap%d d%lu %@ %@", gK, gM, gTaps,
+                  (unsigned long)gBinds.count, gFps ? @"fps" : @"-", gTouchBad ? @"BAD" : @"ok"];
 }
 
 static void Redraw(void) {
@@ -222,9 +293,11 @@ static UIButton *Btn(NSString *t, CGRect f) {
 - (void)onOff:(UIButton *)b { gOn = !gOn; [b setTitle:gOn ? @"Ativo" : @"Parado" forState:UIControlStateNormal]; }
 - (void)marks:(UIButton *)b { gMarksOn = !gMarksOn; Redraw(); }
 - (void)ptr:(UIButton *)b { gPtrOn = !gPtrOn; gPtr.hidden = !gPtrOn; }
-- (void)bind { gBinding = YES; Status(@"Pressione tecla ou botao (Esc cancela)"); }
+- (void)bind { gBinding = YES; gWaitFps = NO; Status(@"Pressione tecla ou botao (Esc cancela)"); }
 - (void)test { Send(gP, UITouchPhaseBegan); Send(gP, UITouchPhaseEnded); Diag(); }
 - (void)sens:(UISlider *)s { gSens = s.value; }
+- (void)fps { gFps ? FpsStop() : FpsStart(); Diag(); }
+- (void)fpsKey { gWaitFps = YES; gBinding = NO; Status(@"Pressione a tecla do modo FPS"); }
 @end
 
 #pragma mark - Janela
@@ -272,7 +345,7 @@ static void Build(void) {
     [gRoot addSubview:gPtr];
 
     CGFloat w = 250;
-    gPanel = [[UIView alloc] initWithFrame:CGRectMake(12, 70, w, 210)];
+    gPanel = [[UIView alloc] initWithFrame:CGRectMake(12, 70, w, 250)];
     gPanel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.72];
     gPanel.layer.cornerRadius = 14;
     [gRoot addSubview:gPanel];
@@ -307,18 +380,26 @@ static void Build(void) {
     [ts addTarget:gVC action:@selector(test) forControlEvents:UIControlEventTouchUpInside];
     [gPanel addSubview:ts];
 
-    UISlider *sl = [[UISlider alloc] initWithFrame:CGRectMake(12, 108, w - 24, 30)];
+    UIButton *fp = Btn(@"FPS", CGRectMake(12, 110, 70, 30));
+    [fp addTarget:gVC action:@selector(fps) forControlEvents:UIControlEventTouchUpInside];
+    [gPanel addSubview:fp];
+
+    UIButton *fk = Btn(@"Tecla FPS", CGRectMake(90, 110, 148, 30));
+    [fk addTarget:gVC action:@selector(fpsKey) forControlEvents:UIControlEventTouchUpInside];
+    [gPanel addSubview:fk];
+
+    UISlider *sl = [[UISlider alloc] initWithFrame:CGRectMake(12, 146, w - 24, 30)];
     sl.minimumValue = 0.4; sl.maximumValue = 4.0; sl.value = gSens;
     [sl addTarget:gVC action:@selector(sens:) forControlEvents:UIControlEventValueChanged];
     [gPanel addSubview:sl];
 
-    gStatus = [[UILabel alloc] initWithFrame:CGRectMake(12, 140, w - 24, 18)];
+    gStatus = [[UILabel alloc] initWithFrame:CGRectMake(12, 178, w - 24, 18)];
     gStatus.textColor = UIColor.systemYellowColor;
     gStatus.font = [UIFont systemFontOfSize:11];
     gStatus.text = @"Aguardando...";
     [gPanel addSubview:gStatus];
 
-    gDiag = [[UILabel alloc] initWithFrame:CGRectMake(12, 160, w - 24, 18)];
+    gDiag = [[UILabel alloc] initWithFrame:CGRectMake(12, 200, w - 24, 18)];
     gDiag.textColor = UIColor.lightGrayColor;
     gDiag.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
     [gPanel addSubview:gDiag];

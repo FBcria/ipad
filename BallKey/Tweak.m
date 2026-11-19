@@ -24,15 +24,29 @@ static BOOL gBinding = NO;
 static BOOL gWaitFps = NO;
 static BOOL gFps = NO;
 static BOOL gTouchBad = NO;
+static BOOL gBuilt = NO;
 static CGFloat gSens = 1.6;
 static CGPoint gP;
 static CGPoint gFpsPos;
-static int gK = 0, gM = 0, gTaps = 0;
+static int gK = 0, gM = 0, gTaps = 0, gTries = 0;
 static int gFpsKey = 42;
 
 static NSMutableDictionary *gBinds;
 static uint32_t gFinger = 9;
 static UITouch *gDrag;
+
+#pragma mark - Log
+
+static void Log(NSString *fmt, ...) {
+    va_list a;
+    va_start(a, fmt);
+    NSString *s = [[NSString alloc] initWithFormat:fmt arguments:a];
+    va_end(a);
+    NSString *p = [NSTemporaryDirectory() stringByAppendingPathComponent:@"mi.log"];
+    NSString *line = [NSString stringWithFormat:@"%.3f %@\n", CFAbsoluteTimeGetCurrent(), s];
+    FILE *f = fopen(p.UTF8String, "a");
+    if (f) { fputs(line.UTF8String, f); fclose(f); }
+}
 
 #pragma mark - Prototipos
 
@@ -181,6 +195,7 @@ static void FpsStart(void) {
     gFps = YES;
     gPtr.hidden = YES;
     Status(@"FPS ON");
+    Log(@"fps on");
 }
 
 static void FpsStop(void) {
@@ -190,6 +205,7 @@ static void FpsStop(void) {
     gFps = NO;
     gPtr.hidden = !gPtrOn;
     Status(@"FPS OFF");
+    Log(@"fps off");
 }
 
 static void FpsMove(float dx, float dy) {
@@ -314,23 +330,32 @@ static void FindGame(void) {
 }
 
 static void Build(void) {
+    if (gBuilt) return;
     UIWindowScene *sc = Scene();
     if (!sc) {
+        gTries++;
+        if (gTries % 10 == 0) Log(@"sem scene, tentativa %d", gTries);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)3e8), dispatch_get_main_queue(), ^{ Build(); });
         return;
     }
+    Log(@"scene ok, tentativa %d", gTries);
 
+    gBuilt = YES;
     gWin = nil;
     FindGame();
+    Log(@"janela do jogo: %@", gWin ? @"sim" : @"nao");
 
     gSelf = [[Win alloc] initWithWindowScene:sc];
     gSelf.frame = UIScreen.mainScreen.bounds;
     gSelf.windowLevel = 10000001;
     gSelf.backgroundColor = UIColor.clearColor;
+    gSelf.hidden = NO;
     gVC = [Ctl new];
     gSelf.rootViewController = gVC;
     [gSelf makeKeyAndVisible];
     gRoot = gVC.view;
+    gRoot.frame = gSelf.bounds;
+    gRoot.backgroundColor = UIColor.clearColor;
 
     gMarks = [NSMutableArray array];
     gBinds = [NSMutableDictionary dictionary];
@@ -407,9 +432,10 @@ static void Build(void) {
     [gVC becomeFirstResponder];
     Diag();
     Status(@"Pronto");
+    Log(@"painel montado");
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)5e8), dispatch_get_main_queue(), ^{
-        if (!gWin) FindGame();
+        if (!gWin) { FindGame(); Log(@"busca tardia: %@", gWin ? @"ok" : @"falhou"); }
         if (!gWin) Status(@"Janela do jogo nao encontrada");
     });
 }
@@ -451,7 +477,7 @@ static void nMove(id s, SEL c, id h) {
 
 static void Hook(Class c, SEL s, void *f, void **orig) {
     Method m = class_getInstanceMethod(c, s);
-    if (!m) return;
+    if (!m) { Log(@"hook ausente: %@", NSStringFromSelector(s)); return; }
     *orig = (void *)method_getImplementation(m);
     method_setImplementation(m, (IMP)f);
 }
@@ -465,11 +491,13 @@ static void WatchMouse(void) {
 #pragma mark - Entrada
 
 __attribute__((constructor)) static void Start(void) {
+    Log(@"tweak carregado");
     dispatch_async(dispatch_get_main_queue(), ^{
         @try {
             Hook([GCKeyboardInput class], @selector(setKeyChangedHandler:), (void *)nKey, (void **)&oKey);
             Hook([GCMouseInput class], @selector(setMouseMovedHandler:), (void *)nMove, (void **)&oMove);
-        } @catch (NSException *e) {}
+            Log(@"hooks ok");
+        } @catch (NSException *e) { Log(@"hook erro: %@", e.reason); }
         Build();
         WatchMouse();
     });

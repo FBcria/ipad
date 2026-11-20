@@ -2,8 +2,13 @@ name: ipa
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'full = painel | empty = dylib vazia'
+        type: choice
+        options: [full, empty]
+        default: full
       ent:
-        description: 'Aplicar entitlements HID e reassinar'
+        description: 'Aplicar entitlements HID'
         type: boolean
         default: false
 
@@ -31,6 +36,9 @@ jobs:
       - name: Compilar dylib
         run: |
           set -e
+          SRC=Tweak.m
+          [ "${{ inputs.mode }}" = "empty" ] && SRC=Test.m
+          echo "fonte: $SRC"
           cd BallKey
           if [ ! -f Inject.mk ]; then
             cat > Inject.mk <<'MK'
@@ -49,7 +57,7 @@ jobs:
           fi
           rm -rf .theos
           make -f Inject.mk clean || true
-          make -f Inject.mk
+          make -f Inject.mk MobileInput_FILES=$SRC
           DYLIB=$(find .theos -name 'MobileInput.dylib' | head -n 1)
           [ -n "$DYLIB" ] || { echo "::error::dylib nao gerada"; find .theos -type f | head -n 60; exit 1; }
           cp "$DYLIB" ../libMobileInput.dylib
@@ -70,20 +78,25 @@ jobs:
           cp ../libMobileInput.dylib "$APP/Frameworks/libMobileInput.dylib"
           rm -rf "$APP/_CodeSignature" "$APP/embedded.mobileprovision"
           python3 ../tools/inject.py "$APP/$BIN" "@executable_path/Frameworks/libMobileInput.dylib"
+
+          echo "--- load commands do binario ---"
           python3 - "$APP/$BIN" <<'PY'
           import sys, struct
           d = open(sys.argv[1], 'rb').read()
           n = struct.unpack_from('<I', d, 16)[0]
-          off = 32
+          off, found = 32, 0
           for _ in range(n):
               cmd, csz = struct.unpack_from('<II', d, off)
-              if cmd == 0xC:
-                  print("LC_LOAD_DYLIB ok")
-                  break
+              if cmd in (0xC, 0xD):
+                  so = struct.unpack_from('<I', d, off + 8)[0]
+                  print("LOAD:", d[off + so:off + csz].split(b'\0')[0].decode(errors='replace'))
+                  found += 1
               off += csz
-          else:
-              sys.exit("LC_LOAD_DYLIB ausente")
+          if not found:
+              sys.exit("nenhum LC_LOAD_DYLIB")
           PY
+          test -f "$APP/Frameworks/libMobileInput.dylib"
+          echo "arquivo presente"
           zip -qr ../FreeFire_patched.ipa Payload
           cd ..
           ls -lh FreeFire_patched.ipa
@@ -104,14 +117,14 @@ jobs:
           "$LDID" -Smerged.plist "$APP/$BIN"
           rm -f ../FreeFire_patched.ipa
           zip -qr ../FreeFire_patched.ipa Payload
-          echo "assinado com entitlements"
+          echo "assinado"
 
       - name: Publicar IPA
         run: |
           set -e
-          TAG=patched
-          [ "${{ inputs.ent }}" = "true" ] && TAG=patched-ent
-          gh release delete $TAG --yes --cleanup-tag || true
-          gh release create $TAG ./FreeFire_patched.ipa -t "$TAG $(date -u +%FT%TZ)" -n "FreeFire + MobileInput"
+          TAG="patched-${{ inputs.mode }}"
+          [ "${{ inputs.ent }}" = "true" ] && TAG="$TAG-ent"
+          gh release delete "$TAG" --yes --cleanup-tag || true
+          gh release create "$TAG" ./FreeFire_patched.ipa -t "$TAG $(date -u +%FT%TZ)" -n "FreeFire + MobileInput"
         env:
           GH_TOKEN: ${{ github.token }}
